@@ -26,11 +26,16 @@ export function ensureEngramDir(): void {
 
 export function loadConfig(): EngramConfig {
   ensureEngramDir();
-  if (!existsSync(CONFIG_PATH)) {
-    return { ...DEFAULT_CONFIG };
-  }
-  const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
-  return { ...DEFAULT_CONFIG, ...raw };
+  const raw = existsSync(CONFIG_PATH)
+    ? JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
+    : {};
+  const merged: EngramConfig = { ...DEFAULT_CONFIG, ...raw };
+
+  // Env vars (incl. anything Bun auto-loads from .env) override the file.
+  if (process.env.OPENAI_API_KEY) merged.openaiApiKey = process.env.OPENAI_API_KEY;
+  if (process.env.ENGRAM_DATABASE_URL) merged.databaseUrl = process.env.ENGRAM_DATABASE_URL;
+
+  return merged;
 }
 
 export function saveConfig(config: EngramConfig): void {
