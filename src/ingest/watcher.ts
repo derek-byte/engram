@@ -1,4 +1,4 @@
-import chokidar from 'chokidar';
+import { watch, type FSWatcher } from 'chokidar';
 import type { PipelineDeps } from './pipeline.ts';
 import { fileIsStable, ingestFile } from './pipeline.ts';
 
@@ -6,7 +6,7 @@ export class SessionWatcher {
   private deps: PipelineDeps;
   private pending = new Map<string, NodeJS.Timeout>();
   private inFlight = new Set<string>();
-  private watcher?: chokidar.FSWatcher;
+  private watcher?: FSWatcher;
 
   constructor(deps: PipelineDeps) {
     this.deps = deps;
@@ -15,7 +15,7 @@ export class SessionWatcher {
   start(): void {
     const idleMs = this.deps.config.sessionCompleteDelaySec * 1000;
 
-    this.watcher = chokidar.watch(this.deps.config.watchPath, {
+    this.watcher = watch(this.deps.config.watchPath, {
       persistent: true,
       ignoreInitial: false,
       depth: 3,
@@ -23,9 +23,9 @@ export class SessionWatcher {
     });
 
     this.watcher
-      .on('add', (path) => this.schedule(path, idleMs))
-      .on('change', (path) => this.schedule(path, idleMs))
-      .on('error', (err) => console.error('[watcher]', err));
+      .on('add', (path: string) => this.schedule(path, idleMs))
+      .on('change', (path: string) => this.schedule(path, idleMs))
+      .on('error', (err: unknown) => console.error('[watcher]', err));
 
     console.log(`[watcher] watching ${this.deps.config.watchPath}`);
   }
