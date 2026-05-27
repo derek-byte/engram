@@ -1,0 +1,27 @@
+{
+  "name": "engram",
+  "version": "0.1.0",
+  "description": "Global semantic memory for your coding sessions",
+  "type": "module",
+  "bin": {
+    "engram": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/index.ts --target=bun --outdir=dist"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.1",
+    "commander": "^12.1.0",
+    "openai": "^4.68.0",
+    "postgres": "^3.4.4"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
