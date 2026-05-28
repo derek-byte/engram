@@ -7,7 +7,9 @@ export class PgVectorBackend implements VectorBackend {
   private embeddingDim: number;
 
   constructor(databaseUrl: string, embeddingDim: number) {
-    this.sql = postgres(databaseUrl, { ssl: 'require', prepare: false });
+    // SSL is derived from the URL (e.g. ?sslmode=require for Neon).
+    // Local Postgres URLs without sslmode connect without TLS.
+    this.sql = postgres(databaseUrl, { prepare: false });
     this.embeddingDim = embeddingDim;
   }
 
