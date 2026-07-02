@@ -4,6 +4,7 @@ import { searchCommand } from './commands/search.ts';
 import { statusCommand } from './commands/status.ts';
 import { backfillCommand } from './commands/backfill.ts';
 import { watchInternalCommand } from './commands/watch.ts';
+import { uiCommand } from './commands/ui.ts';
 
 const program = new Command();
 
@@ -37,6 +38,14 @@ program
   .description('Scan ~/.claude/projects and index any new sessions')
   .action(async () => {
     await backfillCommand();
+  });
+
+program
+  .command('ui')
+  .description('Serve a local search UI over your memory index (127.0.0.1 only)')
+  .option('--port <n>', 'port to bind', '7777')
+  .action(async (opts) => {
+    await uiCommand(opts);
   });
 
 program

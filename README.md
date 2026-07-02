@@ -35,13 +35,18 @@ Two design invariants:
 | [`src/commands/`](src/commands/README.md) | CLI entrypoints (commander) |
 | [`src/config/`](src/config/README.md) | `~/.engram` config loading, env overrides |
 | [`src/types/`](src/types/README.md) | Shared domain types |
+| [`src/ui/`](src/ui/README.md) | Local search UI (`engram ui`, search-as-you-type) |
 
 ## Quick start
 
 ```bash
+bun install
 docker compose up -d        # local pgvector (Docker Desktop context)
+cp .env.example .env        # set OPENAI_API_KEY (or use ENGRAM_EMBEDDING_PROVIDER=local)
+
 bun run src/index.ts backfill
 bun run src/index.ts search "what did we decide about chunking" --repo engram
+bun run src/index.ts ui     # local search UI at http://127.0.0.1:7777
 ```
 
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
