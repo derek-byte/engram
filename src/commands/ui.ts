@@ -61,6 +61,16 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
         return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
       }
 
+      if (url.pathname === '/api/stats') {
+        try {
+          const chunks = await backend.count();
+          return Response.json({ model: embedder.model, dim: config.embeddingDim, chunks });
+        } catch (err) {
+          console.error('stats failed:', err instanceof Error ? err.message : err);
+          return Response.json({ error: 'stats failed' }, { status: 500 });
+        }
+      }
+
       if (url.pathname === '/api/search') {
         const q = url.searchParams.get('q')?.trim() ?? '';
         if (!q) return Response.json([]);

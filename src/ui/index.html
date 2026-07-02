@@ -1,73 +1,178 @@
+<!doctype html>
 <title>engram</title>
 <style>
+  @font-face {
+    font-family: "Departure Mono";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    /* Departure Mono (OFL) — subset to printable ASCII, embedded as woff2 data URI. */
+    src: url("data:font/woff2;base64,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") format("woff2");
+  }
   :root {
-    --bg: #0d0f12;
-    --panel: #14171c;
-    --panel-hi: #1b1f26;
-    --border: #262b33;
-    --fg: #e6e9ee;
-    --muted: #8a929e;
-    --accent: #6ea8fe;
-    --hl: #3a2f00;
-    --hl-fg: #ffe27a;
+    --bg: #0a0a0a;
+    --surface: #121212;
+    --surface-hi: #191919;
+    --inset: #0e0e0e;
+    --border: #242424;
+    --border-hi: #333;
+    --fg: #e5e5e5;
+    --muted: #8a8a8a;
+    --dim: #555;
+    --accent: #94b47e;
+    --hl: rgba(148, 180, 126, 0.09);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0;
     background: var(--bg);
     color: var(--fg);
-    font: 15px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font: 14px/1.6 var(--mono);
+    -webkit-font-smoothing: antialiased;
   }
-  #app { max-width: 780px; margin: 0 auto; padding: 8vh 20px 20vh; }
+  #app {
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 22vh 24px 24vh;
+  }
   h1 {
-    font-size: 15px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
-    color: var(--muted); margin: 0 0 18px; text-align: center;
+    font-family: "Departure Mono", var(--mono);
+    font-size: 30px;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+    margin: 0 0 28px;
+    text-align: center;
+    line-height: 1;
   }
+  h1 .glyph { color: var(--accent); margin-right: 0.28em; }
+
+  /* ── search card ── */
+  #card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 4px;
+    transition: border-color 0.15s ease;
+  }
+  #card:focus-within { border-color: var(--border-hi); }
   #q {
-    width: 100%; padding: 14px 16px; font-size: 17px; color: var(--fg);
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; outline: none;
+    width: 100%;
+    padding: 14px 14px 12px;
+    font: 15px/1.5 var(--mono);
+    color: var(--fg);
+    background: transparent;
+    border: 0;
+    outline: none;
   }
-  #q:focus { border-color: var(--accent); }
-  #status { color: var(--muted); font-size: 13px; margin: 12px 2px; min-height: 16px; }
+  #q::placeholder { color: var(--dim); }
+  #cardbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  #cardbar .left, #cardbar .right { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #cardbar .right { font-variant-numeric: tabular-nums; }
+  #cardbar .accent { color: var(--accent); }
+
+  #status {
+    color: var(--dim);
+    font-size: 11.5px;
+    margin: 16px 4px 4px;
+    min-height: 14px;
+  }
+
+  /* ── result rows ── */
+  #results { margin-top: 2px; }
   .result {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 14px 16px; margin: 10px 0; cursor: pointer;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    padding: 11px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.1s ease;
   }
-  .result:hover { background: var(--panel-hi); border-color: #33404f; }
-  .result .meta { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-  .result .meta .sim { color: var(--accent); font-variant-numeric: tabular-nums; }
-  .result .snippet { color: var(--fg); font-size: 14px; }
-  /* overlay */
+  .result:hover, .result.active { background: var(--surface-hi); }
+  .result.active { outline: 1px solid var(--border-hi); outline-offset: -1px; }
+  .result .body { min-width: 0; flex: 1; }
+  .result .snippet {
+    color: var(--fg);
+    font-size: 13.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .result .sub {
+    color: var(--dim);
+    font-size: 11.5px;
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .result .aside {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-shrink: 0;
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .result .age { color: var(--muted); }
+  .result .sim { color: var(--dim); }
+
+  /* ── overlay ── */
   #overlay {
     position: fixed; inset: 0; background: var(--bg); display: none;
-    overflow-y: auto; padding: 24px 20px 20vh;
+    overflow-y: auto; padding: 32px 24px 24vh;
   }
   #overlay.open { display: block; }
-  #overlay-inner { max-width: 780px; margin: 0 auto; }
+  #overlay-inner { max-width: 680px; margin: 0 auto; }
   #back {
-    background: var(--panel); color: var(--fg); border: 1px solid var(--border);
-    border-radius: 8px; padding: 8px 14px; font-size: 13px; cursor: pointer; margin-bottom: 16px;
+    background: var(--surface); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 13px; font: 12px/1 var(--mono); cursor: pointer; margin-bottom: 20px;
+    transition: background-color 0.1s ease, color 0.1s ease;
   }
-  #back:hover { background: var(--panel-hi); }
-  #overlay-meta { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+  #back:hover { background: var(--surface-hi); color: var(--fg); }
+  #overlay-meta { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
   .turn {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 12px 16px; margin: 10px 0; white-space: pre-wrap; word-break: break-word;
-    font-size: 13.5px; line-height: 1.6;
+    border-left: 2px solid transparent;
+    padding: 12px 16px; margin: 6px 0; white-space: pre-wrap; word-break: break-word;
+    font-size: 13px; line-height: 1.65; color: var(--fg);
   }
-  .turn.match { border-color: var(--accent); background: var(--panel-hi); }
-  .turn .idx { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; display: block; margin-bottom: 8px; }
-  .turn.match .idx { color: var(--hl-fg); }
+  .turn.match {
+    border-left-color: var(--accent);
+    background: var(--hl);
+    border-radius: 0 8px 8px 0;
+  }
+  .turn .idx {
+    font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.1em;
+    display: block; margin-bottom: 8px;
+  }
+  .turn.match .idx { color: var(--accent); }
 </style>
 <div id="app">
-  <h1>engram</h1>
-  <input id="q" type="text" placeholder="search your sessions…" autocomplete="off" autofocus />
+  <h1><span class="glyph">✳</span>engram</h1>
+  <div id="card">
+    <input id="q" type="text" placeholder="Search your coding memory..." autocomplete="off" autofocus />
+    <div id="cardbar">
+      <span class="left" id="stats">—</span>
+      <span class="right" id="latency"></span>
+    </div>
+  </div>
   <div id="status"></div>
   <div id="results"></div>
 </div>
 <div id="overlay">
   <div id="overlay-inner">
-    <button id="back">← back to results</button>
+    <button id="back">← back</button>
     <div id="overlay-meta"></div>
     <div id="turns"></div>
   </div>
@@ -79,6 +184,8 @@
   const qEl = document.getElementById('q');
   const statusEl = document.getElementById('status');
   const resultsEl = document.getElementById('results');
+  const statsEl = document.getElementById('stats');
+  const latencyEl = document.getElementById('latency');
   const overlayEl = document.getElementById('overlay');
   const overlayMetaEl = document.getElementById('overlay-meta');
   const turnsEl = document.getElementById('turns');
@@ -86,6 +193,9 @@
 
   let debounceTimer = null;
   let inflight = null;
+  let rows = [];       // current result <div> elements
+  let items = [];      // current result data
+  let activeIndex = -1;
 
   function fmtTime(ts) {
     if (!ts) return '';
@@ -93,57 +203,117 @@
     return isNaN(d) ? '' : d.toLocaleString();
   }
 
-  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
-
-  function metaSpan(text, cls) {
-    const s = document.createElement('span');
-    s.textContent = text;
-    if (cls) s.className = cls;
-    return s;
+  // Compact relative age like "9d", "3h", "5m".
+  function relAge(ts) {
+    if (!ts) return '';
+    const then = new Date(ts).getTime();
+    if (isNaN(then)) return '';
+    const s = Math.max(0, (Date.now() - then) / 1000);
+    if (s < 60) return Math.floor(s) + 's';
+    const m = s / 60;
+    if (m < 60) return Math.floor(m) + 'm';
+    const h = m / 60;
+    if (h < 24) return Math.floor(h) + 'h';
+    const d = h / 24;
+    if (d < 7) return Math.floor(d) + 'd';
+    const w = d / 7;
+    if (w < 5) return Math.floor(w) + 'w';
+    const mo = d / 30;
+    if (mo < 12) return Math.floor(mo) + 'mo';
+    return Math.floor(d / 365) + 'y';
   }
 
-  function renderResults(items) {
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+
+  async function loadStats() {
+    try {
+      const res = await fetch('/api/stats');
+      const s = await res.json();
+      if (!s || typeof s.chunks !== 'number') return;
+      clear(statsEl);
+      const model = document.createElement('span');
+      model.className = 'accent';
+      model.textContent = s.model + (s.dim ? ' · ' + s.dim + 'd' : '');
+      const count = document.createElement('span');
+      count.textContent = ' · ' + s.chunks.toLocaleString() + ' chunks';
+      statsEl.appendChild(model);
+      statsEl.appendChild(count);
+    } catch { /* stats are cosmetic; ignore */ }
+  }
+
+  function setActive(i) {
+    if (rows[activeIndex]) rows[activeIndex].classList.remove('active');
+    activeIndex = i;
+    const row = rows[activeIndex];
+    if (row) {
+      row.classList.add('active');
+      row.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function renderResults(list) {
     clear(resultsEl);
-    for (const r of items) {
-      const card = document.createElement('div');
-      card.className = 'result';
+    rows = [];
+    items = list;
+    activeIndex = -1;
+    list.forEach((r, i) => {
+      const row = document.createElement('div');
+      row.className = 'result';
 
-      const meta = document.createElement('div');
-      meta.className = 'meta';
-      meta.appendChild(metaSpan('sim ' + r.similarity.toFixed(3), 'sim'));
-      meta.appendChild(metaSpan((r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch')));
-      if (r.timestamp) meta.appendChild(metaSpan(fmtTime(r.timestamp)));
-      meta.appendChild(metaSpan('chunk ' + (r.chunkIndex ?? '?')));
-
+      const body = document.createElement('div');
+      body.className = 'body';
       const snip = document.createElement('div');
       snip.className = 'snippet';
       snip.textContent = r.snippet;
+      const sub = document.createElement('div');
+      sub.className = 'sub';
+      sub.textContent = (r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch');
+      body.appendChild(snip);
+      body.appendChild(sub);
 
-      card.appendChild(meta);
-      card.appendChild(snip);
-      card.addEventListener('click', () => openTrajectory(r));
-      resultsEl.appendChild(card);
-    }
+      const aside = document.createElement('div');
+      aside.className = 'aside';
+      const age = document.createElement('span');
+      age.className = 'age';
+      age.textContent = relAge(r.timestamp);
+      const sim = document.createElement('span');
+      sim.className = 'sim';
+      sim.textContent = (r.similarity * 100).toFixed(0) + '%';
+      aside.appendChild(age);
+      aside.appendChild(sim);
+
+      row.appendChild(body);
+      row.appendChild(aside);
+      row.addEventListener('click', () => openTrajectory(r));
+      row.addEventListener('mouseenter', () => setActive(i));
+      resultsEl.appendChild(row);
+      rows.push(row);
+    });
   }
 
   async function search(q) {
     if (inflight) inflight.abort();
     if (!q.trim()) {
       clear(resultsEl);
+      rows = []; items = []; activeIndex = -1;
       statusEl.textContent = '';
+      latencyEl.textContent = '';
       return;
     }
     const ctrl = new AbortController();
     inflight = ctrl;
     statusEl.textContent = 'searching…';
+    const t0 = performance.now();
     try {
       const res = await fetch('/api/search?q=' + encodeURIComponent(q) + '&k=' + K, { signal: ctrl.signal });
-      const items = await res.json();
+      const list = await res.json();
       if (ctrl.signal.aborted) return;
       inflight = null;
-      if (!Array.isArray(items)) { statusEl.textContent = 'error'; return; }
-      statusEl.textContent = items.length ? items.length + ' result' + (items.length === 1 ? '' : 's') : 'no results';
-      renderResults(items);
+      const ms = Math.round(performance.now() - t0);
+      if (!Array.isArray(list)) { statusEl.textContent = 'error'; return; }
+      latencyEl.textContent = ms + 'ms';
+      statusEl.textContent = list.length ? list.length + ' result' + (list.length === 1 ? '' : 's') : 'no results';
+      renderResults(list);
     } catch (err) {
       if (err.name === 'AbortError') return;
       statusEl.textContent = 'error';
@@ -204,9 +374,19 @@
     debounceTimer = setTimeout(() => search(qEl.value), DEBOUNCE_MS);
   });
   qEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { clearTimeout(debounceTimer); search(qEl.value); }
+    if (e.key === 'Enter') {
+      if (activeIndex >= 0 && items[activeIndex]) { openTrajectory(items[activeIndex]); return; }
+      clearTimeout(debounceTimer);
+      search(qEl.value);
+    } else if (e.key === 'ArrowDown') {
+      if (rows.length) { e.preventDefault(); setActive(Math.min(activeIndex + 1, rows.length - 1)); }
+    } else if (e.key === 'ArrowUp') {
+      if (rows.length) { e.preventDefault(); setActive(Math.max(activeIndex - 1, 0)); }
+    }
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && overlayEl.classList.contains('open')) closeOverlay();
   });
+
+  loadStats();
 </script>
