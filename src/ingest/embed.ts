@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 
-const MAX_CHARS_PER_INPUT = 24000;
+export const MAX_CHARS_PER_INPUT = 24000;
 
 export class Embedder {
   private client: OpenAI;

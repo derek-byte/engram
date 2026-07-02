@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import type { Chunk, EngramConfig } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import { LocalStore } from '../storage/local.ts';
-import { Embedder } from './embed.ts';
+import { Embedder, MAX_CHARS_PER_INPUT } from './embed.ts';
 import { trajectoryHash } from './hash.ts';
 import { chunkMessages, trajectoryToText } from './chunker.ts';
 import { parseJsonl } from './parser.ts';
@@ -38,6 +38,13 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
     const text = trajectoryToText(t);
     const hash = trajectoryHash(t);
     if (deps.local.hasSeen(hash)) {
+      skipped++;
+      continue;
+    }
+    if (text.length > MAX_CHARS_PER_INPUT) {
+      console.error(
+        `[ingest] skipping oversized trajectory ${t.sessionId} (${hash}): ${text.length} chars (limit ${MAX_CHARS_PER_INPUT})`
+      );
       skipped++;
       continue;
     }
