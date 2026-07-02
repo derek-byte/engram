@@ -17,7 +17,7 @@ export class Embedder {
       if (t.length > MAX_CHARS_PER_INPUT) {
         const label = labels?.[i] ?? `input[${i}]`;
         throw new Error(
-          `embedding input too large: ${label} is ${t.length} chars (limit ${MAX_CHARS_PER_INPUT}); this trajectory must be split into smaller chunks before embedding`
+          `embedding input too large: ${label} is ${t.length} chars (limit ${MAX_CHARS_PER_INPUT}); split it into smaller chunks before embedding`
         );
       }
     });
