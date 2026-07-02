@@ -72,7 +72,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   let cacheMisses = 0;
   for (let i = 0; i < toEmbed.length; i += deps.config.chunkBatchSize) {
     const batch = toEmbed.slice(i, i + deps.config.chunkBatchSize);
-    const { embeddings: vectors, ...stats } = await deps.embedder.embedWithStats(
+    const { embeddings: vectors, model: embeddingModel, ...stats } = await deps.embedder.embedWithStats(
       batch.map((b) => b.text),
       batch.map((b) => `${b.trajectory.sessionId} (${b.hash})`)
     );
@@ -95,6 +95,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
         trajectoryId: b.trajectoryId,
         chunkIndex: b.chunkIndex,
         chunkCount: b.chunkCount,
+        embeddingModel,
       },
     }));
 

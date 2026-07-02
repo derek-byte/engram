@@ -1,6 +1,6 @@
 import { loadConfig, promptForMissing, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
-import { Embedder } from '../ingest/embed.ts';
+import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { runSearch } from '../search/index.ts';
 import type { SearchFilters, SearchResult } from '../types/index.ts';
@@ -29,7 +29,7 @@ export async function searchCommand(query: string, opts: SearchOptions): Promise
 
   const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
   await backend.initialize();
-  const embedder = new Embedder(config.openaiApiKey, config.embeddingModel);
+  const embedder = new Embedder(buildProvider(config));
 
   try {
     const results = await runSearch(query, filters, { backend, embedder });
