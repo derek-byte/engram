@@ -5,6 +5,7 @@ import { statusCommand } from './commands/status.ts';
 import { backfillCommand } from './commands/backfill.ts';
 import { watchInternalCommand } from './commands/watch.ts';
 import { uiCommand } from './commands/ui.ts';
+import { mcpCommand } from './commands/mcp.ts';
 
 const program = new Command();
 
@@ -46,6 +47,13 @@ program
   .option('--port <n>', 'port to bind', '7777')
   .action(async (opts) => {
     await uiCommand(opts);
+  });
+
+program
+  .command('mcp')
+  .description('Run the MCP server (stdio) so Claude Code can search your sessions')
+  .action(async () => {
+    await mcpCommand();
   });
 
 program

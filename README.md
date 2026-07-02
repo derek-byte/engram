@@ -1,5 +1,6 @@
 # engram
 
+<<<<<<< HEAD
 Global semantic memory for your coding sessions. Watches `~/.claude/projects`, chunks every Claude Code trajectory, embeds it, and makes your entire coding history searchable — filtered by repo, branch, and time.
 
 ## Architecture
@@ -36,6 +37,7 @@ Two design invariants:
 | [`src/config/`](src/config/README.md) | `~/.engram` config loading, env overrides |
 | [`src/types/`](src/types/README.md) | Shared domain types |
 | [`src/ui/`](src/ui/README.md) | Local search UI (`engram ui`, search-as-you-type) |
+| [`src/mcp/`](src/mcp/README.md) | MCP server (`engram mcp`) — search engram from Claude Code |
 
 ## Quick start
 
@@ -56,6 +58,14 @@ Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_U
 `bun run benchmarks/longmemeval.ts --dataset <longmemeval_s_cleaned.json> [--limit N]` scores engram's retrieval substrate on LongMemEval under the same raw-mode conditions MemPalace publishes (one doc per session, user turns only, fresh index per question, recall_any). Embeddings go through the pg cache, so repeat runs are free. Current numbers: R@5 0.982, NDCG@10 0.945 (vs MemPalace raw 0.966 / 0.889).
 
 Add `--path production` to score the **real** path instead of the in-memory substrate: each question's sessions are injected via `injectDocuments` → pgvector, queried through `runSearch` restricted to an owner (`bench:<question_id>`), and sessions ranked by their best-scoring chunk (max-sim). Bench rows are deleted after each question and swept on exit; `--cleanup` purges any leftovers (`owner LIKE 'bench:%'`).
+
+## MCP — use engram from Claude Code
+
+`engram mcp` runs an [MCP](https://modelcontextprotocol.io) server over stdio exposing `engram_search` and `engram_status` (see [`src/mcp/README.md`](src/mcp/README.md)). Register it:
+
+```bash
+claude mcp add engram -- bun run /absolute/path/to/engram/src/index.ts mcp
+```
 
 ## MemPalace (benchmark reference)
 
