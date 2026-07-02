@@ -111,13 +111,30 @@ const OVERLAP_TOKENS = 120;
 const HARD_CAP_TOKENS = 5000;
 
 export function chunkTrajectory(t: Trajectory): string[] {
-  const segments = trajectorySegments(t).flatMap((s) => hardSplit(s, MAX_SEGMENT_TOKENS));
+  return packSegments(trajectorySegments(t));
+}
+
+// Chunk arbitrary plain text (the generic-document / connector path): split on
+// blank-line paragraph boundaries, then reuse the same token-aware packing.
+export function chunkText(content: string): string[] {
+  const paragraphs = content
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  return packSegments(paragraphs.length > 0 ? paragraphs : [content.trim()]);
+}
+
+// Greedily pack semantic segments to ~TARGET_TOKENS with ~OVERLAP_TOKENS of
+// carry-over, oversize segments hard-split first and the result capped at
+// HARD_CAP_TOKENS so nothing ever exceeds the embedding limit.
+export function packSegments(segments: string[]): string[] {
+  const split = segments.flatMap((s) => hardSplit(s, MAX_SEGMENT_TOKENS));
 
   const chunks: string[] = [];
   let buffer: string[] = [];
   let bufferTokens = 0;
 
-  for (const seg of segments) {
+  for (const seg of split) {
     const segTokens = estimateTokens(seg);
     if (bufferTokens > OVERLAP_TOKENS && bufferTokens + segTokens > TARGET_TOKENS) {
       const text = buffer.join('\n');
