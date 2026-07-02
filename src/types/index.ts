@@ -7,6 +7,7 @@ export interface ChunkMetadata {
   sessionId: string;
   cwd: string;
   tier: 'raw' | 'dream';
+  owner?: string;
   trajectoryId?: string;
   chunkIndex?: number;
   chunkCount?: number;
@@ -26,7 +27,11 @@ export interface SearchFilters {
   since?: Date;
   tier?: 'raw' | 'dream' | 'both';
   exitCode?: number;
+  owner?: string;
   limit?: number;
+  // Force an exact (seq-scan) search instead of the HNSW approximation — needed
+  // when a selective filter (e.g. owner) would starve the ANN candidate set.
+  exhaustive?: boolean;
 }
 
 export interface SearchResult {
