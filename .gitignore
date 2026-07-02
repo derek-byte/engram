@@ -4,3 +4,5 @@ dist/
 .env
 .env.local
 .DS_Store
+benchmarks/results_*.jsonl
+benchmarks/longmemeval_s_cleaned.json
