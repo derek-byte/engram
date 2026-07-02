@@ -209,7 +209,9 @@ export class PgVectorBackend implements VectorBackend {
 
   async search(queryEmbedding: number[], queryText: string, filters: SearchFilters): Promise<SearchResult[]> {
     const vec = formatVector(queryEmbedding);
-    const limit = filters.limit ?? 5;
+    // Clamp to a finite positive integer: limit comes from CLI input (Number()
+    // can yield NaN/Infinity) and pool is interpolated into raw SQL below.
+    const limit = Number.isFinite(filters.limit) ? Math.max(1, Math.floor(filters.limit as number)) : 5;
     const tierFilter = filters.tier && filters.tier !== 'both' ? filters.tier : null;
     const { vectorWeight, keywordWeight, timeDecayHalfLifeDays } = this.scoring;
     const pool = Math.max(CANDIDATE_POOL, limit);
