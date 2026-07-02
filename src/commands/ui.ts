@@ -35,10 +35,26 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
   // Pass the backend as the embedding cache so repeat queries hit embedding_cache (free).
   const embedder = new Embedder(config.openaiApiKey, config.embeddingModel, backend);
 
+  // DNS-rebinding defense: only loopback Host values are legitimate for this
+  // server. A malicious site rebound to 127.0.0.1 arrives with its own Host,
+  // so anything else gets rejected before touching the index. Browser requests
+  // carrying a foreign Origin are rejected for the same reason.
+  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]);
+  const allowedOrigins = new Set([...allowedHosts].map((h) => `http://${h}`));
+
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port,
     async fetch(req) {
+      const host = req.headers.get('host');
+      if (!host || !allowedHosts.has(host.toLowerCase())) {
+        return new Response('forbidden', { status: 403 });
+      }
+      const origin = req.headers.get('origin');
+      if (origin && !allowedOrigins.has(origin.toLowerCase())) {
+        return new Response('forbidden', { status: 403 });
+      }
+
       const url = new URL(req.url);
 
       if (url.pathname === '/') {
