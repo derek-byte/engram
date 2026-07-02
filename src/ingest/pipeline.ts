@@ -56,13 +56,14 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
 
   await deps.backend.insertRawEvents(rawEvents);
 
-  const cacheHits0 = deps.embedder.cacheHits;
-  const cacheMisses0 = deps.embedder.cacheMisses;
-
   let embedded = 0;
+  let cacheHits = 0;
+  let cacheMisses = 0;
   for (let i = 0; i < toEmbed.length; i += deps.config.chunkBatchSize) {
     const batch = toEmbed.slice(i, i + deps.config.chunkBatchSize);
-    const vectors = await deps.embedder.embed(batch.map((b) => b.text));
+    const { embeddings: vectors, ...stats } = await deps.embedder.embedWithStats(batch.map((b) => b.text));
+    cacheHits += stats.cacheHits;
+    cacheMisses += stats.cacheMisses;
 
     const chunks: Chunk[] = batch.map((b, idx) => ({
       id: b.hash,
@@ -88,13 +89,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   deps.local.setCursor(sessionId, trajectories.length);
   deps.local.setStat('last_ingest_at', new Date().toISOString());
 
-  return {
-    trajectories: trajectories.length,
-    embedded,
-    skipped,
-    cacheHits: deps.embedder.cacheHits - cacheHits0,
-    cacheMisses: deps.embedder.cacheMisses - cacheMisses0,
-  };
+  return { trajectories: trajectories.length, embedded, skipped, cacheHits, cacheMisses };
 }
 
 export function fileIsStable(path: string, minIdleMs: number): boolean {

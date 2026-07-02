@@ -4,12 +4,16 @@ import { contentSha256 } from './hash.ts';
 
 const MAX_CHARS_PER_INPUT = 24000;
 
+export interface EmbedResult {
+  embeddings: number[][];
+  cacheHits: number;
+  cacheMisses: number;
+}
+
 export class Embedder {
   private client: OpenAI;
   private model: string;
   private cache?: EmbeddingCache;
-  cacheHits = 0;
-  cacheMisses = 0;
 
   constructor(apiKey: string, model: string, cache?: EmbeddingCache) {
     this.client = new OpenAI({ apiKey });
@@ -18,9 +22,13 @@ export class Embedder {
   }
 
   async embed(texts: string[]): Promise<number[][]> {
-    if (texts.length === 0) return [];
+    return (await this.embedWithStats(texts)).embeddings;
+  }
+
+  async embedWithStats(texts: string[]): Promise<EmbedResult> {
+    if (texts.length === 0) return { embeddings: [], cacheHits: 0, cacheMisses: 0 };
     const inputs = texts.map((t) => (t.length > MAX_CHARS_PER_INPUT ? t.slice(0, MAX_CHARS_PER_INPUT) : t));
-    if (!this.cache) return this.embedRaw(inputs);
+    if (!this.cache) return { embeddings: await this.embedRaw(inputs), cacheHits: 0, cacheMisses: 0 };
 
     const shas = inputs.map(contentSha256);
     const cached = await this.cache.getCachedEmbeddings(shas, this.model);
@@ -31,7 +39,6 @@ export class Embedder {
       const hit = cached.get(shas[i]!);
       if (hit) {
         out[i] = hit;
-        this.cacheHits++;
       } else {
         misses.push({ index: i, text, sha: shas[i]! });
       }
@@ -39,16 +46,14 @@ export class Embedder {
 
     if (misses.length > 0) {
       const fresh = await this.embedRaw(misses.map((m) => m.text));
-      const toCache: Array<{ sha: string; embedding: number[] }> = [];
-      misses.forEach((m, j) => {
+      const toCache = misses.map((m, j) => {
         out[m.index] = fresh[j]!;
-        toCache.push({ sha: m.sha, embedding: fresh[j]! });
-        this.cacheMisses++;
+        return { sha: m.sha, embedding: fresh[j]! };
       });
       await this.cache.putCachedEmbeddings(toCache, this.model);
     }
 
-    return out;
+    return { embeddings: out, cacheHits: inputs.length - misses.length, cacheMisses: misses.length };
   }
 
   async embedOne(text: string): Promise<number[]> {
