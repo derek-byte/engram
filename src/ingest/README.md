@@ -25,3 +25,5 @@ Providers return `{ vectors, model }` atomically, and everything downstream stam
 **`pipeline.ts`** — `ingestFile(path, deps)`: parse → trajectories → slice from the per-session cursor → insert raw events (idempotent) → chunk → dedup via local `seen_hashes` → batch embed → upsert to pgvector → advance cursor. One trajectory fans out to N chunks with `trajectoryId`/`chunkIndex`/`chunkCount` provenance.
 
 **`watcher.ts`** — `SessionWatcher` (chokidar) debounces `.jsonl` writes by `sessionCompleteDelaySec`, checks the file is idle (`fileIsStable`), then runs `ingestFile`. Per-path in-flight guard prevents concurrent ingestion of the same file.
+
+Refs: fallback latch — [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus); verbatim ingestion — [MemPalace](https://github.com/MemPalace/mempalace).
