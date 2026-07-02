@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { loadConfig, promptForMissing, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
-import { Embedder } from '../ingest/embed.ts';
+import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { ingestFile } from '../ingest/pipeline.ts';
 
@@ -17,7 +17,7 @@ export async function backfillCommand(): Promise<void> {
 
   const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
   const local = new LocalStore();
-  const embedder = new Embedder(config.openaiApiKey, config.embeddingModel, backend);
+  const embedder = new Embedder(buildProvider(config), backend);
   const deps = { backend, local, embedder, config };
 
   try {

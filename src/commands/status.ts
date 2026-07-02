@@ -10,6 +10,7 @@ export async function statusCommand(): Promise<void> {
   console.log('─────────────');
   console.log(`config:        ${configIsComplete(config) ? 'ok' : 'incomplete (run engram backfill)'}`);
   console.log(`openai key:    ${config.openaiApiKey ? 'set' : 'missing'}`);
+  console.log(`embedding:     ${config.embeddingProvider} · ${config.embeddingModel} (${config.embeddingDim}d)`);
   console.log(`database url:  ${config.databaseUrl ? 'set' : 'missing'}`);
   console.log(`watch path:    ${config.watchPath}`);
 

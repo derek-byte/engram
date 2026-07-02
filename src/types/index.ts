@@ -10,6 +10,7 @@ export interface ChunkMetadata {
   trajectoryId?: string;
   chunkIndex?: number;
   chunkCount?: number;
+  embeddingModel?: string;
 }
 
 export interface Chunk {
@@ -36,6 +37,7 @@ export interface SearchResult {
 export interface EngramConfig {
   databaseUrl: string;
   openaiApiKey: string;
+  embeddingProvider: 'openai' | 'local';
   embeddingModel: string;
   embeddingDim: number;
   watchPath: string;

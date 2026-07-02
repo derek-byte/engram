@@ -13,7 +13,14 @@ Turns Claude Code session files into embedded, deduplicated chunks. Flow: `parse
 
 **`hash.ts`** — Identity: `trajectoryHash` (whitespace/case-normalized content hash, doubles as `trajectoryId` and raw-event `content_sha256`), `chunkHash(trajectoryId, index, content)` (per-chunk dedup key), `contentSha256` (embedding-cache key).
 
-**`embed.ts`** — `Embedder` wraps OpenAI embeddings with a read-through cache (`EmbeddingCache` from storage): sha-lookup first, batch-embed only misses, write back. Throws loudly (naming the offending chunk) on input over `MAX_CHARS_PER_INPUT` — never truncates silently. Retries with exponential backoff. `embedWithStats` returns per-call hit/miss counts.
+**`embed.ts`** — `Embedder` is provider-agnostic: it owns the read-through cache (keyed `content_sha256` + model), the oversized-input guard (loud throw naming the offender, never silent truncation), retry with backoff (fast-fail on non-retryable 4xx), and per-call hit/miss stats. Vector math is delegated to an `EmbeddingProvider`:
+- `OpenAIProvider` — `text-embedding-3-small`, 1536-dim, `MAX_CHARS_PER_INPUT` (24k) guard.
+- `FastembedProvider` — local ONNX `all-MiniLM-L6-v2`, 384-dim, via `fastembed`. Model downloads on first use to `~/.engram/models`; no char cap (MiniLM's 512-token window truncates internally).
+- `FallbackProvider` — the Odysseus "HTTP-down latch": when openai fails after retries (or no key is configured), latch to local for the rest of the process, one warning, no per-batch re-probing.
+
+Providers return `{ vectors, model }` atomically, and everything downstream stamps the model that **actually** embedded (`chunks.embedding_model`, cache keys) — never the configured one. A mid-batch latch re-embeds the whole batch under the new model so no batch mixes dimensions.
+
+**Mixed-index caveat:** vectors from different models must never be compared, and `vector(N)` is a fixed-dim column. A mid-ingest latch (1536 → 384) fails loudly on insert rather than corrupting; run single-model, or reconcile with a re-embed batch job. Search embeds the query with the configured provider and falls back the same way.
 
 **`pipeline.ts`** — `ingestFile(path, deps)`: parse → trajectories → slice from the per-session cursor → insert raw events (idempotent) → chunk → dedup via local `seen_hashes` → batch embed → upsert to pgvector → advance cursor. One trajectory fans out to N chunks with `trajectoryId`/`chunkIndex`/`chunkCount` provenance.
 

@@ -118,27 +118,31 @@ export class PgVectorBackend implements VectorBackend {
   async upsert(chunks: Chunk[]): Promise<void> {
     if (chunks.length === 0) return;
 
-    const rows = chunks.map((c) => ({
-      id: c.id,
-      embedding: formatVector(c.embedding),
-      content: c.content,
-      model_id: this.embeddingModel,
-      embedding_dim: this.embeddingDim,
-      owner: DEFAULT_OWNER,
-      chunker_version: this.chunkerVersion,
-      embedding_model: this.embeddingModel,
-      repo: c.metadata.repo,
-      branch: c.metadata.branch,
-      timestamp: c.metadata.timestamp,
-      file_paths: c.metadata.filePaths,
-      exit_code: c.metadata.exitCode,
-      session_id: c.metadata.sessionId,
-      cwd: c.metadata.cwd,
-      tier: c.metadata.tier,
-      trajectory_id: c.metadata.trajectoryId ?? null,
-      chunk_index: c.metadata.chunkIndex ?? null,
-      chunk_count: c.metadata.chunkCount ?? null,
-    }));
+    const rows = chunks.map((c) => {
+      // Stamp the model that actually embedded (may differ after a fallback latch).
+      const model = c.metadata.embeddingModel ?? this.embeddingModel;
+      return {
+        id: c.id,
+        embedding: formatVector(c.embedding),
+        content: c.content,
+        model_id: model,
+        embedding_dim: c.embedding.length,
+        owner: DEFAULT_OWNER,
+        chunker_version: this.chunkerVersion,
+        embedding_model: model,
+        repo: c.metadata.repo,
+        branch: c.metadata.branch,
+        timestamp: c.metadata.timestamp,
+        file_paths: c.metadata.filePaths,
+        exit_code: c.metadata.exitCode,
+        session_id: c.metadata.sessionId,
+        cwd: c.metadata.cwd,
+        tier: c.metadata.tier,
+        trajectory_id: c.metadata.trajectoryId ?? null,
+        chunk_index: c.metadata.chunkIndex ?? null,
+        chunk_count: c.metadata.chunkCount ?? null,
+      };
+    });
 
     for (const r of rows) {
       await this.sql`

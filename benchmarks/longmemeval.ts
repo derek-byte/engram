@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { loadConfig } from '../src/config/index.ts';
 import { PgVectorBackend } from '../src/storage/pgvector.ts';
-import { Embedder, MAX_CHARS_PER_INPUT } from '../src/ingest/embed.ts';
+import { Embedder, MAX_CHARS_PER_INPUT, buildProvider } from '../src/ingest/embed.ts';
 import { CHUNKER_VERSION } from '../src/ingest/chunker.ts';
 
 interface Turn {
@@ -174,7 +174,7 @@ async function main(): Promise<void> {
 
   const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
   await backend.initialize();
-  const embedder = new Embedder(config.openaiApiKey, config.embeddingModel, backend);
+  const embedder = new Embedder(buildProvider(config), backend);
 
   writeFileSync(OUTPUT_PATH, '');
   const results: QuestionResult[] = [];

@@ -6,3 +6,5 @@ dist/
 .DS_Store
 benchmarks/results_*.jsonl
 benchmarks/longmemeval_s_cleaned.json
+.claude/
+.serena/
