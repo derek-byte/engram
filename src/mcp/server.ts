@@ -31,10 +31,14 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
       },
     },
     async ({ query, repo, branch, since, limit }) => {
+      const sinceDate = since ? new Date(since) : undefined;
+      if (sinceDate && Number.isNaN(sinceDate.getTime())) {
+        throw new Error(`invalid 'since' date: ${since} (use ISO format, e.g. 2026-01-15)`);
+      }
       const filters: SearchFilters = {
         repo,
         branch,
-        since: since ? new Date(since) : undefined,
+        since: sinceDate,
         limit: limit ?? 5,
       };
       const results = await runSearch(query, filters, deps);
