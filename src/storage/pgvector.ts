@@ -32,9 +32,16 @@ export class PgVectorBackend implements VectorBackend {
         cwd TEXT,
         tier TEXT DEFAULT 'raw',
         dream_type TEXT,
+        trajectory_id TEXT,
+        chunk_index INTEGER,
+        chunk_count INTEGER,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS trajectory_id TEXT;`);
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_index INTEGER;`);
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_count INTEGER;`);
 
     await this.sql.unsafe(`
       CREATE INDEX IF NOT EXISTS chunks_embedding_idx
@@ -46,6 +53,7 @@ export class PgVectorBackend implements VectorBackend {
     await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_branch_idx ON chunks (branch);`);
     await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_tier_idx ON chunks (tier);`);
     await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_timestamp_idx ON chunks (timestamp);`);
+    await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_trajectory_idx ON chunks (trajectory_id);`);
   }
 
   async upsert(chunks: Chunk[]): Promise<void> {
@@ -65,6 +73,9 @@ export class PgVectorBackend implements VectorBackend {
       session_id: c.metadata.sessionId,
       cwd: c.metadata.cwd,
       tier: c.metadata.tier,
+      trajectory_id: c.metadata.trajectoryId ?? null,
+      chunk_index: c.metadata.chunkIndex ?? null,
+      chunk_count: c.metadata.chunkCount ?? null,
     }));
 
     for (const r of rows) {
@@ -72,11 +83,11 @@ export class PgVectorBackend implements VectorBackend {
         INSERT INTO chunks (
           id, embedding, content, model_id, embedding_dim,
           repo, branch, timestamp, file_paths, exit_code,
-          session_id, cwd, tier
+          session_id, cwd, tier, trajectory_id, chunk_index, chunk_count
         ) VALUES (
           ${r.id}, ${r.embedding}::vector, ${r.content}, ${r.model_id}, ${r.embedding_dim},
           ${r.repo}, ${r.branch}, ${r.timestamp}, ${r.file_paths as string[]}, ${r.exit_code},
-          ${r.session_id}, ${r.cwd}, ${r.tier}
+          ${r.session_id}, ${r.cwd}, ${r.tier}, ${r.trajectory_id}, ${r.chunk_index}, ${r.chunk_count}
         )
         ON CONFLICT (id) DO NOTHING
       `;
@@ -100,12 +111,16 @@ export class PgVectorBackend implements VectorBackend {
         session_id: string;
         cwd: string;
         tier: 'raw' | 'dream';
+        trajectory_id: string | null;
+        chunk_index: number | null;
+        chunk_count: number | null;
         distance: number;
       }>
     >`
       SELECT
         id, content, repo, branch, timestamp, file_paths,
         exit_code, session_id, cwd, tier,
+        trajectory_id, chunk_index, chunk_count,
         embedding <=> ${vec}::vector AS distance
       FROM chunks
       WHERE
@@ -133,6 +148,9 @@ export class PgVectorBackend implements VectorBackend {
           sessionId: r.session_id,
           cwd: r.cwd,
           tier: r.tier,
+          trajectoryId: r.trajectory_id ?? undefined,
+          chunkIndex: r.chunk_index ?? undefined,
+          chunkCount: r.chunk_count ?? undefined,
         },
       },
     }));

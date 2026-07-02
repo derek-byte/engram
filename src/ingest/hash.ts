@@ -13,6 +13,10 @@ export function trajectoryHash(t: Trajectory): string {
   return createHash('sha256').update(normalized).digest('hex');
 }
 
+export function chunkHash(trajectoryId: string, index: number, content: string): string {
+  return createHash('sha256').update(`${trajectoryId}:${index}:${normalize(content)}`).digest('hex');
+}
+
 function normalize(s: string): string {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
 }
