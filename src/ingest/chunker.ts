@@ -1,6 +1,8 @@
 import type { ToolCall, Trajectory } from '../types/index.ts';
 import { repoFromCwd, type ContentBlock, type RawMessage } from './parser.ts';
 
+export const CHUNKER_VERSION = 'v1';
+
 const FILE_PATH_TOOL_KEYS = ['file_path', 'path', 'notebook_path'];
 
 export function chunkMessages(messages: RawMessage[]): Trajectory[] {

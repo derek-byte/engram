@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { Trajectory } from '../types/index.ts';
 
+export function contentSha256(s: string): string {
+  return createHash('sha256').update(s).digest('hex');
+}
+
 export function trajectoryHash(t: Trajectory): string {
   const normalized = normalize(
     [

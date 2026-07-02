@@ -56,7 +56,7 @@ export class SessionWatcher {
       const result = await ingestFile(path, this.deps);
       if (result.embedded > 0 || result.skipped > 0) {
         console.log(
-          `[ingest] ${path.split('/').pop()} — embedded ${result.embedded}, skipped ${result.skipped}`
+          `[ingest] ${path.split('/').pop()} — embedded ${result.embedded}, skipped ${result.skipped}, cache ${result.cacheHits}h/${result.cacheMisses}m`
         );
       }
     } catch (err) {

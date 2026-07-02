@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-import type { Chunk, EngramConfig } from '../types/index.ts';
+import type { Chunk, EngramConfig, RawEvent } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder } from './embed.ts';
@@ -18,13 +18,15 @@ export interface IngestResult {
   trajectories: number;
   embedded: number;
   skipped: number;
+  cacheHits: number;
+  cacheMisses: number;
 }
 
 export async function ingestFile(path: string, deps: PipelineDeps): Promise<IngestResult> {
   const messages = parseJsonl(path);
   const trajectories = chunkMessages(messages);
   if (trajectories.length === 0) {
-    return { trajectories: 0, embedded: 0, skipped: 0 };
+    return { trajectories: 0, embedded: 0, skipped: 0, cacheHits: 0, cacheMisses: 0 };
   }
 
   const sessionId = trajectories[0]!.sessionId;
@@ -39,12 +41,20 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
     chunkIndex: number;
     chunkCount: number;
   }> = [];
+  const rawEvents: RawEvent[] = [];
   let skipped = 0;
 
   for (const t of fresh) {
     const trajectoryId = trajectoryHash(t);
     const texts = chunkTrajectory(t);
     const chunkCount = texts.length;
+    rawEvents.push({
+      source: 'claude-code',
+      sessionId: t.sessionId,
+      contentSha256: trajectoryId,
+      occurredAt: t.timestamp,
+      payload: t,
+    });
     texts.forEach((text, chunkIndex) => {
       const hash = chunkHash(trajectoryId, chunkIndex, text);
       if (deps.local.hasSeen(hash)) {
@@ -55,13 +65,19 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
     });
   }
 
+  await deps.backend.insertRawEvents(rawEvents);
+
   let embedded = 0;
+  let cacheHits = 0;
+  let cacheMisses = 0;
   for (let i = 0; i < toEmbed.length; i += deps.config.chunkBatchSize) {
     const batch = toEmbed.slice(i, i + deps.config.chunkBatchSize);
-    const vectors = await deps.embedder.embed(
+    const { embeddings: vectors, ...stats } = await deps.embedder.embedWithStats(
       batch.map((b) => b.text),
       batch.map((b) => `${b.trajectory.sessionId} (${b.hash})`)
     );
+    cacheHits += stats.cacheHits;
+    cacheMisses += stats.cacheMisses;
 
     const chunks: Chunk[] = batch.map((b, idx) => ({
       id: b.hash,
@@ -90,7 +106,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   deps.local.setCursor(sessionId, trajectories.length);
   deps.local.setStat('last_ingest_at', new Date().toISOString());
 
-  return { trajectories: trajectories.length, embedded, skipped };
+  return { trajectories: trajectories.length, embedded, skipped, cacheHits, cacheMisses };
 }
 
 export function fileIsStable(path: string, minIdleMs: number): boolean {

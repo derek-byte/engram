@@ -4,6 +4,7 @@ import { loadConfig, promptForMissing, configIsComplete } from '../config/index.
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder } from '../ingest/embed.ts';
+import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { ingestFile } from '../ingest/pipeline.ts';
 
 export async function backfillCommand(): Promise<void> {
@@ -14,9 +15,9 @@ export async function backfillCommand(): Promise<void> {
     console.log('');
   }
 
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim);
+  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
   const local = new LocalStore();
-  const embedder = new Embedder(config.openaiApiKey, config.embeddingModel);
+  const embedder = new Embedder(config.openaiApiKey, config.embeddingModel, backend);
   const deps = { backend, local, embedder, config };
 
   try {
@@ -27,7 +28,7 @@ export async function backfillCommand(): Promise<void> {
     const files = findJsonl(config.watchPath);
     console.log(`Found ${files.length} session file(s).\n`);
 
-    let totals = { embedded: 0, skipped: 0, trajectories: 0 };
+    let totals = { embedded: 0, skipped: 0, trajectories: 0, cacheHits: 0, cacheMisses: 0 };
     for (let i = 0; i < files.length; i++) {
       const f = files[i]!;
       process.stdout.write(`  [${i + 1}/${files.length}] ${f.split('/').pop()} ... `);
@@ -36,6 +37,8 @@ export async function backfillCommand(): Promise<void> {
         totals.embedded += r.embedded;
         totals.skipped += r.skipped;
         totals.trajectories += r.trajectories;
+        totals.cacheHits += r.cacheHits;
+        totals.cacheMisses += r.cacheMisses;
         console.log(`embedded ${r.embedded}, skipped ${r.skipped}`);
       } catch (err) {
         console.log(`error: ${err instanceof Error ? err.message : err}`);
@@ -46,6 +49,7 @@ export async function backfillCommand(): Promise<void> {
     console.log(
       `Done. Embedded ${totals.embedded} new chunks from ${totals.trajectories} trajectories (${totals.skipped} already indexed).`
     );
+    console.log(`Embedding cache: ${totals.cacheHits} hits, ${totals.cacheMisses} misses.`);
   } finally {
     await backend.close();
     local.close();

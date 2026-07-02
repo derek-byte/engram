@@ -1,20 +1,44 @@
 import postgres from 'postgres';
-import type { Chunk, SearchFilters, SearchResult } from '../types/index.ts';
+import type { Chunk, RawEvent, SearchFilters, SearchResult } from '../types/index.ts';
 import type { VectorBackend } from './backend.ts';
+
+const DEFAULT_OWNER = 'derek';
 
 export class PgVectorBackend implements VectorBackend {
   private sql: ReturnType<typeof postgres>;
   private embeddingDim: number;
+  private embeddingModel: string;
+  private chunkerVersion: string;
 
-  constructor(databaseUrl: string, embeddingDim: number) {
+  constructor(databaseUrl: string, embeddingDim: number, embeddingModel: string, chunkerVersion: string) {
     // SSL is derived from the URL (e.g. ?sslmode=require for Neon).
     // Local Postgres URLs without sslmode connect without TLS.
     this.sql = postgres(databaseUrl, { prepare: false, onnotice: () => {} });
     this.embeddingDim = embeddingDim;
+    this.embeddingModel = embeddingModel;
+    this.chunkerVersion = chunkerVersion;
   }
 
   async initialize(): Promise<void> {
     await this.sql`CREATE EXTENSION IF NOT EXISTS vector`;
+
+    await this.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS raw_events (
+        id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        owner TEXT NOT NULL DEFAULT '${DEFAULT_OWNER}',
+        source TEXT NOT NULL,
+        session_id TEXT,
+        content_sha256 TEXT NOT NULL,
+        occurred_at TIMESTAMPTZ,
+        ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        payload JSONB NOT NULL
+      );
+    `);
+    await this.sql.unsafe(
+      `CREATE UNIQUE INDEX IF NOT EXISTS raw_events_sha_idx ON raw_events (content_sha256);`
+    );
+    await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS raw_events_owner_idx ON raw_events (owner);`);
+    await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS raw_events_session_idx ON raw_events (session_id);`);
 
     await this.sql.unsafe(`
       CREATE TABLE IF NOT EXISTS chunks (
@@ -23,6 +47,9 @@ export class PgVectorBackend implements VectorBackend {
         content TEXT NOT NULL,
         model_id TEXT NOT NULL,
         embedding_dim INTEGER NOT NULL,
+        owner TEXT NOT NULL DEFAULT '${DEFAULT_OWNER}',
+        chunker_version TEXT,
+        embedding_model TEXT,
         repo TEXT,
         branch TEXT,
         timestamp TIMESTAMPTZ,
@@ -36,6 +63,19 @@ export class PgVectorBackend implements VectorBackend {
         chunk_index INTEGER,
         chunk_count INTEGER,
         created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS owner TEXT NOT NULL DEFAULT '${DEFAULT_OWNER}';`);
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunker_version TEXT;`);
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS embedding_model TEXT;`);
+
+    await this.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS embedding_cache (
+        content_sha256 TEXT NOT NULL,
+        embedding_model TEXT NOT NULL,
+        embedding vector NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (content_sha256, embedding_model)
       );
     `);
 
@@ -54,6 +94,25 @@ export class PgVectorBackend implements VectorBackend {
     await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_tier_idx ON chunks (tier);`);
     await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_timestamp_idx ON chunks (timestamp);`);
     await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_trajectory_idx ON chunks (trajectory_id);`);
+    await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_model_idx ON chunks (embedding_model, chunker_version);`);
+  }
+
+  async insertRawEvents(events: RawEvent[]): Promise<number> {
+    if (events.length === 0) return 0;
+    let inserted = 0;
+    for (const e of events) {
+      const rows = await this.sql`
+        INSERT INTO raw_events (owner, source, session_id, content_sha256, occurred_at, payload)
+        VALUES (
+          ${e.owner ?? DEFAULT_OWNER}, ${e.source}, ${e.sessionId},
+          ${e.contentSha256}, ${e.occurredAt}, ${this.sql.json(e.payload as postgres.JSONValue)}
+        )
+        ON CONFLICT (content_sha256) DO NOTHING
+        RETURNING id
+      `;
+      inserted += rows.length;
+    }
+    return inserted;
   }
 
   async upsert(chunks: Chunk[]): Promise<void> {
@@ -63,8 +122,11 @@ export class PgVectorBackend implements VectorBackend {
       id: c.id,
       embedding: formatVector(c.embedding),
       content: c.content,
-      model_id: 'text-embedding-3-small',
+      model_id: this.embeddingModel,
       embedding_dim: this.embeddingDim,
+      owner: DEFAULT_OWNER,
+      chunker_version: this.chunkerVersion,
+      embedding_model: this.embeddingModel,
       repo: c.metadata.repo,
       branch: c.metadata.branch,
       timestamp: c.metadata.timestamp,
@@ -82,14 +144,41 @@ export class PgVectorBackend implements VectorBackend {
       await this.sql`
         INSERT INTO chunks (
           id, embedding, content, model_id, embedding_dim,
+          owner, chunker_version, embedding_model,
           repo, branch, timestamp, file_paths, exit_code,
           session_id, cwd, tier, trajectory_id, chunk_index, chunk_count
         ) VALUES (
           ${r.id}, ${r.embedding}::vector, ${r.content}, ${r.model_id}, ${r.embedding_dim},
+          ${r.owner}, ${r.chunker_version}, ${r.embedding_model},
           ${r.repo}, ${r.branch}, ${r.timestamp}, ${r.file_paths as string[]}, ${r.exit_code},
           ${r.session_id}, ${r.cwd}, ${r.tier}, ${r.trajectory_id}, ${r.chunk_index}, ${r.chunk_count}
         )
         ON CONFLICT (id) DO NOTHING
+      `;
+    }
+  }
+
+  async getCachedEmbeddings(shas: string[], model: string): Promise<Map<string, number[]>> {
+    if (shas.length === 0) return new Map();
+    const rows = await this.sql<Array<{ content_sha256: string; embedding: string }>>`
+      SELECT content_sha256, embedding::text AS embedding
+      FROM embedding_cache
+      WHERE embedding_model = ${model} AND content_sha256 IN ${this.sql(shas)}
+    `;
+    const map = new Map<string, number[]>();
+    for (const r of rows) map.set(r.content_sha256, parseVector(r.embedding));
+    return map;
+  }
+
+  async putCachedEmbeddings(
+    entries: Array<{ sha: string; embedding: number[] }>,
+    model: string
+  ): Promise<void> {
+    for (const e of entries) {
+      await this.sql`
+        INSERT INTO embedding_cache (content_sha256, embedding_model, embedding)
+        VALUES (${e.sha}, ${model}, ${formatVector(e.embedding)}::vector)
+        ON CONFLICT (content_sha256, embedding_model) DO NOTHING
       `;
     }
   }
@@ -168,4 +257,8 @@ export class PgVectorBackend implements VectorBackend {
 
 function formatVector(v: number[]): string {
   return '[' + v.join(',') + ']';
+}
+
+function parseVector(s: string): number[] {
+  return s.slice(1, -1).split(',').map(Number);
 }

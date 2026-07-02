@@ -43,6 +43,15 @@ export interface EngramConfig {
   chunkBatchSize: number;
 }
 
+export interface RawEvent {
+  owner?: string;
+  source: string;
+  sessionId: string;
+  contentSha256: string;
+  occurredAt: Date;
+  payload: unknown;
+}
+
 export interface Trajectory {
   sessionId: string;
   repo: string;
