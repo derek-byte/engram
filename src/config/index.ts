@@ -18,6 +18,9 @@ const DEFAULT_CONFIG: EngramConfig = {
   watchPath: join(homedir(), '.claude', 'projects'),
   sessionCompleteDelaySec: 8,
   chunkBatchSize: 32,
+  vectorWeight: 0.7,
+  keywordWeight: 0.3,
+  timeDecayHalfLifeDays: 0,
 };
 
 export function ensureEngramDir(): void {

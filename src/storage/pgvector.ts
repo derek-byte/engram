@@ -1,22 +1,40 @@
 import postgres from 'postgres';
-import type { Chunk, RawEvent, SearchFilters, SearchResult } from '../types/index.ts';
+import type { Chunk, RawEvent, ScoringConfig, SearchFilters, SearchResult } from '../types/index.ts';
 import type { VectorBackend } from './backend.ts';
 
 const DEFAULT_OWNER = 'derek';
+
+const DEFAULT_SCORING: ScoringConfig = {
+  vectorWeight: 0.7,
+  keywordWeight: 0.3,
+  timeDecayHalfLifeDays: 0,
+};
+
+// Vector candidate pool re-ranked by hybrid score. A keyword-only match outside
+// this pool is acceptable loss at the current corpus size (see search/README.md).
+const CANDIDATE_POOL = 100;
 
 export class PgVectorBackend implements VectorBackend {
   private sql: ReturnType<typeof postgres>;
   private embeddingDim: number;
   private embeddingModel: string;
   private chunkerVersion: string;
+  private scoring: ScoringConfig;
 
-  constructor(databaseUrl: string, embeddingDim: number, embeddingModel: string, chunkerVersion: string) {
+  constructor(
+    databaseUrl: string,
+    embeddingDim: number,
+    embeddingModel: string,
+    chunkerVersion: string,
+    scoring: ScoringConfig = DEFAULT_SCORING
+  ) {
     // SSL is derived from the URL (e.g. ?sslmode=require for Neon).
     // Local Postgres URLs without sslmode connect without TLS.
     this.sql = postgres(databaseUrl, { prepare: false, onnotice: () => {} });
     this.embeddingDim = embeddingDim;
     this.embeddingModel = embeddingModel;
     this.chunkerVersion = chunkerVersion;
+    this.scoring = scoring;
   }
 
   async initialize(): Promise<void> {
@@ -82,6 +100,12 @@ export class PgVectorBackend implements VectorBackend {
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS trajectory_id TEXT;`);
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_index INTEGER;`);
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_count INTEGER;`);
+
+    await this.sql.unsafe(`
+      ALTER TABLE chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector
+        GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+    `);
+    await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_content_tsv_idx ON chunks USING gin (content_tsv);`);
 
     await this.sql.unsafe(`
       CREATE INDEX IF NOT EXISTS chunks_embedding_idx
@@ -187,10 +211,14 @@ export class PgVectorBackend implements VectorBackend {
     }
   }
 
-  async search(queryEmbedding: number[], filters: SearchFilters): Promise<SearchResult[]> {
+  async search(queryEmbedding: number[], queryText: string, filters: SearchFilters): Promise<SearchResult[]> {
     const vec = formatVector(queryEmbedding);
-    const limit = filters.limit ?? 5;
+    // Clamp to a finite positive integer: limit comes from CLI input (Number()
+    // can yield NaN/Infinity) and pool is interpolated into raw SQL below.
+    const limit = Number.isFinite(filters.limit) ? Math.max(1, Math.floor(filters.limit as number)) : 5;
     const tierFilter = filters.tier && filters.tier !== 'both' ? filters.tier : null;
+    const { vectorWeight, keywordWeight, timeDecayHalfLifeDays } = this.scoring;
+    const pool = Math.max(CANDIDATE_POOL, limit);
 
     type Row = {
       id: string;
@@ -206,40 +234,75 @@ export class PgVectorBackend implements VectorBackend {
       trajectory_id: string | null;
       chunk_index: number | null;
       chunk_count: number | null;
-      distance: number;
+      similarity: number;
+      keyword_rank: number;
+      combined: number;
     };
 
-    const query = (sql: postgres.ISql) => sql<Row[]>`
+    // Take the vector top-N candidates, then score keyword rank (ts_rank_cd with
+    // normalization flag 32 → rank/(rank+1), i.e. [0,1)) on just those candidates
+    // and re-rank by the weighted combination. Time-decay multiplies the combined
+    // score by exp(-age_days / halfLife) when enabled.
+    const query = (sql: postgres.TransactionSql | ReturnType<typeof postgres>) => sql<Row[]>`
+      WITH candidates AS (
+        SELECT
+          id, content, content_tsv, repo, branch, timestamp, file_paths,
+          exit_code, session_id, cwd, tier,
+          trajectory_id, chunk_index, chunk_count,
+          embedding <=> ${vec}::vector AS distance
+        FROM chunks
+        WHERE
+          (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
+          AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
+          AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
+          AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
+          AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
+          AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
+        ORDER BY distance ASC
+        LIMIT ${pool}
+      ),
+      scored AS (
+        SELECT
+          *,
+          (1 - distance) AS similarity,
+          ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
+        FROM candidates
+      )
       SELECT
         id, content, repo, branch, timestamp, file_paths,
         exit_code, session_id, cwd, tier,
         trajectory_id, chunk_index, chunk_count,
-        embedding <=> ${vec}::vector AS distance
-      FROM chunks
-      WHERE
-        (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
-        AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
-        AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
-        AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
-        AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
-        AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
-      ORDER BY distance ASC
+        similarity, keyword_rank,
+        (${vectorWeight}::float * similarity + ${keywordWeight}::float * keyword_rank)
+          * CASE
+              WHEN ${timeDecayHalfLifeDays}::float > 0 AND timestamp IS NOT NULL
+              THEN exp(-(EXTRACT(EPOCH FROM (NOW() - timestamp)) / 86400.0) / ${timeDecayHalfLifeDays}::float)
+              ELSE 1
+            END AS combined
+      FROM scored
+      ORDER BY combined DESC NULLS LAST
       LIMIT ${limit}
     `;
 
     // Exhaustive mode forces a seq scan (exact cosine) so a selective owner
-    // filter can't be starved by the HNSW candidate set. SET LOCAL is scoped to
-    // the transaction, so production searches are unaffected.
+    // filter can't be starved by the HNSW candidate set. Otherwise raise
+    // hnsw.ef_search (default 40) to the pool size so the index scan can return
+    // enough candidates. SET LOCAL scopes both to their transaction.
     const rows = filters.exhaustive
       ? await this.sql.begin(async (tx) => {
           await tx`SET LOCAL enable_indexscan = off`;
           await tx`SET LOCAL enable_bitmapscan = off`;
           return query(tx);
         })
-      : await query(this.sql);
+      : await this.sql.begin(async (tx) => {
+          await tx.unsafe(`SET LOCAL hnsw.ef_search = ${Math.min(1000, pool)}`);
+          return query(tx);
+        });
 
     return rows.map((r) => ({
-      similarity: 1 - r.distance,
+      similarity: r.similarity,
+      keywordRank: r.keyword_rank,
+      combined: r.combined,
       chunk: {
         id: r.id,
         embedding: [],

@@ -37,6 +37,14 @@ export interface SearchFilters {
 export interface SearchResult {
   chunk: Chunk;
   similarity: number;
+  keywordRank: number;
+  combined: number;
+}
+
+export interface ScoringConfig {
+  vectorWeight: number;
+  keywordWeight: number;
+  timeDecayHalfLifeDays: number;
 }
 
 export interface EngramConfig {
@@ -48,6 +56,9 @@ export interface EngramConfig {
   watchPath: string;
   sessionCompleteDelaySec: number;
   chunkBatchSize: number;
+  vectorWeight: number;
+  keywordWeight: number;
+  timeDecayHalfLifeDays: number;
 }
 
 export interface RawEvent {

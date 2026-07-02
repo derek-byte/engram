@@ -8,5 +8,5 @@ export async function runSearch(
   deps: { backend: VectorBackend; embedder: Embedder }
 ): Promise<SearchResult[]> {
   const vec = await deps.embedder.embedOne(query);
-  return deps.backend.search(vec, filters);
+  return deps.backend.search(vec, query, filters);
 }

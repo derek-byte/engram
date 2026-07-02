@@ -27,7 +27,11 @@ export async function searchCommand(query: string, opts: SearchOptions): Promise
     limit: opts.limit ? Number(opts.limit) : 5,
   };
 
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
+  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
+    vectorWeight: config.vectorWeight,
+    keywordWeight: config.keywordWeight,
+    timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
+  });
   await backend.initialize();
   const embedder = new Embedder(buildProvider(config));
 
@@ -51,8 +55,8 @@ function printResults(results: SearchResult[]): void {
   for (const r of results) {
     const m = r.chunk.metadata;
     const when = relativeTime(m.timestamp);
-    const sim = r.similarity.toFixed(3);
-    console.log(`◆ ${m.repo}@${m.branch || '(no-branch)'} · ${when} · sim=${sim}`);
+    const scores = `combined=${r.combined.toFixed(3)} sim=${r.similarity.toFixed(3)} kw=${r.keywordRank.toFixed(3)}`;
+    console.log(`◆ ${m.repo}@${m.branch || '(no-branch)'} · ${when} · ${scores}`);
     console.log(`  ${preview(r.chunk.content, 200)}`);
     if (m.filePaths.length > 0) {
       console.log(`  files: ${m.filePaths.slice(0, 3).join(', ')}${m.filePaths.length > 3 ? '…' : ''}`);
