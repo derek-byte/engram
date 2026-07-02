@@ -3,6 +3,8 @@ import { loadConfig } from '../src/config/index.ts';
 import { PgVectorBackend } from '../src/storage/pgvector.ts';
 import { Embedder, MAX_CHARS_PER_INPUT } from '../src/ingest/embed.ts';
 import { CHUNKER_VERSION } from '../src/ingest/chunker.ts';
+import { injectDocuments } from '../src/ingest/inject.ts';
+import { runSearch } from '../src/search/index.ts';
 
 interface Turn {
   role: string;
@@ -36,6 +38,7 @@ const N_RESULTS = 50;
 const OUTPUT_PATH = 'benchmarks/results_engram_raw.jsonl';
 const DEFAULT_DATASET = 'benchmarks/longmemeval_s_cleaned.json';
 const PRICE_PER_MILLION_TOKENS = 0.02;
+const BENCH_OWNER_PREFIX = 'bench:';
 
 function dcg(relevances: number[], k: number): number {
   let score = 0;
@@ -111,16 +114,37 @@ function rankByCosine(queryVec: number[], docVecs: number[][]): number[] {
   return scores.map((s) => s.idx);
 }
 
-function parseArgs(argv: string[]): { dataset: string; limit?: number } {
+type Mode = 'substrate' | 'production';
+
+function parseArgs(argv: string[]): { dataset: string; limit?: number; path: Mode; cleanup: boolean } {
   let dataset = DEFAULT_DATASET;
   let limit: number | undefined;
+  let path: Mode = 'substrate';
+  let cleanup = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--limit') limit = Number(argv[++i]);
     else if (a === '--dataset') dataset = argv[++i]!;
+    else if (a === '--path') path = argv[++i] as Mode;
+    else if (a === '--cleanup') cleanup = true;
     else if (!a.startsWith('--')) dataset = a;
   }
-  return { dataset, limit };
+  return { dataset, limit, path, cleanup };
+}
+
+// Turn a partial ranking (best-first indices into corpusIds) into the metrics.
+// Any corpus doc not in the ranking is appended so recall/ndcg see the full set.
+function scoreRankings(
+  ranked: number[],
+  correctIds: Set<string>,
+  ids: string[]
+): { recall_at: Record<number, number>; ndcg_at_10: number } {
+  const rankings = [...ranked];
+  const seen = new Set(rankings);
+  for (let i = 0; i < ids.length; i++) if (!seen.has(i)) rankings.push(i);
+  const recall_at: Record<number, number> = {};
+  for (const k of KS) recall_at[k] = recallAny(rankings, correctIds, ids, k);
+  return { recall_at, ndcg_at_10: ndcg(rankings, correctIds, ids, 10) };
 }
 
 function mean(xs: number[]): number {
@@ -160,22 +184,97 @@ function printSummary(results: QuestionResult[]): void {
   row('OVERALL', results);
 }
 
-async function main(): Promise<void> {
-  const { dataset, limit } = parseArgs(process.argv.slice(2));
-  const config = loadConfig();
-  if (!config.openaiApiKey || !config.databaseUrl) {
-    console.error('missing OPENAI_API_KEY or ENGRAM_DATABASE_URL (config.json or env)');
-    process.exit(1);
+// Per-question outcome plus the embed-accounting the harness aggregates.
+interface QuestionScore {
+  num_sessions: number;
+  recall_at: Record<number, number>;
+  ndcg_at_10: number;
+  hits: number;
+  misses: number;
+  embedItems: number;
+  embedChars: number;
+}
+
+function emptyScore(): QuestionScore {
+  const recall_at: Record<number, number> = {};
+  for (const k of KS) recall_at[k] = 0;
+  return { num_sessions: 0, recall_at, ndcg_at_10: 0, hits: 0, misses: 0, embedItems: 0, embedChars: 0 };
+}
+
+// substrate: embed the whole corpus in memory and rank by dot product — the
+// pre-pgvector baseline.
+async function scoreSubstrate(entry: Entry, embedder: Embedder): Promise<QuestionScore> {
+  const { docs, ids } = buildCorpus(entry);
+  if (docs.length === 0) return emptyScore();
+  const correctIds = new Set(entry.answer_session_ids);
+
+  const { vectors, hits, misses } = await embedCorpus(embedder, docs);
+  const qRes = await embedder.embedWithStats([entry.question.slice(0, MAX_CHARS_PER_INPUT)]);
+  const ranked = rankByCosine(qRes.embeddings[0]!, vectors).slice(0, N_RESULTS);
+
+  return {
+    num_sessions: docs.length,
+    ...scoreRankings(ranked, correctIds, ids),
+    hits: hits + qRes.cacheHits,
+    misses: misses + qRes.cacheMisses,
+    embedItems: docs.length + 1,
+    embedChars: docs.reduce((a, d) => a + d.length, 0) + entry.question.length,
+  };
+}
+
+// production: exercise the real path — inject each session as a document into
+// pgvector, query via runSearch restricted to this question's owner, rank
+// sessions by their best-scoring chunk (max-sim), then retract the bench rows.
+async function scoreProduction(
+  entry: Entry,
+  deps: { backend: PgVectorBackend; embedder: Embedder; config: ReturnType<typeof loadConfig> }
+): Promise<QuestionScore> {
+  const { docs, ids } = buildCorpus(entry);
+  if (docs.length === 0) return emptyScore();
+  const correctIds = new Set(entry.answer_session_ids);
+  const owner = BENCH_OWNER_PREFIX + entry.question_id;
+
+  try {
+    const inj = await injectDocuments(
+      docs.map((content, i) => ({ id: ids[i]!, content, source: 'longmemeval', owner })),
+      deps
+    );
+    const qRes = await deps.embedder.embedWithStats([entry.question.slice(0, MAX_CHARS_PER_INPUT)]);
+    const results = await runSearch(
+      entry.question,
+      { owner, limit: Math.max(inj.embedded, 1), exhaustive: true },
+      deps
+    );
+
+    const best = new Map<string, number>();
+    for (const r of results) {
+      const sid = r.chunk.metadata.sessionId;
+      const prev = best.get(sid);
+      if (prev === undefined || r.similarity > prev) best.set(sid, r.similarity);
+    }
+    const idIndex = new Map(ids.map((id, i) => [id, i] as const));
+    const ranked = [...best.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([sid]) => idIndex.get(sid))
+      .filter((x): x is number => x !== undefined);
+
+    return {
+      num_sessions: docs.length,
+      ...scoreRankings(ranked, correctIds, ids),
+      hits: inj.cacheHits + qRes.cacheHits,
+      misses: inj.cacheMisses + qRes.cacheMisses,
+      embedItems: inj.embedded + 1,
+      embedChars: docs.reduce((a, d) => a + d.length, 0) + entry.question.length,
+    };
+  } finally {
+    await deps.backend.deleteByOwner(owner);
   }
+}
 
-  const raw = readFileSync(dataset, 'utf-8');
-  let entries: Entry[] = JSON.parse(raw);
-  if (limit !== undefined) entries = entries.slice(0, limit);
-
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
-  await backend.initialize();
-  const embedder = new Embedder(config.openaiApiKey, config.embeddingModel, backend);
-
+async function runHarness(
+  entries: Entry[],
+  scoreQuestion: (entry: Entry) => Promise<QuestionScore>
+): Promise<void> {
   writeFileSync(OUTPUT_PATH, '');
   const results: QuestionResult[] = [];
   let totalHits = 0;
@@ -184,52 +283,30 @@ async function main(): Promise<void> {
   let totalEmbedChars = 0;
   const started = Date.now();
 
-  try {
-    for (let qi = 0; qi < entries.length; qi++) {
-      const entry = entries[qi]!;
-      const { docs, ids } = buildCorpus(entry);
-      const correctIds = new Set(entry.answer_session_ids);
+  for (let qi = 0; qi < entries.length; qi++) {
+    const entry = entries[qi]!;
+    const s = await scoreQuestion(entry);
+    totalHits += s.hits;
+    totalMisses += s.misses;
+    totalEmbedItems += s.embedItems;
+    totalEmbedChars += s.embedChars;
 
-      const recallAt: Record<number, number> = {};
-      let ndcgAt10 = 0;
+    const result: QuestionResult = {
+      question_id: entry.question_id,
+      question_type: entry.question_type,
+      num_sessions: s.num_sessions,
+      recall_at: s.recall_at,
+      ndcg_at_10: s.ndcg_at_10,
+    };
+    results.push(result);
+    appendFileSync(OUTPUT_PATH, JSON.stringify(result) + '\n');
 
-      if (docs.length > 0) {
-        const { vectors, hits, misses } = await embedCorpus(embedder, docs);
-        const qRes = await embedder.embedWithStats([entry.question.slice(0, MAX_CHARS_PER_INPUT)]);
-        totalHits += hits + qRes.cacheHits;
-        totalMisses += misses + qRes.cacheMisses;
-        totalEmbedItems += docs.length + 1;
-        totalEmbedChars += docs.reduce((a, d) => a + d.length, 0) + entry.question.length;
-
-        const rankings = rankByCosine(qRes.embeddings[0]!, vectors).slice(0, N_RESULTS);
-        const seen = new Set(rankings);
-        for (let i = 0; i < docs.length; i++) if (!seen.has(i)) rankings.push(i);
-
-        for (const k of KS) recallAt[k] = recallAny(rankings, correctIds, ids, k);
-        ndcgAt10 = ndcg(rankings, correctIds, ids, 10);
-      } else {
-        for (const k of KS) recallAt[k] = 0;
-      }
-
-      const result: QuestionResult = {
-        question_id: entry.question_id,
-        question_type: entry.question_type,
-        num_sessions: docs.length,
-        recall_at: recallAt,
-        ndcg_at_10: ndcgAt10,
-      };
-      results.push(result);
-      appendFileSync(OUTPUT_PATH, JSON.stringify(result) + '\n');
-
-      if ((qi + 1) % 10 === 0 || qi === entries.length - 1) {
-        const rate = mean(results.map((r) => r.recall_at[5]!));
-        console.error(
-          `[${qi + 1}/${entries.length}] R@5=${rate.toFixed(3)} cache hits=${totalHits} misses=${totalMisses}`
-        );
-      }
+    if ((qi + 1) % 10 === 0 || qi === entries.length - 1) {
+      const rate = mean(results.map((r) => r.recall_at[5]!));
+      console.error(
+        `[${qi + 1}/${entries.length}] R@5=${rate.toFixed(3)} cache hits=${totalHits} misses=${totalMisses}`
+      );
     }
-  } finally {
-    await backend.close();
   }
 
   printSummary(results);
@@ -242,6 +319,46 @@ async function main(): Promise<void> {
     `\ncache: ${totalHits} hits, ${totalMisses} misses | est. embed cost this run: $${estCost.toFixed(4)} (${Math.round(estTokens).toLocaleString()} tok on misses) | ${elapsed}s`
   );
   console.log(`per-question results: ${OUTPUT_PATH}`);
+}
+
+async function main(): Promise<void> {
+  const { dataset, limit, path, cleanup } = parseArgs(process.argv.slice(2));
+  const config = loadConfig();
+  if (!config.openaiApiKey || !config.databaseUrl) {
+    console.error('missing OPENAI_API_KEY or ENGRAM_DATABASE_URL (config.json or env)');
+    process.exit(1);
+  }
+
+  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
+  await backend.initialize();
+
+  if (cleanup) {
+    const { chunks, rawEvents } = await backend.deleteByOwnerPrefix(BENCH_OWNER_PREFIX);
+    await backend.close();
+    console.log(`cleanup: purged ${chunks} chunks + ${rawEvents} raw_events (owner LIKE '${BENCH_OWNER_PREFIX}%')`);
+    return;
+  }
+
+  const raw = readFileSync(dataset, 'utf-8');
+  let entries: Entry[] = JSON.parse(raw);
+  if (limit !== undefined) entries = entries.slice(0, limit);
+
+  const embedder = new Embedder(config.openaiApiKey, config.embeddingModel, backend);
+
+  console.error(`mode=${path} questions=${entries.length}`);
+
+  try {
+    if (path === 'production') {
+      const deps = { backend, embedder, config };
+      await runHarness(entries, (entry) => scoreProduction(entry, deps));
+    } else {
+      await runHarness(entries, (entry) => scoreSubstrate(entry, embedder));
+    }
+  } finally {
+    // Belt-and-suspenders: sweep any bench rows a crashed question left behind.
+    if (path === 'production') await backend.deleteByOwnerPrefix(BENCH_OWNER_PREFIX);
+    await backend.close();
+  }
 }
 
 main().catch((err) => {
