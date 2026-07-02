@@ -9,7 +9,7 @@ export interface VectorBackend extends EmbeddingCache {
   initialize(): Promise<void>;
   insertRawEvents(events: RawEvent[]): Promise<number>;
   upsert(chunks: Chunk[]): Promise<void>;
-  search(queryEmbedding: number[], filters: SearchFilters): Promise<SearchResult[]>;
+  search(queryEmbedding: number[], queryText: string, filters: SearchFilters): Promise<SearchResult[]>;
   count(): Promise<number>;
   close(): Promise<void>;
 }

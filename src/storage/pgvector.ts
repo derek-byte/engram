@@ -1,22 +1,40 @@
 import postgres from 'postgres';
-import type { Chunk, RawEvent, SearchFilters, SearchResult } from '../types/index.ts';
+import type { Chunk, RawEvent, ScoringConfig, SearchFilters, SearchResult } from '../types/index.ts';
 import type { VectorBackend } from './backend.ts';
 
 const DEFAULT_OWNER = 'derek';
+
+const DEFAULT_SCORING: ScoringConfig = {
+  vectorWeight: 0.7,
+  keywordWeight: 0.3,
+  timeDecayHalfLifeDays: 0,
+};
+
+// Vector candidate pool re-ranked by hybrid score. A keyword-only match outside
+// this pool is acceptable loss at the current corpus size (see search/README.md).
+const CANDIDATE_POOL = 100;
 
 export class PgVectorBackend implements VectorBackend {
   private sql: ReturnType<typeof postgres>;
   private embeddingDim: number;
   private embeddingModel: string;
   private chunkerVersion: string;
+  private scoring: ScoringConfig;
 
-  constructor(databaseUrl: string, embeddingDim: number, embeddingModel: string, chunkerVersion: string) {
+  constructor(
+    databaseUrl: string,
+    embeddingDim: number,
+    embeddingModel: string,
+    chunkerVersion: string,
+    scoring: ScoringConfig = DEFAULT_SCORING
+  ) {
     // SSL is derived from the URL (e.g. ?sslmode=require for Neon).
     // Local Postgres URLs without sslmode connect without TLS.
     this.sql = postgres(databaseUrl, { prepare: false, onnotice: () => {} });
     this.embeddingDim = embeddingDim;
     this.embeddingModel = embeddingModel;
     this.chunkerVersion = chunkerVersion;
+    this.scoring = scoring;
   }
 
   async initialize(): Promise<void> {
@@ -82,6 +100,12 @@ export class PgVectorBackend implements VectorBackend {
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS trajectory_id TEXT;`);
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_index INTEGER;`);
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_count INTEGER;`);
+
+    await this.sql.unsafe(`
+      ALTER TABLE chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector
+        GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+    `);
+    await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_content_tsv_idx ON chunks USING gin (content_tsv);`);
 
     await this.sql.unsafe(`
       CREATE INDEX IF NOT EXISTS chunks_embedding_idx
@@ -183,11 +207,17 @@ export class PgVectorBackend implements VectorBackend {
     }
   }
 
-  async search(queryEmbedding: number[], filters: SearchFilters): Promise<SearchResult[]> {
+  async search(queryEmbedding: number[], queryText: string, filters: SearchFilters): Promise<SearchResult[]> {
     const vec = formatVector(queryEmbedding);
     const limit = filters.limit ?? 5;
     const tierFilter = filters.tier && filters.tier !== 'both' ? filters.tier : null;
+    const { vectorWeight, keywordWeight, timeDecayHalfLifeDays } = this.scoring;
+    const pool = Math.max(CANDIDATE_POOL, limit);
 
+    // Take the vector top-N against the HNSW index, then score keyword rank
+    // (ts_rank_cd with normalization flag 32 → rank/(rank+1), i.e. [0,1)) on
+    // just those candidates and re-rank by the weighted combination. Time-decay
+    // multiplies the combined score by exp(-age_days / halfLife) when enabled.
     const rows = await this.sql<
       Array<{
         id: string;
@@ -203,27 +233,54 @@ export class PgVectorBackend implements VectorBackend {
         trajectory_id: string | null;
         chunk_index: number | null;
         chunk_count: number | null;
-        distance: number;
+        similarity: number;
+        keyword_rank: number;
+        combined: number;
       }>
     >`
+      WITH candidates AS (
+        SELECT
+          id, content, content_tsv, repo, branch, timestamp, file_paths,
+          exit_code, session_id, cwd, tier,
+          trajectory_id, chunk_index, chunk_count,
+          embedding <=> ${vec}::vector AS distance
+        FROM chunks
+        WHERE
+          (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
+          AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
+          AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
+          AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
+          AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
+        ORDER BY distance ASC
+        LIMIT ${pool}
+      ),
+      scored AS (
+        SELECT
+          *,
+          (1 - distance) AS similarity,
+          ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
+        FROM candidates
+      )
       SELECT
         id, content, repo, branch, timestamp, file_paths,
         exit_code, session_id, cwd, tier,
         trajectory_id, chunk_index, chunk_count,
-        embedding <=> ${vec}::vector AS distance
-      FROM chunks
-      WHERE
-        (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
-        AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
-        AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
-        AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
-        AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
-      ORDER BY distance ASC
+        similarity, keyword_rank,
+        (${vectorWeight}::float * similarity + ${keywordWeight}::float * keyword_rank)
+          * CASE
+              WHEN ${timeDecayHalfLifeDays}::float > 0 AND timestamp IS NOT NULL
+              THEN exp(-(EXTRACT(EPOCH FROM (NOW() - timestamp)) / 86400.0) / ${timeDecayHalfLifeDays}::float)
+              ELSE 1
+            END AS combined
+      FROM scored
+      ORDER BY combined DESC
       LIMIT ${limit}
     `;
 
     return rows.map((r) => ({
-      similarity: 1 - r.distance,
+      similarity: r.similarity,
+      keywordRank: r.keyword_rank,
+      combined: r.combined,
       chunk: {
         id: r.id,
         embedding: [],
