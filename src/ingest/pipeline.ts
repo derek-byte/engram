@@ -3,8 +3,8 @@ import type { Chunk, EngramConfig } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder } from './embed.ts';
-import { trajectoryHash } from './hash.ts';
-import { chunkMessages, trajectoryToText } from './chunker.ts';
+import { chunkHash, trajectoryHash } from './hash.ts';
+import { chunkMessages, chunkTrajectory } from './chunker.ts';
 import { parseJsonl } from './parser.ts';
 
 export interface PipelineDeps {
@@ -31,17 +31,28 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   const cursor = deps.local.getCursor(sessionId);
   const fresh = trajectories.slice(cursor);
 
-  const toEmbed: Array<{ text: string; hash: string; trajectory: (typeof trajectories)[number] }> = [];
+  const toEmbed: Array<{
+    text: string;
+    hash: string;
+    trajectory: (typeof trajectories)[number];
+    trajectoryId: string;
+    chunkIndex: number;
+    chunkCount: number;
+  }> = [];
   let skipped = 0;
 
   for (const t of fresh) {
-    const text = trajectoryToText(t);
-    const hash = trajectoryHash(t);
-    if (deps.local.hasSeen(hash)) {
-      skipped++;
-      continue;
-    }
-    toEmbed.push({ text, hash, trajectory: t });
+    const trajectoryId = trajectoryHash(t);
+    const texts = chunkTrajectory(t);
+    const chunkCount = texts.length;
+    texts.forEach((text, chunkIndex) => {
+      const hash = chunkHash(trajectoryId, chunkIndex, text);
+      if (deps.local.hasSeen(hash)) {
+        skipped++;
+        return;
+      }
+      toEmbed.push({ text, hash, trajectory: t, trajectoryId, chunkIndex, chunkCount });
+    });
   }
 
   let embedded = 0;
@@ -62,6 +73,9 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
         sessionId: b.trajectory.sessionId,
         cwd: b.trajectory.cwd,
         tier: 'raw',
+        trajectoryId: b.trajectoryId,
+        chunkIndex: b.chunkIndex,
+        chunkCount: b.chunkCount,
       },
     }));
 

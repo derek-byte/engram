@@ -43,7 +43,9 @@ export async function backfillCommand(): Promise<void> {
     }
 
     console.log('');
-    console.log(`Done. Embedded ${totals.embedded} new trajectories (${totals.skipped} already indexed).`);
+    console.log(
+      `Done. Embedded ${totals.embedded} new chunks from ${totals.trajectories} trajectories (${totals.skipped} already indexed).`
+    );
   } finally {
     await backend.close();
     local.close();

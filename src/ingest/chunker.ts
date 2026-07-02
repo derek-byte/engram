@@ -102,17 +102,65 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + `... [truncated ${s.length - max} chars]`;
 }
 
-export function trajectoryToText(t: Trajectory): string {
-  const parts: string[] = [];
-  parts.push(`USER: ${t.userMessage}`);
-  if (t.assistantBlocks.length > 0) {
-    parts.push(`ASSISTANT: ${t.assistantBlocks.join('\n')}`);
+const CHARS_PER_TOKEN = 4;
+const TARGET_TOKENS = 1000;
+const MAX_SEGMENT_TOKENS = 1200;
+const OVERLAP_TOKENS = 120;
+const HARD_CAP_TOKENS = 5000;
+
+export function chunkTrajectory(t: Trajectory): string[] {
+  const segments = trajectorySegments(t).flatMap((s) => hardSplit(s, MAX_SEGMENT_TOKENS));
+
+  const chunks: string[] = [];
+  let buffer: string[] = [];
+  let bufferTokens = 0;
+
+  for (const seg of segments) {
+    const segTokens = estimateTokens(seg);
+    if (buffer.length > 0 && bufferTokens + segTokens > TARGET_TOKENS) {
+      const text = buffer.join('\n');
+      chunks.push(text);
+      const overlap = overlapTail(text);
+      buffer = overlap ? [overlap] : [];
+      bufferTokens = overlap ? estimateTokens(overlap) : 0;
+    }
+    buffer.push(seg);
+    bufferTokens += segTokens;
   }
+  if (buffer.length > 0) chunks.push(buffer.join('\n'));
+
+  return chunks.flatMap((c) => hardSplit(c, HARD_CAP_TOKENS));
+}
+
+function trajectorySegments(t: Trajectory): string[] {
+  const segments: string[] = [`USER: ${t.userMessage}`];
+  for (const block of t.assistantBlocks) segments.push(`ASSISTANT: ${block}`);
   for (const tc of t.toolCalls) {
-    parts.push(`TOOL ${tc.name}: ${safeJson(tc.input)}`);
-    if (tc.output) parts.push(`RESULT${tc.isError ? ' (error)' : ''}: ${tc.output}`);
+    let s = `TOOL ${tc.name}: ${safeJson(tc.input)}`;
+    if (tc.output) s += `\nRESULT${tc.isError ? ' (error)' : ''}: ${tc.output}`;
+    segments.push(s);
   }
-  return parts.join('\n');
+  return segments;
+}
+
+function estimateTokens(s: string): number {
+  return Math.ceil(s.length / CHARS_PER_TOKEN);
+}
+
+function hardSplit(s: string, maxTokens: number): string[] {
+  const maxChars = maxTokens * CHARS_PER_TOKEN;
+  if (s.length <= maxChars) return [s];
+  const out: string[] = [];
+  for (let i = 0; i < s.length; i += maxChars) out.push(s.slice(i, i + maxChars));
+  return out;
+}
+
+function overlapTail(text: string): string {
+  const maxChars = OVERLAP_TOKENS * CHARS_PER_TOKEN;
+  if (text.length <= maxChars) return text;
+  const tail = text.slice(text.length - maxChars);
+  const nl = tail.indexOf('\n');
+  return nl >= 0 && nl < tail.length - 1 ? tail.slice(nl + 1) : tail;
 }
 
 function safeJson(v: unknown): string {
