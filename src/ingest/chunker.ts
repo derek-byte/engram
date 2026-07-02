@@ -117,7 +117,7 @@ export function chunkTrajectory(t: Trajectory): string[] {
 
   for (const seg of segments) {
     const segTokens = estimateTokens(seg);
-    if (buffer.length > 0 && bufferTokens + segTokens > TARGET_TOKENS) {
+    if (bufferTokens > OVERLAP_TOKENS && bufferTokens + segTokens > TARGET_TOKENS) {
       const text = buffer.join('\n');
       chunks.push(text);
       const overlap = overlapTail(text);
