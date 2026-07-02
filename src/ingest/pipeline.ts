@@ -47,7 +47,10 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   let embedded = 0;
   for (let i = 0; i < toEmbed.length; i += deps.config.chunkBatchSize) {
     const batch = toEmbed.slice(i, i + deps.config.chunkBatchSize);
-    const vectors = await deps.embedder.embed(batch.map((b) => b.text));
+    const vectors = await deps.embedder.embed(
+      batch.map((b) => b.text),
+      batch.map((b) => `${b.trajectory.sessionId} (${b.hash})`)
+    );
 
     const chunks: Chunk[] = batch.map((b, idx) => ({
       id: b.hash,
