@@ -28,6 +28,6 @@ console.log(related > unrelated ? 'PASS: related > unrelated' : 'FAIL: related <
 
 // Fallback latch: openai with no key must produce local vectors + one warning.
 const fb = buildProvider({ embeddingProvider: 'openai', openaiApiKey: '', embeddingModel: 'text-embedding-3-small', embeddingDim: 1536 });
-const fbVec = await fb.embed(['keyless fallback should latch to local']);
-console.log(`fallback provider model=${fb.model} dim=${fb.dim} vecLen=${fbVec[0]!.length}`);
-console.log(fb.model === 'all-MiniLM-L6-v2' && fbVec[0]!.length === 384 ? 'PASS: keyless fallback latched to local' : 'FAIL: fallback did not latch');
+const fbRes = await fb.embed(['keyless fallback should latch to local']);
+console.log(`fallback provider model=${fbRes.model} dim=${fb.dim} vecLen=${fbRes.vectors[0]!.length}`);
+console.log(fbRes.model === 'all-MiniLM-L6-v2' && fbRes.vectors[0]!.length === 384 ? 'PASS: keyless fallback latched to local' : 'FAIL: fallback did not latch');

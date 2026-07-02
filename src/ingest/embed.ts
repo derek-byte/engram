@@ -20,13 +20,19 @@ export const PROVIDER_DEFAULTS: Record<EmbeddingProviderKind, { model: string; d
 
 const MODEL_CACHE_DIR = join(homedir(), '.engram', 'models');
 
+export interface ProviderEmbedding {
+  vectors: number[][];
+  /** Model that produced these vectors, atomic with them (a concurrent fallback latch cannot skew it). */
+  model: string;
+}
+
 export interface EmbeddingProvider {
   /** Model id that owns the vectors this provider currently produces. */
   readonly model: string;
   readonly dim: number;
   /** Per-input char cap enforced upstream; undefined = provider truncates internally. */
   readonly maxInputChars?: number;
-  embed(texts: string[]): Promise<number[][]>;
+  embed(texts: string[]): Promise<ProviderEmbedding>;
 }
 
 export class OpenAIProvider implements EmbeddingProvider {
@@ -41,11 +47,14 @@ export class OpenAIProvider implements EmbeddingProvider {
     this.dim = dim;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[]): Promise<ProviderEmbedding> {
     const result = await withRetry(() =>
       this.client.embeddings.create({ model: this.model, input: texts })
     );
-    return result.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
+    return {
+      vectors: result.data.sort((a, b) => a.index - b.index).map((d) => d.embedding),
+      model: this.model,
+    };
   }
 }
 
@@ -67,11 +76,11 @@ export class FastembedProvider implements EmbeddingProvider {
     return this.engine;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[]): Promise<ProviderEmbedding> {
     const engine = await this.load();
     const out: number[][] = [];
     for await (const batch of engine.embed(texts, texts.length)) out.push(...batch);
-    return out;
+    return { vectors: out, model: this.model };
   }
 }
 
@@ -110,7 +119,7 @@ export class FallbackProvider implements EmbeddingProvider {
     );
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[]): Promise<ProviderEmbedding> {
     if (this.latched) return this.active.embed(texts);
     try {
       return await this.primary.embed(texts);
@@ -183,8 +192,8 @@ export class Embedder {
     }
 
     if (!this.cache) {
-      const embeddings = await this.provider.embed(texts);
-      return { embeddings, model: this.provider.model, cacheHits: 0, cacheMisses: 0 };
+      const { vectors, model } = await this.provider.embed(texts);
+      return { embeddings: vectors, model, cacheHits: 0, cacheMisses: 0 };
     }
 
     const lookupModel = this.provider.model;
@@ -202,19 +211,20 @@ export class Embedder {
     if (misses.length === 0)
       return { embeddings: out, model: lookupModel, cacheHits: texts.length, cacheMisses: 0 };
 
-    const fresh = await this.provider.embed(misses.map((m) => m.text));
-    const usedModel = this.provider.model;
+    const { vectors: fresh, model: usedModel } = await this.provider.embed(
+      misses.map((m) => m.text)
+    );
 
     // A mid-batch latch means cache hits were produced by the old model and
     // must not be mixed with the fallback's vectors — re-embed the whole batch
     // under the new model so every vector in it shares one model + dimension.
     if (usedModel !== lookupModel && cached.size > 0) {
-      const all = await this.provider.embed(texts);
+      const { vectors: all, model: reModel } = await this.provider.embed(texts);
       await this.cache.putCachedEmbeddings(
         texts.map((_, i) => ({ sha: shas[i]!, embedding: all[i]! })),
-        usedModel
+        reModel
       );
-      return { embeddings: all, model: usedModel, cacheHits: 0, cacheMisses: texts.length };
+      return { embeddings: all, model: reModel, cacheHits: 0, cacheMisses: texts.length };
     }
 
     const toCache = misses.map((m, j) => {
@@ -240,9 +250,19 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
       return await fn();
     } catch (err) {
       lastErr = err;
+      if (!isRetryable(err) || i === attempts - 1) break;
       const delay = Math.min(2 ** i * 500, 8000);
       await new Promise((r) => setTimeout(r, delay));
     }
   }
   throw lastErr;
+}
+
+// Auth/validation errors won't heal on retry; fail fast so the fallback latch fires.
+function isRetryable(err: unknown): boolean {
+  if (err instanceof OpenAI.APIError) {
+    const status = err.status;
+    return status === undefined || status === 408 || status === 429 || status >= 500;
+  }
+  return true;
 }

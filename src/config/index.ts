@@ -40,9 +40,16 @@ export function loadConfig(): EngramConfig {
     merged.embeddingProvider = parseProvider(process.env.ENGRAM_EMBEDDING_PROVIDER);
 
   // Model + dim follow the provider unless the file pinned them explicitly.
-  const defaults = PROVIDER_DEFAULTS[merged.embeddingProvider];
-  if (raw.embeddingModel === undefined) merged.embeddingModel = defaults.model;
-  if (raw.embeddingDim === undefined) merged.embeddingDim = defaults.dim;
+  // The local provider is fixed (buildProvider ignores pins for it), so pins —
+  // including ones saveConfig persisted under openai — must not leak into a
+  // local run and desync the pgvector column from the 384-dim vectors.
+  if (merged.embeddingProvider === 'local') {
+    merged.embeddingModel = PROVIDER_DEFAULTS.local.model;
+    merged.embeddingDim = PROVIDER_DEFAULTS.local.dim;
+  } else {
+    if (raw.embeddingModel === undefined) merged.embeddingModel = PROVIDER_DEFAULTS.openai.model;
+    if (raw.embeddingDim === undefined) merged.embeddingDim = PROVIDER_DEFAULTS.openai.dim;
+  }
 
   return merged;
 }

@@ -126,7 +126,7 @@ export class PgVectorBackend implements VectorBackend {
         embedding: formatVector(c.embedding),
         content: c.content,
         model_id: model,
-        embedding_dim: this.embeddingDim,
+        embedding_dim: c.embedding.length,
         owner: DEFAULT_OWNER,
         chunker_version: this.chunkerVersion,
         embedding_model: model,
