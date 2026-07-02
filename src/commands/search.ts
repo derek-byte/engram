@@ -15,7 +15,7 @@ export interface SearchOptions {
 export async function searchCommand(query: string, opts: SearchOptions): Promise<void> {
   let config = loadConfig();
   if (!configIsComplete(config)) {
-    console.log("engram isn't configured yet. Run 'engram backfill' first.");
+    console.error("engram isn't configured yet. Run 'engram backfill' first.");
     process.exit(1);
   }
 
