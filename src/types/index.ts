@@ -7,9 +7,9 @@ export interface ChunkMetadata {
   sessionId: string;
   cwd: string;
   tier: 'raw' | 'dream';
-  trajectoryId: string;
-  chunkIndex: number;
-  chunkCount: number;
+  trajectoryId?: string;
+  chunkIndex?: number;
+  chunkCount?: number;
 }
 
 export interface Chunk {

@@ -73,9 +73,9 @@ export class PgVectorBackend implements VectorBackend {
       session_id: c.metadata.sessionId,
       cwd: c.metadata.cwd,
       tier: c.metadata.tier,
-      trajectory_id: c.metadata.trajectoryId,
-      chunk_index: c.metadata.chunkIndex,
-      chunk_count: c.metadata.chunkCount,
+      trajectory_id: c.metadata.trajectoryId ?? null,
+      chunk_index: c.metadata.chunkIndex ?? null,
+      chunk_count: c.metadata.chunkCount ?? null,
     }));
 
     for (const r of rows) {
@@ -111,9 +111,9 @@ export class PgVectorBackend implements VectorBackend {
         session_id: string;
         cwd: string;
         tier: 'raw' | 'dream';
-        trajectory_id: string;
-        chunk_index: number;
-        chunk_count: number;
+        trajectory_id: string | null;
+        chunk_index: number | null;
+        chunk_count: number | null;
         distance: number;
       }>
     >`
@@ -148,9 +148,9 @@ export class PgVectorBackend implements VectorBackend {
           sessionId: r.session_id,
           cwd: r.cwd,
           tier: r.tier,
-          trajectoryId: r.trajectory_id,
-          chunkIndex: r.chunk_index,
-          chunkCount: r.chunk_count,
+          trajectoryId: r.trajectory_id ?? undefined,
+          chunkIndex: r.chunk_index ?? undefined,
+          chunkCount: r.chunk_count ?? undefined,
         },
       },
     }));
