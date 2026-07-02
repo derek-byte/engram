@@ -1,20 +1,63 @@
 import OpenAI from 'openai';
+import type { EmbeddingCache } from '../storage/backend.ts';
+import { contentSha256 } from './hash.ts';
 
 const MAX_CHARS_PER_INPUT = 24000;
 
 export class Embedder {
   private client: OpenAI;
   private model: string;
+  private cache?: EmbeddingCache;
+  cacheHits = 0;
+  cacheMisses = 0;
 
-  constructor(apiKey: string, model: string) {
+  constructor(apiKey: string, model: string, cache?: EmbeddingCache) {
     this.client = new OpenAI({ apiKey });
     this.model = model;
+    this.cache = cache;
   }
 
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
     const inputs = texts.map((t) => (t.length > MAX_CHARS_PER_INPUT ? t.slice(0, MAX_CHARS_PER_INPUT) : t));
+    if (!this.cache) return this.embedRaw(inputs);
 
+    const shas = inputs.map(contentSha256);
+    const cached = await this.cache.getCachedEmbeddings(shas, this.model);
+
+    const out: number[][] = new Array(inputs.length);
+    const misses: Array<{ index: number; text: string; sha: string }> = [];
+    inputs.forEach((text, i) => {
+      const hit = cached.get(shas[i]!);
+      if (hit) {
+        out[i] = hit;
+        this.cacheHits++;
+      } else {
+        misses.push({ index: i, text, sha: shas[i]! });
+      }
+    });
+
+    if (misses.length > 0) {
+      const fresh = await this.embedRaw(misses.map((m) => m.text));
+      const toCache: Array<{ sha: string; embedding: number[] }> = [];
+      misses.forEach((m, j) => {
+        out[m.index] = fresh[j]!;
+        toCache.push({ sha: m.sha, embedding: fresh[j]! });
+        this.cacheMisses++;
+      });
+      await this.cache.putCachedEmbeddings(toCache, this.model);
+    }
+
+    return out;
+  }
+
+  async embedOne(text: string): Promise<number[]> {
+    const [v] = await this.embed([text]);
+    if (!v) throw new Error('embedding returned no result');
+    return v;
+  }
+
+  private async embedRaw(inputs: string[]): Promise<number[][]> {
     const result = await this.withRetry(() =>
       this.client.embeddings.create({ model: this.model, input: inputs })
     );
@@ -22,12 +65,6 @@ export class Embedder {
     return result.data
       .sort((a, b) => a.index - b.index)
       .map((d) => d.embedding);
-  }
-
-  async embedOne(text: string): Promise<number[]> {
-    const [v] = await this.embed([text]);
-    if (!v) throw new Error('embedding returned no result');
-    return v;
   }
 
   private async withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
