@@ -13,7 +13,8 @@ hands both the vector and the raw text to `backend.search`.
 combined = vectorWeight * cosine_similarity + keywordWeight * keyword_rank
 ```
 
-- `cosine_similarity` = `1 - (embedding <=> query)`, in [0,1].
+- `cosine_similarity` = `1 - (embedding <=> query)`, in [-1,1] (in practice
+  positive for OpenAI embeddings).
 - `keyword_rank` = `ts_rank_cd(content_tsv, websearch_to_tsquery('english', query), 32)`.
   Flag `32` normalizes the raw rank to `rank/(rank+1)`, giving [0,1) without any
   ad-hoc max-scaling. `websearch_to_tsquery` is parameterized, so arbitrary user
@@ -30,6 +31,11 @@ distance against the HNSW index, then scores keyword rank on just those
 candidates, re-ranks by `combined`, and returns `limit`. A keyword-only match
 that falls outside the vector top-100 is an accepted miss at the current corpus
 size (a few thousand chunks); revisit if recall on rare identifiers degrades.
+
+`hnsw.ef_search` (default 40) caps how many rows an HNSW index scan can return,
+which would silently shrink the pool once the planner favors the index over a
+seq scan — so `search` raises it to the pool size via `SET LOCAL` inside the
+query's transaction.
 
 ### Time decay (optional, off by default)
 

@@ -218,64 +218,69 @@ export class PgVectorBackend implements VectorBackend {
     // (ts_rank_cd with normalization flag 32 → rank/(rank+1), i.e. [0,1)) on
     // just those candidates and re-rank by the weighted combination. Time-decay
     // multiplies the combined score by exp(-age_days / halfLife) when enabled.
-    const rows = await this.sql<
-      Array<{
-        id: string;
-        content: string;
-        repo: string;
-        branch: string;
-        timestamp: Date;
-        file_paths: string[];
-        exit_code: number | null;
-        session_id: string;
-        cwd: string;
-        tier: 'raw' | 'dream';
-        trajectory_id: string | null;
-        chunk_index: number | null;
-        chunk_count: number | null;
-        similarity: number;
-        keyword_rank: number;
-        combined: number;
-      }>
-    >`
-      WITH candidates AS (
+    // hnsw.ef_search caps how many rows an HNSW index scan returns (default 40),
+    // so raise it to the pool size — SET LOCAL scopes it to this transaction.
+    const rows = await this.sql.begin(async (sql) => {
+      await sql.unsafe(`SET LOCAL hnsw.ef_search = ${Math.min(1000, pool)}`);
+      return sql<
+        Array<{
+          id: string;
+          content: string;
+          repo: string;
+          branch: string;
+          timestamp: Date;
+          file_paths: string[];
+          exit_code: number | null;
+          session_id: string;
+          cwd: string;
+          tier: 'raw' | 'dream';
+          trajectory_id: string | null;
+          chunk_index: number | null;
+          chunk_count: number | null;
+          similarity: number;
+          keyword_rank: number;
+          combined: number;
+        }>
+      >`
+        WITH candidates AS (
+          SELECT
+            id, content, content_tsv, repo, branch, timestamp, file_paths,
+            exit_code, session_id, cwd, tier,
+            trajectory_id, chunk_index, chunk_count,
+            embedding <=> ${vec}::vector AS distance
+          FROM chunks
+          WHERE
+            (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
+            AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
+            AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
+            AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
+            AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
+          ORDER BY distance ASC
+          LIMIT ${pool}
+        ),
+        scored AS (
+          SELECT
+            *,
+            (1 - distance) AS similarity,
+            ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
+          FROM candidates
+        )
         SELECT
-          id, content, content_tsv, repo, branch, timestamp, file_paths,
+          id, content, repo, branch, timestamp, file_paths,
           exit_code, session_id, cwd, tier,
           trajectory_id, chunk_index, chunk_count,
-          embedding <=> ${vec}::vector AS distance
-        FROM chunks
-        WHERE
-          (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
-          AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
-          AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
-          AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
-          AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
-        ORDER BY distance ASC
-        LIMIT ${pool}
-      ),
-      scored AS (
-        SELECT
-          *,
-          (1 - distance) AS similarity,
-          ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
-        FROM candidates
-      )
-      SELECT
-        id, content, repo, branch, timestamp, file_paths,
-        exit_code, session_id, cwd, tier,
-        trajectory_id, chunk_index, chunk_count,
-        similarity, keyword_rank,
-        (${vectorWeight}::float * similarity + ${keywordWeight}::float * keyword_rank)
-          * CASE
-              WHEN ${timeDecayHalfLifeDays}::float > 0 AND timestamp IS NOT NULL
-              THEN exp(-(EXTRACT(EPOCH FROM (NOW() - timestamp)) / 86400.0) / ${timeDecayHalfLifeDays}::float)
-              ELSE 1
-            END AS combined
-      FROM scored
-      ORDER BY combined DESC
-      LIMIT ${limit}
-    `;
+          similarity, keyword_rank,
+          (${vectorWeight}::float * similarity + ${keywordWeight}::float * keyword_rank)
+            * CASE
+                WHEN ${timeDecayHalfLifeDays}::float > 0 AND timestamp IS NOT NULL
+                THEN exp(-(EXTRACT(EPOCH FROM (NOW() - timestamp)) / 86400.0) / ${timeDecayHalfLifeDays}::float)
+                ELSE 1
+              END AS combined
+        FROM scored
+        ORDER BY combined DESC NULLS LAST
+        LIMIT ${limit}
+      `;
+    });
 
     return rows.map((r) => ({
       similarity: r.similarity,
