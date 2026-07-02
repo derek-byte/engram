@@ -245,6 +245,53 @@ export class PgVectorBackend implements VectorBackend {
     }));
   }
 
+  async getTrajectory(trajectoryId: string): Promise<Chunk[]> {
+    const rows = await this.sql<
+      Array<{
+        id: string;
+        content: string;
+        repo: string;
+        branch: string;
+        timestamp: Date;
+        file_paths: string[];
+        exit_code: number | null;
+        session_id: string;
+        cwd: string;
+        tier: 'raw' | 'dream';
+        trajectory_id: string | null;
+        chunk_index: number | null;
+        chunk_count: number | null;
+      }>
+    >`
+      SELECT
+        id, content, repo, branch, timestamp, file_paths,
+        exit_code, session_id, cwd, tier,
+        trajectory_id, chunk_index, chunk_count
+      FROM chunks
+      WHERE trajectory_id = ${trajectoryId}
+      ORDER BY chunk_index ASC NULLS LAST
+    `;
+
+    return rows.map((r) => ({
+      id: r.id,
+      embedding: [],
+      content: r.content,
+      metadata: {
+        repo: r.repo,
+        branch: r.branch,
+        timestamp: r.timestamp,
+        filePaths: r.file_paths ?? [],
+        exitCode: r.exit_code,
+        sessionId: r.session_id,
+        cwd: r.cwd,
+        tier: r.tier,
+        trajectoryId: r.trajectory_id ?? undefined,
+        chunkIndex: r.chunk_index ?? undefined,
+        chunkCount: r.chunk_count ?? undefined,
+      },
+    }));
+  }
+
   async count(): Promise<number> {
     const [row] = await this.sql<Array<{ count: string }>>`SELECT COUNT(*)::text AS count FROM chunks`;
     return Number(row.count);

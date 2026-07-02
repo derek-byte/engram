@@ -10,6 +10,7 @@ export interface VectorBackend extends EmbeddingCache {
   insertRawEvents(events: RawEvent[]): Promise<number>;
   upsert(chunks: Chunk[]): Promise<void>;
   search(queryEmbedding: number[], filters: SearchFilters): Promise<SearchResult[]>;
+  getTrajectory(trajectoryId: string): Promise<Chunk[]>;
   count(): Promise<number>;
   close(): Promise<void>;
 }
