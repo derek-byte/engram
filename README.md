@@ -45,3 +45,11 @@ bun run src/index.ts search "what did we decide about chunking" --repo engram
 ```
 
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
+
+## Benchmarks
+
+`bun run benchmarks/longmemeval.ts --dataset <longmemeval_s_cleaned.json> [--limit N]` scores engram's retrieval substrate on LongMemEval under the same raw-mode conditions MemPalace publishes (one doc per session, user turns only, fresh index per question, recall_any). Embeddings go through the pg cache, so repeat runs are free. Current numbers: R@5 0.982, NDCG@10 0.945 (vs MemPalace raw 0.966 / 0.889).
+
+## MemPalace (benchmark reference)
+
+[MemPalace](https://github.com/MemPalace/mempalace) is the published SOTA we measure against, kept as a side-by-side index over the same corpus — not an engram dependency. `scripts/setup-mempalace.sh` installs a pinned version, bootstraps the `mempalace` database on the compose Postgres (fresh volumes get it automatically via `docker/initdb/`), and mines `~/.claude/projects`. Search it with `mempalace search "..." --backend pgvector`.
