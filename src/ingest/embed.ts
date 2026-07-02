@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 
-const MAX_CHARS_PER_INPUT = 24000;
+export const MAX_CHARS_PER_INPUT = 24000;
 
 export class Embedder {
   private client: OpenAI;
@@ -11,12 +11,19 @@ export class Embedder {
     this.model = model;
   }
 
-  async embed(texts: string[]): Promise<number[][]> {
+  async embed(texts: string[], labels?: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
-    const inputs = texts.map((t) => (t.length > MAX_CHARS_PER_INPUT ? t.slice(0, MAX_CHARS_PER_INPUT) : t));
+    texts.forEach((t, i) => {
+      if (t.length > MAX_CHARS_PER_INPUT) {
+        const label = labels?.[i] ?? `input[${i}]`;
+        throw new Error(
+          `embedding input too large: ${label} is ${t.length} chars (limit ${MAX_CHARS_PER_INPUT}); split it into smaller chunks before embedding`
+        );
+      }
+    });
 
     const result = await this.withRetry(() =>
-      this.client.embeddings.create({ model: this.model, input: inputs })
+      this.client.embeddings.create({ model: this.model, input: texts })
     );
 
     return result.data

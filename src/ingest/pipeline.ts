@@ -2,7 +2,7 @@ import { statSync } from 'node:fs';
 import type { Chunk, EngramConfig } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import { LocalStore } from '../storage/local.ts';
-import { Embedder } from './embed.ts';
+import { Embedder, MAX_CHARS_PER_INPUT } from './embed.ts';
 import { trajectoryHash } from './hash.ts';
 import { chunkMessages, trajectoryToText } from './chunker.ts';
 import { parseJsonl } from './parser.ts';
@@ -41,13 +41,23 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
       skipped++;
       continue;
     }
+    if (text.length > MAX_CHARS_PER_INPUT) {
+      console.error(
+        `[ingest] skipping oversized trajectory ${t.sessionId} (${hash}): ${text.length} chars (limit ${MAX_CHARS_PER_INPUT})`
+      );
+      skipped++;
+      continue;
+    }
     toEmbed.push({ text, hash, trajectory: t });
   }
 
   let embedded = 0;
   for (let i = 0; i < toEmbed.length; i += deps.config.chunkBatchSize) {
     const batch = toEmbed.slice(i, i + deps.config.chunkBatchSize);
-    const vectors = await deps.embedder.embed(batch.map((b) => b.text));
+    const vectors = await deps.embedder.embed(
+      batch.map((b) => b.text),
+      batch.map((b) => `${b.trajectory.sessionId} (${b.hash})`)
+    );
 
     const chunks: Chunk[] = batch.map((b, idx) => ({
       id: b.hash,
