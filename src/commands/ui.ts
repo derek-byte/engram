@@ -48,7 +48,8 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
       if (url.pathname === '/api/search') {
         const q = url.searchParams.get('q')?.trim() ?? '';
         if (!q) return Response.json([]);
-        const k = Number(url.searchParams.get('k') ?? '3') || 3;
+        const kRaw = Math.floor(Number(url.searchParams.get('k') ?? '3'));
+        const k = Number.isFinite(kRaw) ? Math.min(50, Math.max(1, kRaw)) : 3;
         const filters: SearchFilters = { limit: k };
         try {
           const results = await runSearch(q, filters, { backend, embedder });
@@ -76,7 +77,12 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
 
       const traj = url.pathname.match(/^\/api\/trajectory\/(.+)$/);
       if (traj) {
-        const trajectoryId = decodeURIComponent(traj[1]!);
+        let trajectoryId: string;
+        try {
+          trajectoryId = decodeURIComponent(traj[1]!);
+        } catch {
+          return Response.json({ error: 'bad trajectory id' }, { status: 400 });
+        }
         try {
           const chunks = await backend.getTrajectory(trajectoryId);
           return Response.json(
