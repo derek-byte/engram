@@ -262,20 +262,24 @@ export class PgVectorBackend implements VectorBackend {
     return Number(row.count);
   }
 
-  // Retract every chunk + raw event for an owner. Exact match: the store-of-record
-  // and its index both go, so an owner's data leaves no trace.
+  // Retract every chunk + raw event for an owner, atomically. Exact match: the
+  // store-of-record and its index both go, so an owner's data leaves no trace.
   async deleteByOwner(owner: string): Promise<{ chunks: number; rawEvents: number }> {
-    const c = await this.sql`DELETE FROM chunks WHERE owner = ${owner}`;
-    const r = await this.sql`DELETE FROM raw_events WHERE owner = ${owner}`;
-    return { chunks: c.count, rawEvents: r.count };
+    return this.sql.begin(async (tx) => {
+      const c = await tx`DELETE FROM chunks WHERE owner = ${owner}`;
+      const r = await tx`DELETE FROM raw_events WHERE owner = ${owner}`;
+      return { chunks: c.count, rawEvents: r.count };
+    });
   }
 
   // Same, for every owner sharing a prefix (e.g. 'bench:' → 'bench:%').
   async deleteByOwnerPrefix(prefix: string): Promise<{ chunks: number; rawEvents: number }> {
     const like = prefix + '%';
-    const c = await this.sql`DELETE FROM chunks WHERE owner LIKE ${like}`;
-    const r = await this.sql`DELETE FROM raw_events WHERE owner LIKE ${like}`;
-    return { chunks: c.count, rawEvents: r.count };
+    return this.sql.begin(async (tx) => {
+      const c = await tx`DELETE FROM chunks WHERE owner LIKE ${like}`;
+      const r = await tx`DELETE FROM raw_events WHERE owner LIKE ${like}`;
+      return { chunks: c.count, rawEvents: r.count };
+    });
   }
 
   async close(): Promise<void> {

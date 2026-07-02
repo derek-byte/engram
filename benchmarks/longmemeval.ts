@@ -125,7 +125,14 @@ function parseArgs(argv: string[]): { dataset: string; limit?: number; path: Mod
     const a = argv[i]!;
     if (a === '--limit') limit = Number(argv[++i]);
     else if (a === '--dataset') dataset = argv[++i]!;
-    else if (a === '--path') path = argv[++i] as Mode;
+    else if (a === '--path') {
+      const v = argv[++i];
+      if (v !== 'substrate' && v !== 'production') {
+        console.error(`unknown --path '${v}' (expected substrate | production)`);
+        process.exit(1);
+      }
+      path = v;
+    }
     else if (a === '--cleanup') cleanup = true;
     else if (!a.startsWith('--')) dataset = a;
   }

@@ -116,12 +116,13 @@ export function chunkTrajectory(t: Trajectory): string[] {
 
 // Chunk arbitrary plain text (the generic-document / connector path): split on
 // blank-line paragraph boundaries, then reuse the same token-aware packing.
+// Whitespace-only content yields no chunks (empty strings are not embeddable).
 export function chunkText(content: string): string[] {
   const paragraphs = content
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
-  return packSegments(paragraphs.length > 0 ? paragraphs : [content.trim()]);
+  return packSegments(paragraphs);
 }
 
 // Greedily pack semantic segments to ~TARGET_TOKENS with ~OVERLAP_TOKENS of

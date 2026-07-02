@@ -37,6 +37,7 @@ export async function injectDocuments(docs: InjectDoc[], deps: InjectDeps): Prom
     text: string;
     hash: string;
     doc: InjectDoc;
+    occurredAt: Date;
     trajectoryId: string;
     chunkIndex: number;
     chunkCount: number;
@@ -44,7 +45,11 @@ export async function injectDocuments(docs: InjectDoc[], deps: InjectDeps): Prom
   const rawEvents: RawEvent[] = [];
 
   for (const doc of docs) {
-    const trajectoryId = contentSha256(doc.content);
+    // Namespaced by owner + doc id (like trajectoryHash includes sessionId) so
+    // identical content injected as different docs or for different owners never
+    // shares raw-event / chunk rows — otherwise one owner's retraction could
+    // strand another's data.
+    const trajectoryId = contentSha256(`${doc.owner}\n${doc.id}\n${doc.content}`);
     const texts = chunkText(doc.content);
     const occurredAt = doc.occurredAt ?? new Date();
     rawEvents.push({
@@ -60,6 +65,7 @@ export async function injectDocuments(docs: InjectDoc[], deps: InjectDeps): Prom
         text,
         hash: chunkHash(trajectoryId, chunkIndex, text),
         doc,
+        occurredAt,
         trajectoryId,
         chunkIndex,
         chunkCount: texts.length,
@@ -88,7 +94,7 @@ export async function injectDocuments(docs: InjectDoc[], deps: InjectDeps): Prom
       metadata: {
         repo: '',
         branch: '',
-        timestamp: b.doc.occurredAt ?? new Date(),
+        timestamp: b.occurredAt,
         filePaths: [],
         exitCode: null,
         sessionId: b.doc.id,
