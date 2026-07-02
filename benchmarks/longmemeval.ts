@@ -320,11 +320,12 @@ async function runHarness(
 
   const avgCharsPerItem = totalEmbedItems === 0 ? 0 : totalEmbedChars / totalEmbedItems;
   const estTokens = (totalMisses * avgCharsPerItem) / 4;
-  const estCost = (estTokens / 1_000_000) * PRICE_PER_MILLION_TOKENS;
+  const cost =
+    loadConfig().embeddingProvider === 'openai'
+      ? `$${((estTokens / 1_000_000) * PRICE_PER_MILLION_TOKENS).toFixed(4)} (${Math.round(estTokens).toLocaleString()} tok on misses)`
+      : '$0 (local provider)';
   const elapsed = ((Date.now() - started) / 1000).toFixed(0);
-  console.log(
-    `\ncache: ${totalHits} hits, ${totalMisses} misses | est. embed cost this run: $${estCost.toFixed(4)} (${Math.round(estTokens).toLocaleString()} tok on misses) | ${elapsed}s`
-  );
+  console.log(`\ncache: ${totalHits} hits, ${totalMisses} misses | est. embed cost this run: ${cost} | ${elapsed}s`);
   console.log(`per-question results: ${OUTPUT_PATH}`);
 }
 

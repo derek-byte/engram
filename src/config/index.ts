@@ -12,9 +12,9 @@ export const LOG_PATH = join(ENGRAM_DIR, 'engram.log');
 const DEFAULT_CONFIG: EngramConfig = {
   databaseUrl: '',
   openaiApiKey: '',
-  embeddingProvider: 'openai',
-  embeddingModel: PROVIDER_DEFAULTS.openai.model,
-  embeddingDim: PROVIDER_DEFAULTS.openai.dim,
+  embeddingProvider: 'local',
+  embeddingModel: PROVIDER_DEFAULTS.local.model,
+  embeddingDim: PROVIDER_DEFAULTS.local.dim,
   watchPath: join(homedir(), '.claude', 'projects'),
   sessionCompleteDelaySec: 8,
   chunkBatchSize: 32,
