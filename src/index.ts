@@ -4,6 +4,7 @@ import { searchCommand } from './commands/search.ts';
 import { statusCommand } from './commands/status.ts';
 import { backfillCommand } from './commands/backfill.ts';
 import { watchInternalCommand } from './commands/watch.ts';
+import { mcpCommand } from './commands/mcp.ts';
 
 const program = new Command();
 
@@ -37,6 +38,13 @@ program
   .description('Scan ~/.claude/projects and index any new sessions')
   .action(async () => {
     await backfillCommand();
+  });
+
+program
+  .command('mcp')
+  .description('Run the MCP server (stdio) so Claude Code can search your sessions')
+  .action(async () => {
+    await mcpCommand();
   });
 
 program
