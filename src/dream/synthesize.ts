@@ -6,6 +6,22 @@ import { chunkHash, contentSha256 } from '../ingest/hash.ts';
 import { CHARS_PER_TOKEN } from '../ingest/chunker.ts';
 import { buildTranscript, buildUnitHeader } from './prompt.ts';
 
+// Concurrent unit synthesis: each unit is one large LLM call (30-90s), so a
+// serial backfill of N units takes N× that. Bounded to stay well inside
+// OpenAI rate limits.
+const DREAM_CONCURRENCY = 4;
+
+async function mapWithConcurrency<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++]!;
+      await fn(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
 export interface SynthesizeParams {
   sourceOwner: string;
   dreamOwner: string;
@@ -122,7 +138,10 @@ export async function synthesizeDreams(
   let promptTokens = 0;
   let completionTokens = 0;
 
-  for (const { unit, fingerprint, prior } of toProcess) {
+  // Units are independent (distinct session/repo keys, trajectory ids, and
+  // per-unit ledger rows), so their LLM calls run concurrently. Counter
+  // mutation is safe: tasks interleave only at await points.
+  const processUnit = async ({ unit, fingerprint, prior }: (typeof toProcess)[number]) => {
     try {
       const trajectoryId = `dream:${fingerprint}`;
       const rawChunks = await backend.getUnitChunks(params.sourceOwner, unit.sessionId, unit.repo);
@@ -207,7 +226,8 @@ export async function synthesizeDreams(
         `[dream] unit ${unit.sessionId}@${unit.repo || '(no repo)'} failed: ${err instanceof Error ? err.message : err}`
       );
     }
-  }
+  };
+  await mapWithConcurrency(toProcess, DREAM_CONCURRENCY, processUnit);
 
   return {
     synthesized,

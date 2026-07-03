@@ -123,6 +123,10 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
   let completionTokens = 0;
   const touched = new Set<string>();
 
+  // Deliberately serial (unlike dream synthesis): each unit's LLM call merges
+  // into pages earlier units may have just created or updated (rule V), and
+  // concurrent full-page rewrites would race. This arm is also the cheap one —
+  // its inputs are dream items, not raw transcripts.
   for (const { unit, fingerprint } of toProcess) {
     try {
       const dreamChunks = await backend.getUnitChunks(params.sourceOwner, unit.sessionId, unit.repo, 'dream');
