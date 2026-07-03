@@ -63,10 +63,13 @@ describe('live wiki ingest → search → skip → retract', () => {
       await backend.initialize();
       await backend.deleteByOwnerPrefix('test:');
 
-      await backend.upsert([
+      const seeds = [
         dreamChunk('wd1', 'wsess-1', 'decision', 'we chose pgvector for the vector store'),
         dreamChunk('wd2', 'wsess-1', 'gotcha', 'the fingerprint short-circuit skips unchanged units'),
-      ]);
+      ];
+      const seedVecs = await embedder.embed(seeds.map((c) => c.content));
+      seeds.forEach((c, i) => (c.embedding = seedVecs[i]!));
+      await backend.upsert(seeds);
 
       const res = await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, { backend, store, embedder, llm, config });
       expect(res.pagesCreated).toBe(2);
