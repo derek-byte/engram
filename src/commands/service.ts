@@ -3,22 +3,53 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { ENGRAM_DIR, ensureEngramDir } from '../config/index.ts';
+import { ENGRAM_DIR, ensureEngramDir, loadConfig } from '../config/index.ts';
 
-const LABEL = 'com.engram.watcher';
-const PLIST_PATH = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
-const WATCHER_LOG = join(ENGRAM_DIR, 'watcher.log');
+const WATCHER_LABEL = 'com.engram.watcher';
+const SYNTHESIS_LABEL = 'com.engram.synthesis';
+
+export interface AgentSpec {
+  label: string;
+  plistPath: string;
+  programArgs: string[];
+  log: string;
+  // Present ⇒ StartCalendarInterval at the given hour (nightly); absent ⇒ KeepAlive.
+  schedule?: { hour: number };
+}
 
 function repoRoot(): string {
   return fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '');
 }
 
-function domainTarget(): string {
-  return `gui/${process.getuid?.() ?? ''}`;
+function plistPathFor(label: string): string {
+  return join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
 }
 
-function serviceTarget(): string {
-  return `${domainTarget()}/${LABEL}`;
+function indexPath(): string {
+  return join(repoRoot(), 'src', 'index.ts');
+}
+
+export function watcherSpec(): AgentSpec {
+  return {
+    label: WATCHER_LABEL,
+    plistPath: plistPathFor(WATCHER_LABEL),
+    programArgs: [process.execPath, indexPath(), 'watch-internal'],
+    log: join(ENGRAM_DIR, 'watcher.log'),
+  };
+}
+
+export function synthesisSpec(hour: number): AgentSpec {
+  return {
+    label: SYNTHESIS_LABEL,
+    plistPath: plistPathFor(SYNTHESIS_LABEL),
+    programArgs: [process.execPath, indexPath(), 'synthesis-run'],
+    log: join(ENGRAM_DIR, 'synthesis.log'),
+    schedule: { hour },
+  };
+}
+
+function domainTarget(): string {
+  return `gui/${process.getuid?.() ?? ''}`;
 }
 
 function escapeXml(s: string): string {
@@ -35,32 +66,44 @@ function launchctl(args: string[]): { ok: boolean; out: string } {
   }
 }
 
-function buildPlist(): string {
-  const bun = process.execPath;
-  const index = join(repoRoot(), 'src', 'index.ts');
+// Generic plist builder. A schedule ⇒ RunAtLoad false + StartCalendarInterval;
+// otherwise RunAtLoad true + KeepAlive (the always-on watcher). Exported so a
+// unit test can assert the generated XML without touching launchctl.
+export function buildPlist(spec: AgentSpec): string {
+  const bun = spec.programArgs[0]!;
   const path = `${dirname(bun)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
+  const args = spec.programArgs.map((a) => `    <string>${escapeXml(a)}</string>`).join('\n');
+  const lifecycle = spec.schedule
+    ? `  <key>RunAtLoad</key>
+  <false/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>${spec.schedule.hour}</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>`
+    : `  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>${LABEL}</string>
+  <string>${spec.label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${escapeXml(bun)}</string>
-    <string>${escapeXml(index)}</string>
-    <string>watch-internal</string>
+${args}
   </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
+${lifecycle}
   <key>WorkingDirectory</key>
   <string>${escapeXml(repoRoot())}</string>
   <key>StandardOutPath</key>
-  <string>${escapeXml(WATCHER_LOG)}</string>
+  <string>${escapeXml(spec.log)}</string>
   <key>StandardErrorPath</key>
-  <string>${escapeXml(WATCHER_LOG)}</string>
+  <string>${escapeXml(spec.log)}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -71,87 +114,112 @@ function buildPlist(): string {
 `;
 }
 
-function unloadExisting(): void {
-  // Modern form first, then the pre-bootstrap fallback. Both ignore not-loaded.
-  launchctl(['bootout', serviceTarget()]);
-  // No -w: that would persist a disabled override that survives uninstall
-  // and makes every future bootstrap fail.
-  if (existsSync(PLIST_PATH)) launchctl(['unload', PLIST_PATH]);
+function serviceTarget(label: string): string {
+  return `${domainTarget()}/${label}`;
 }
 
-function install(): void {
-  const dir = dirname(PLIST_PATH);
+function unloadExisting(spec: AgentSpec): void {
+  launchctl(['bootout', serviceTarget(spec.label)]);
+  if (existsSync(spec.plistPath)) launchctl(['unload', spec.plistPath]);
+}
+
+function installAgent(spec: AgentSpec): void {
+  const dir = dirname(spec.plistPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   ensureEngramDir();
-
-  unloadExisting();
-  writeFileSync(PLIST_PATH, buildPlist());
-
-  // Clear any stale disabled override (older installs, manual `launchctl disable`).
-  launchctl(['enable', serviceTarget()]);
-  const boot = launchctl(['bootstrap', domainTarget(), PLIST_PATH]);
+  unloadExisting(spec);
+  writeFileSync(spec.plistPath, buildPlist(spec));
+  launchctl(['enable', serviceTarget(spec.label)]);
+  const boot = launchctl(['bootstrap', domainTarget(), spec.plistPath]);
   if (!boot.ok) {
-    const legacy = launchctl(['load', '-w', PLIST_PATH]);
+    const legacy = launchctl(['load', '-w', spec.plistPath]);
     if (!legacy.ok) {
-      console.error(`Failed to load service:\n${boot.out}\n${legacy.out}`);
+      console.error(`Failed to load ${spec.label}:\n${boot.out}\n${legacy.out}`);
       process.exit(1);
     }
   }
-
-  console.log(`Installed ${LABEL}`);
-  console.log(`  plist:  ${PLIST_PATH}`);
-  console.log(`  runs:   ${process.execPath} ${join(repoRoot(), 'src', 'index.ts')} watch-internal`);
-  console.log(`  cwd:    ${repoRoot()}`);
-  console.log(`  log:    ${WATCHER_LOG}`);
-  console.log(`\nCheck it with: engram service status`);
+  console.log(`Installed ${spec.label}`);
+  console.log(`  plist:  ${spec.plistPath}`);
+  console.log(`  runs:   ${spec.programArgs.join(' ')}`);
+  if (spec.schedule) console.log(`  when:   daily at ${String(spec.schedule.hour).padStart(2, '0')}:00`);
+  console.log(`  log:    ${spec.log}`);
 }
 
-function uninstall(): void {
-  unloadExisting();
-  if (existsSync(PLIST_PATH)) {
-    unlinkSync(PLIST_PATH);
-    console.log(`Uninstalled ${LABEL} (removed ${PLIST_PATH})`);
+function uninstallAgent(spec: AgentSpec): void {
+  unloadExisting(spec);
+  if (existsSync(spec.plistPath)) {
+    unlinkSync(spec.plistPath);
+    console.log(`Uninstalled ${spec.label} (removed ${spec.plistPath})`);
   } else {
-    console.log(`${LABEL} was not installed (no plist at ${PLIST_PATH})`);
+    console.log(`${spec.label} was not installed (no plist at ${spec.plistPath})`);
   }
 }
 
-function status(): void {
-  const print = launchctl(['print', serviceTarget()]);
+function statusLine(spec: AgentSpec): void {
+  const print = launchctl(['print', serviceTarget(spec.label)]);
+  console.log(`\n${spec.label}`);
   if (print.ok) {
     const state = print.out.match(/state = (\S+)/)?.[1] ?? 'unknown';
     const pid = print.out.match(/pid = (\d+)/)?.[1];
-    console.log(`service:  loaded (state ${state}${pid ? `, pid ${pid}` : ''})`);
+    console.log(`  service:  loaded (state ${state}${pid ? `, pid ${pid}` : ''})`);
   } else {
-    console.log('service:  not loaded');
+    console.log('  service:  not loaded');
   }
-  console.log(`plist:    ${existsSync(PLIST_PATH) ? PLIST_PATH : 'absent'}`);
-  console.log(`log:      ${WATCHER_LOG}`);
-
-  if (existsSync(WATCHER_LOG)) {
-    const lines = readFileSync(WATCHER_LOG, 'utf-8').split('\n').filter(Boolean).slice(-15);
-    if (lines.length) {
-      console.log('\nlast log lines:');
-      for (const l of lines) console.log(`  ${l}`);
-    }
+  console.log(`  plist:    ${existsSync(spec.plistPath) ? spec.plistPath : 'absent'}`);
+  if (spec.schedule) console.log(`  when:     daily at ${String(spec.schedule.hour).padStart(2, '0')}:00`);
+  console.log(`  log:      ${spec.log}`);
+  if (existsSync(spec.log)) {
+    const lines = readFileSync(spec.log, 'utf-8').split('\n').filter(Boolean).slice(-8);
+    for (const l of lines) console.log(`    ${l}`);
   }
 }
 
-export async function serviceCommand(action: string): Promise<void> {
+export interface ServiceOptions {
+  dryRun?: boolean;
+}
+
+export async function serviceCommand(action: string, opts: ServiceOptions = {}): Promise<void> {
   if (process.platform !== 'darwin') {
     console.error('engram service uses launchd and is only supported on macOS.');
     process.exit(1);
   }
 
+  const config = loadConfig();
+  const watcher = watcherSpec();
+  const synthesis = synthesisSpec(config.synthesis.hour);
+
   switch (action) {
-    case 'install':
-      install();
+    case 'install': {
+      if (opts.dryRun) {
+        // Emit the plists that WOULD be installed — watcher always, synthesis iff
+        // enabled — without ever calling launchctl.
+        console.log(`# ${watcher.label} (${watcher.plistPath})`);
+        console.log(buildPlist(watcher));
+        if (config.synthesis.enabled) {
+          console.log(`# ${synthesis.label} (${synthesis.plistPath})`);
+          console.log(buildPlist(synthesis));
+        } else {
+          console.log(`# ${synthesis.label}: disabled (synthesis.enabled=false) — would be removed if present`);
+        }
+        return;
+      }
+      installAgent(watcher);
+      if (config.synthesis.enabled) {
+        installAgent(synthesis);
+      } else {
+        // Toggle-off + install must remove a previously-installed synthesis agent.
+        if (existsSync(synthesis.plistPath)) uninstallAgent(synthesis);
+      }
+      console.log(`\nCheck it with: engram service status`);
       break;
+    }
     case 'uninstall':
-      uninstall();
+      uninstallAgent(watcher);
+      uninstallAgent(synthesis);
       break;
     case 'status':
-      status();
+      statusLine(watcher);
+      statusLine(synthesis);
       break;
     default:
       console.error(`Unknown action '${action}'. Use: install | uninstall | status`);

@@ -19,3 +19,8 @@ Config + paths. Everything lives under `~/.engram/`: `config.json`, `engram.sqli
 ## Rerank
 
 `rerank`: `{ enabled: false, model: 'gpt-4.1-mini', topK: 30 }` — the LLM reranker (see `src/search/README.md`). **Default off** on purpose: it costs money and adds latency, against the local-first ethos. Nested-merged in `loadConfig` (older config files without the block get defaults); `topK` clamped to [1,100]. No env var — enable via config file, `--rerank` flag, or the MCP `rerank` param. Needs `OPENAI_API_KEY`; degrades to hybrid order without one.
+
+## Wiki + synthesis
+
+- `wikiDir` (default `~/.engram/wiki`), `wikiModel` (`gpt-4o-mini`), `wikiMaxInputChars` (60k). Env overrides: `ENGRAM_WIKI_DIR` (mandatory for dev/test — never write the real wiki dir) and `ENGRAM_WIKI_MODEL`.
+- `synthesis`: `{ enabled: false, hour: 3 }` — nested-merged like `rerank` (older config files get defaults), `hour` clamped to int 0–23. Off by default. When on, `engram service install` also installs the nightly `com.engram.synthesis` launchd agent (StartCalendarInterval at `hour`) and the watcher runs dream → wiki after each ingest.

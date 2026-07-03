@@ -11,6 +11,8 @@ export interface SynthesizeParams {
   dreamOwner: string;
   repo?: string;
   since?: Date;
+  // Surgical scope to one session (watcher hook); omitted = all sessions.
+  sessionId?: string;
   limit: number;
   dryRun: boolean;
 }
@@ -64,6 +66,7 @@ export async function synthesizeDreams(
     owner: params.sourceOwner,
     repo: params.repo,
     since: params.since,
+    sessionId: params.sessionId,
   });
 
   const existing = new Map<string, DreamUnitRow>();

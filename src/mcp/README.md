@@ -25,3 +25,9 @@ bun run src/index.ts mcp
 ```
 
 Then speak JSON-RPC on stdin (`initialize` → `notifications/initialized` → `tools/list` → `tools/call`). Requires a complete config (`OPENAI_API_KEY` + `ENGRAM_DATABASE_URL`, via `.env` or `~/.engram/config.json`).
+
+## Tools
+
+- **`engram_search`** — gains a `tier` enum (`raw|dream|wiki|synth|all`) **defaulting to `synth`** (wiki+dream; the compiled tiers are the product, raw is drill-down). Wiki hits render as `[wiki:<kind>] <slug>` with a `page: <slug> · provenance: N dream chunks` line pointing at `engram_wiki_page`.
+- **`engram_wiki_page {slug}`** — returns one compiled page's full markdown + frontmatter (agent drill-down from a wiki hit).
+- **`engram_status`** — now also reports the wiki page count.

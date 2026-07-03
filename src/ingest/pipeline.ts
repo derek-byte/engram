@@ -20,13 +20,15 @@ export interface IngestResult {
   skipped: number;
   cacheHits: number;
   cacheMisses: number;
+  sessionId: string;
+  repo: string;
 }
 
 export async function ingestFile(path: string, deps: PipelineDeps): Promise<IngestResult> {
   const messages = parseJsonl(path);
   const trajectories = chunkMessages(messages);
   if (trajectories.length === 0) {
-    return { trajectories: 0, embedded: 0, skipped: 0, cacheHits: 0, cacheMisses: 0 };
+    return { trajectories: 0, embedded: 0, skipped: 0, cacheHits: 0, cacheMisses: 0, sessionId: '', repo: '' };
   }
 
   const sessionId = trajectories[0]!.sessionId;
@@ -107,7 +109,15 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   deps.local.setCursor(sessionId, trajectories.length);
   deps.local.setStat('last_ingest_at', new Date().toISOString());
 
-  return { trajectories: trajectories.length, embedded, skipped, cacheHits, cacheMisses };
+  return {
+    trajectories: trajectories.length,
+    embedded,
+    skipped,
+    cacheHits,
+    cacheMisses,
+    sessionId,
+    repo: trajectories[0]!.repo,
+  };
 }
 
 export function fileIsStable(path: string, minIdleMs: number): boolean {

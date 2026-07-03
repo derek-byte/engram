@@ -76,12 +76,18 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
         if (!q) return Response.json([]);
         const kRaw = Math.floor(Number(url.searchParams.get('k') ?? '3'));
         const k = Number.isFinite(kRaw) ? Math.min(50, Math.max(1, kRaw)) : 3;
-        const filters: SearchFilters = { limit: k };
+        const tierRaw = url.searchParams.get('tier');
+        const tier: SearchFilters['tier'] =
+          tierRaw === 'raw' || tierRaw === 'dream' || tierRaw === 'wiki' || tierRaw === 'synth' || tierRaw === 'all'
+            ? tierRaw
+            : 'synth';
+        const filters: SearchFilters = { limit: k, tier };
         try {
           const results = await runSearch(q, filters, { backend, embedder });
           return Response.json(
             results.map((r) => {
               const m = r.chunk.metadata;
+              const slug = m.tier === 'wiki' ? (m.trajectoryId?.replace(/^wiki:/, '') ?? null) : null;
               return {
                 id: r.chunk.id,
                 similarity: r.similarity,
@@ -89,6 +95,10 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
                 branch: m.branch,
                 timestamp: m.timestamp,
                 sessionId: m.sessionId,
+                tier: m.tier,
+                kind: m.dreamType ?? null,
+                slug,
+                sources: m.sourceChunkIds ?? [],
                 trajectoryId: m.trajectoryId ?? null,
                 chunkIndex: m.chunkIndex ?? null,
                 snippet: snippet(r.chunk.content),

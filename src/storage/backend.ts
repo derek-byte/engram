@@ -41,9 +41,38 @@ export interface DreamUnitRow {
 // The dream layer's storage seam, kept separate from VectorBackend so the
 // vector-store contract stays minimal. PgVectorBackend implements both.
 export interface DreamStore {
-  listSynthesisUnits(opts: { owner: string; repo?: string; since?: Date }): Promise<SynthesisUnit[]>;
-  getUnitChunks(owner: string, sessionId: string, repo: string): Promise<Chunk[]>;
+  listSynthesisUnits(opts: { owner: string; repo?: string; since?: Date; sessionId?: string }): Promise<SynthesisUnit[]>;
+  // tier defaults to 'raw' (the dream layer's source); the wiki layer passes 'dream'.
+  getUnitChunks(owner: string, sessionId: string, repo: string, tier?: 'raw' | 'dream'): Promise<Chunk[]>;
   getDreamUnits(owner: string): Promise<DreamUnitRow[]>;
   upsertDreamUnit(row: DreamUnitRow): Promise<void>;
   deleteDreamChunks(ids: string[], owner: string): Promise<number>;
+}
+
+// Persisted per-unit wiki ingest state, keyed (owner, sessionId, repo). Mirror of
+// DreamUnitRow: the fingerprint (sha256 of the unit's sorted dream-chunk ids)
+// changes exactly when the dream layer re-synthesizes the unit, so a matching
+// fingerprint short-circuits the ingest — re-runs are 100% skip, zero LLM calls.
+export interface WikiUnitRow {
+  owner: string;
+  sessionId: string;
+  repo: string;
+  fingerprint: string;
+  sourceChunkIds: string[];
+  pages: string[];
+  model: string;
+}
+
+// The wiki layer's storage seam. PgVectorBackend implements this alongside
+// DreamStore + VectorBackend.
+export interface WikiLedger {
+  getWikiUnits(owner: string): Promise<WikiUnitRow[]>;
+  upsertWikiUnit(row: WikiUnitRow): Promise<void>;
+  // Groups tier='dream' chunks by (session_id, repo) — the wiki layer's source
+  // units, same shape as listSynthesisUnits (which groups tier='raw').
+  listDreamUnitsAsUnits(owner: string, opts?: { repo?: string; since?: Date }): Promise<SynthesisUnit[]>;
+  // Tier-scoped delete used by wiki reindex to retract stale rows defensively.
+  deleteChunksByIds(ids: string[], owner: string, tier: string): Promise<number>;
+  // (id, trajectory_id) for every tier='wiki' chunk of an owner — reindex reconciliation.
+  listWikiChunkIds(owner: string): Promise<Array<{ id: string; trajectoryId: string | null }>>;
 }

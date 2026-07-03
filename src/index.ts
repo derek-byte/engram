@@ -8,6 +8,8 @@ import { uiCommand } from './commands/ui.ts';
 import { mcpCommand } from './commands/mcp.ts';
 import { serviceCommand } from './commands/service.ts';
 import { dreamCommand } from './commands/dream.ts';
+import { wikiCommand } from './commands/wiki.ts';
+import { synthesisRunCommand } from './commands/synthesisRun.ts';
 
 const program = new Command();
 
@@ -23,7 +25,7 @@ program
   .option('--branch <branch>', 'limit to a git branch')
   .option('--repo <repo>', 'limit to a repo')
   .option('--since <date>', 'only results after this ISO date')
-  .option('--tier <tier>', 'raw | dream | both (default both)', 'both')
+  .option('--tier <tier>', 'raw | dream | wiki | synth | all (default all)', 'all')
   .option('--limit <n>', 'max results', '5')
   .option('--rerank', 'rerank top-K candidates with an LLM (needs OPENAI_API_KEY)')
   .option('--json', 'emit JSON instead of formatted output')
@@ -62,10 +64,34 @@ program
 
 program
   .command('service')
-  .description('Manage the always-on launchd watcher (macOS): install | uninstall | status')
+  .description('Manage the launchd agents (macOS): install | uninstall | status')
   .argument('<action>', 'install, uninstall, or status')
-  .action(async (action) => {
-    await serviceCommand(action);
+  .option('--dry-run', 'print the plists that would be installed without touching launchctl')
+  .action(async (action, opts) => {
+    await serviceCommand(action, opts);
+  });
+
+program
+  .command('wiki')
+  .description('Compile dream chunks into a knowledge wiki: ingest | lint | status | reindex')
+  .argument('<action>', 'ingest, lint, status, or reindex')
+  .option('--repo <repo>', 'limit to a repo')
+  .option('--since <date>', 'only units with activity after this ISO date')
+  .option('--limit <n>', 'max units to compile this run', '20')
+  .option('--owner <owner>', 'source owner (dream chunks) to compile from', 'derek')
+  .option('--wiki-owner <owner>', 'owner to write wiki chunks under (default = --owner)')
+  .option('--dry-run', 'print the compile plan + token estimate without calling the LLM or writing')
+  .option('--llm', 'wiki lint: also run the LLM contradiction pass')
+  .option('--json', 'emit JSON instead of formatted output')
+  .action(async (action, opts) => {
+    await wikiCommand(action, opts);
+  });
+
+program
+  .command('synthesis-run', { hidden: true })
+  .description('Headless dream → wiki compile over anything new (nightly agent / watcher hook)')
+  .action(async () => {
+    await synthesisRunCommand();
   });
 
 program

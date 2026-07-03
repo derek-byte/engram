@@ -1,6 +1,21 @@
 import postgres from 'postgres';
 import type { Chunk, RawEvent, ScoringConfig, SearchFilters, SearchResult } from '../types/index.ts';
-import type { DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend } from './backend.ts';
+import type { DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from './backend.ts';
+
+// Map a SearchFilters tier to the concrete tier list, or null for "no tier
+// filter" ('all'/'both'/undefined). 'synth' = wiki+dream.
+function tiersFor(tier: SearchFilters['tier']): string[] | null {
+  switch (tier) {
+    case 'raw':
+    case 'dream':
+    case 'wiki':
+      return [tier];
+    case 'synth':
+      return ['wiki', 'dream'];
+    default:
+      return null;
+  }
+}
 
 const DEFAULT_OWNER = 'derek';
 
@@ -16,7 +31,7 @@ const DEFAULT_SCORING: ScoringConfig = {
 const CANDIDATE_POOL = 100;
 const KEYWORD_POOL = 50;
 
-export class PgVectorBackend implements VectorBackend, DreamStore {
+export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger {
   private sql: ReturnType<typeof postgres>;
   private embeddingDim: number;
   private embeddingModel: string;
@@ -140,6 +155,22 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
         PRIMARY KEY (owner, session_id, repo)
       );
     `);
+
+    // Wiki-layer ingest ledger, mirror of dream_units. fingerprint = sha256 of
+    // the unit's sorted dream-chunk ids; pages = slugs touched by this unit.
+    await this.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS wiki_units (
+        owner TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        repo TEXT NOT NULL DEFAULT '',
+        fingerprint TEXT NOT NULL,
+        source_chunk_ids TEXT[] NOT NULL,
+        pages TEXT[] NOT NULL DEFAULT '{}',
+        model TEXT,
+        ingested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (owner, session_id, repo)
+      );
+    `);
   }
 
   async insertRawEvents(events: RawEvent[]): Promise<number> {
@@ -241,7 +272,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
     // Clamp to a finite positive integer: limit comes from CLI input (Number()
     // can yield NaN/Infinity) and pool is interpolated into raw SQL below.
     const limit = Number.isFinite(filters.limit) ? Math.max(1, Math.floor(filters.limit as number)) : 5;
-    const tierFilter = filters.tier && filters.tier !== 'both' ? filters.tier : null;
+    const tiers = tiersFor(filters.tier);
     const { vectorWeight, keywordWeight, timeDecayHalfLifeDays } = this.scoring;
     const pool = Math.max(CANDIDATE_POOL, limit);
     const keywordPool = Math.max(KEYWORD_POOL, limit);
@@ -256,8 +287,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
       exit_code: number | null;
       session_id: string;
       cwd: string;
-      tier: 'raw' | 'dream';
+      tier: 'raw' | 'dream' | 'wiki';
       dream_type: string | null;
+      source_chunk_ids: string[] | null;
       trajectory_id: string | null;
       chunk_index: number | null;
       chunk_count: number | null;
@@ -284,7 +316,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
           (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
           AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
           AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
-          AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
+          AND (${tiers}::text[] IS NULL OR tier = ANY(${tiers}::text[]))
           AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
           AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
         ORDER BY embedding <=> ${vec}::vector ASC
@@ -298,7 +330,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
           AND (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
           AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
           AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
-          AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
+          AND (${tiers}::text[] IS NULL OR tier = ANY(${tiers}::text[]))
           AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
           AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
         ORDER BY ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) DESC
@@ -312,7 +344,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
       scored AS (
         SELECT
           c.id, c.content, c.repo, c.branch, c.timestamp, c.file_paths,
-          c.exit_code, c.session_id, c.cwd, c.tier, c.dream_type,
+          c.exit_code, c.session_id, c.cwd, c.tier, c.dream_type, c.source_chunk_ids,
           c.trajectory_id, c.chunk_index, c.chunk_count,
           (1 - (c.embedding <=> ${vec}::vector)) AS similarity,
           ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
@@ -321,7 +353,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
       )
       SELECT
         id, content, repo, branch, timestamp, file_paths,
-        exit_code, session_id, cwd, tier, dream_type,
+        exit_code, session_id, cwd, tier, dream_type, source_chunk_ids,
         trajectory_id, chunk_index, chunk_count,
         similarity, keyword_rank,
         (${vectorWeight}::float * similarity + ${keywordWeight}::float * keyword_rank)
@@ -368,6 +400,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
           cwd: r.cwd,
           tier: r.tier,
           dreamType: r.dream_type ?? undefined,
+          sourceChunkIds: r.source_chunk_ids ?? undefined,
           trajectoryId: r.trajectory_id ?? undefined,
           chunkIndex: r.chunk_index ?? undefined,
           chunkCount: r.chunk_count ?? undefined,
@@ -388,8 +421,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
         exit_code: number | null;
         session_id: string;
         cwd: string;
-        tier: 'raw' | 'dream';
+        tier: 'raw' | 'dream' | 'wiki';
         dream_type: string | null;
+        source_chunk_ids: string[] | null;
         trajectory_id: string | null;
         chunk_index: number | null;
         chunk_count: number | null;
@@ -397,7 +431,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
     >`
       SELECT
         id, content, repo, branch, timestamp, file_paths,
-        exit_code, session_id, cwd, tier, dream_type,
+        exit_code, session_id, cwd, tier, dream_type, source_chunk_ids,
         trajectory_id, chunk_index, chunk_count
       FROM chunks
       WHERE trajectory_id = ${trajectoryId}
@@ -418,6 +452,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
         cwd: r.cwd,
         tier: r.tier,
         dreamType: r.dream_type ?? undefined,
+        sourceChunkIds: r.source_chunk_ids ?? undefined,
         trajectoryId: r.trajectory_id ?? undefined,
         chunkIndex: r.chunk_index ?? undefined,
         chunkCount: r.chunk_count ?? undefined,
@@ -432,7 +467,17 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
 
   // --- DreamStore -----------------------------------------------------------
 
-  async listSynthesisUnits(opts: { owner: string; repo?: string; since?: Date }): Promise<SynthesisUnit[]> {
+  async listSynthesisUnits(opts: { owner: string; repo?: string; since?: Date; sessionId?: string }): Promise<SynthesisUnit[]> {
+    return this.aggregateUnits('raw', opts.owner, { repo: opts.repo, since: opts.since, sessionId: opts.sessionId });
+  }
+
+  // Group chunks of a tier by (session_id, repo) into synthesis units. Shared by
+  // the dream layer (tier='raw') and the wiki layer (tier='dream').
+  private async aggregateUnits(
+    tier: 'raw' | 'dream',
+    owner: string,
+    opts: { repo?: string; since?: Date; sessionId?: string }
+  ): Promise<SynthesisUnit[]> {
     const rows = await this.sql<
       Array<{ session_id: string; repo: string; chunk_ids: string[]; total_chars: number; last_ts: Date }>
     >`
@@ -443,9 +488,10 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
         SUM(LENGTH(content))::int AS total_chars,
         MAX(timestamp) AS last_ts
       FROM chunks
-      WHERE tier = 'raw'
-        AND owner = ${opts.owner}
+      WHERE tier = ${tier}
+        AND owner = ${owner}
         AND (${opts.repo ?? null}::text IS NULL OR repo = ${opts.repo ?? null})
+        AND (${opts.sessionId ?? null}::text IS NULL OR session_id = ${opts.sessionId ?? null})
       GROUP BY session_id, COALESCE(repo, '')
       HAVING (${opts.since ?? null}::timestamptz IS NULL OR MAX(timestamp) >= ${opts.since ?? null})
       ORDER BY MAX(timestamp) DESC
@@ -459,11 +505,11 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
     }));
   }
 
-  async getUnitChunks(owner: string, sessionId: string, repo: string): Promise<Chunk[]> {
-    const rows = await this.sql<Array<{ id: string; content: string; timestamp: Date }>>`
-      SELECT id, content, timestamp
+  async getUnitChunks(owner: string, sessionId: string, repo: string, tier: 'raw' | 'dream' = 'raw'): Promise<Chunk[]> {
+    const rows = await this.sql<Array<{ id: string; content: string; timestamp: Date; dream_type: string | null }>>`
+      SELECT id, content, timestamp, dream_type
       FROM chunks
-      WHERE tier = 'raw' AND owner = ${owner} AND session_id = ${sessionId}
+      WHERE tier = ${tier} AND owner = ${owner} AND session_id = ${sessionId}
         AND COALESCE(repo, '') = ${repo}
       ORDER BY timestamp ASC NULLS LAST, chunk_index ASC NULLS LAST
     `;
@@ -479,7 +525,8 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
         exitCode: null,
         sessionId,
         cwd: '',
-        tier: 'raw',
+        tier,
+        dreamType: r.dream_type ?? undefined,
       },
     }));
   }
@@ -518,15 +565,77 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
     `;
   }
 
-  // Delete dream chunks by id, defensively scoped so a raw row or another owner
-  // can never be touched even on a caller bug.
-  async deleteDreamChunks(ids: string[], owner: string): Promise<number> {
+  // Delete chunks by id, defensively scoped by owner + tier so a row of another
+  // tier or owner can never be touched even on a caller bug.
+  async deleteChunksByIds(ids: string[], owner: string, tier: string): Promise<number> {
     if (ids.length === 0) return 0;
     const res = await this.sql`
       DELETE FROM chunks
-      WHERE id = ANY(${ids as string[]}) AND tier = 'dream' AND owner = ${owner}
+      WHERE id = ANY(${ids as string[]}) AND tier = ${tier} AND owner = ${owner}
     `;
     return res.count;
+  }
+
+  // tier='dream' wrapper kept for the dream layer's call site.
+  async deleteDreamChunks(ids: string[], owner: string): Promise<number> {
+    return this.deleteChunksByIds(ids, owner, 'dream');
+  }
+
+  // --- WikiLedger ------------------------------------------------------------
+
+  async listDreamUnitsAsUnits(owner: string, opts: { repo?: string; since?: Date } = {}): Promise<SynthesisUnit[]> {
+    return this.aggregateUnits('dream', owner, opts);
+  }
+
+  async listWikiChunkIds(owner: string): Promise<Array<{ id: string; trajectoryId: string | null }>> {
+    const rows = await this.sql<Array<{ id: string; trajectory_id: string | null }>>`
+      SELECT id, trajectory_id FROM chunks WHERE tier = 'wiki' AND owner = ${owner}
+    `;
+    return rows.map((r) => ({ id: r.id, trajectoryId: r.trajectory_id }));
+  }
+
+  // Subset of the given ids that exist as chunks of the given tier — used by
+  // wiki lint's broken-provenance check (sources must be real dream chunks).
+  async existingChunkIds(ids: string[], tier: string): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const rows = await this.sql<Array<{ id: string }>>`
+      SELECT id FROM chunks WHERE tier = ${tier} AND id = ANY(${ids as string[]})
+    `;
+    return new Set(rows.map((r) => r.id));
+  }
+
+  async getWikiUnits(owner: string): Promise<WikiUnitRow[]> {
+    const rows = await this.sql<
+      Array<{ owner: string; session_id: string; repo: string; fingerprint: string; source_chunk_ids: string[]; pages: string[]; model: string | null }>
+    >`
+      SELECT owner, session_id, repo, fingerprint, source_chunk_ids, pages, model
+      FROM wiki_units WHERE owner = ${owner}
+    `;
+    return rows.map((r) => ({
+      owner: r.owner,
+      sessionId: r.session_id,
+      repo: r.repo,
+      fingerprint: r.fingerprint,
+      sourceChunkIds: r.source_chunk_ids,
+      pages: r.pages,
+      model: r.model ?? '',
+    }));
+  }
+
+  async upsertWikiUnit(row: WikiUnitRow): Promise<void> {
+    await this.sql`
+      INSERT INTO wiki_units (owner, session_id, repo, fingerprint, source_chunk_ids, pages, model, ingested_at)
+      VALUES (
+        ${row.owner}, ${row.sessionId}, ${row.repo}, ${row.fingerprint},
+        ${row.sourceChunkIds as string[]}, ${row.pages as string[]}, ${row.model}, NOW()
+      )
+      ON CONFLICT (owner, session_id, repo) DO UPDATE SET
+        fingerprint = EXCLUDED.fingerprint,
+        source_chunk_ids = EXCLUDED.source_chunk_ids,
+        pages = EXCLUDED.pages,
+        model = EXCLUDED.model,
+        ingested_at = NOW()
+    `;
   }
 
   // Retract every chunk + raw event + dream unit for an owner, atomically. Exact
@@ -537,6 +646,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
       const c = await tx`DELETE FROM chunks WHERE owner = ${owner}`;
       const r = await tx`DELETE FROM raw_events WHERE owner = ${owner}`;
       await tx`DELETE FROM dream_units WHERE owner = ${owner}`;
+      await tx`DELETE FROM wiki_units WHERE owner = ${owner}`;
       return { chunks: c.count, rawEvents: r.count };
     });
   }
@@ -548,6 +658,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore {
       const c = await tx`DELETE FROM chunks WHERE owner LIKE ${like}`;
       const r = await tx`DELETE FROM raw_events WHERE owner LIKE ${like}`;
       await tx`DELETE FROM dream_units WHERE owner LIKE ${like}`;
+      await tx`DELETE FROM wiki_units WHERE owner LIKE ${like}`;
       return { chunks: c.count, rawEvents: r.count };
     });
   }

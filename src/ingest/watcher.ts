@@ -2,14 +2,20 @@ import { watch, type FSWatcher } from 'chokidar';
 import type { PipelineDeps } from './pipeline.ts';
 import { fileIsStable, ingestFile } from './pipeline.ts';
 
+export interface WatcherHooks {
+  onIngested(sessionId: string, repo: string, embedded: number): void;
+}
+
 export class SessionWatcher {
   private deps: PipelineDeps;
+  private hooks?: WatcherHooks;
   private pending = new Map<string, NodeJS.Timeout>();
   private inFlight = new Set<string>();
   private watcher?: FSWatcher;
 
-  constructor(deps: PipelineDeps) {
+  constructor(deps: PipelineDeps, hooks?: WatcherHooks) {
     this.deps = deps;
+    this.hooks = hooks;
   }
 
   start(): void {
@@ -58,6 +64,13 @@ export class SessionWatcher {
         console.log(
           `[ingest] ${path.split('/').pop()} — embedded ${result.embedded}, skipped ${result.skipped}, cache ${result.cacheHits}h/${result.cacheMisses}m`
         );
+      }
+      if (result.embedded > 0 && this.hooks) {
+        try {
+          this.hooks.onIngested(result.sessionId, result.repo, result.embedded);
+        } catch (err) {
+          console.error('[synthesis] hook error:', err instanceof Error ? err.message : err);
+        }
       }
     } catch (err) {
       console.error(`[ingest] ${path}:`, err instanceof Error ? err.message : err);
