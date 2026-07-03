@@ -89,6 +89,13 @@ resident; it absorbs both launchd agents (`com.engram.watcher`,
 single frontend (served locally, rendered in the app webview) so browser and
 app share one codebase.
 
+**v1 scope (Derek, 2026-07-03):** core = tray icon + nightly-run indicator +
+embedded search UI, PLUS all three extras: (1) global-hotkey spotlight-style
+search (summon anywhere, Esc dismisses), (2) the deferred UI widgets —
+raw/synth tier toggle, wiki pages rendered as pages with tier badges in the
+trajectory overlay, (3) in-app watcher + scheduler from day one (no launchd
+once the app runs; the launchd agents are the bridge until then).
+
 ## Verification
 
 - Ingest 5–10 real trajectories' dream chunks; show pages + links form.
