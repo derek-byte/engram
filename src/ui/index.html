@@ -128,6 +128,15 @@
   }
   .result .age { color: var(--muted); }
   .result .sim { color: var(--dim); }
+  #more {
+    display: none;
+    color: var(--dim);
+    font-size: 11px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: color 0.1s ease;
+  }
+  #more:hover { color: var(--muted); }
 
   /* ── overlay ── */
   #overlay {
@@ -170,6 +179,7 @@
   </div>
   <div id="status"></div>
   <div id="results"></div>
+  <div id="more"></div>
 </div>
 <div id="overlay">
   <div id="overlay-inner">
@@ -188,10 +198,12 @@
   const resultsEl = document.getElementById('results');
   const statsEl = document.getElementById('stats');
   const latencyEl = document.getElementById('latency');
+  const moreEl = document.getElementById('more');
   const overlayEl = document.getElementById('overlay');
   const overlayMetaEl = document.getElementById('overlay-meta');
   const turnsEl = document.getElementById('turns');
   document.getElementById('back').addEventListener('click', closeOverlay);
+  moreEl.addEventListener('click', () => reveal(visible + 5));
 
   let debounceTimer = null;
   let inflight = null;
@@ -255,11 +267,19 @@
   }
 
   function updateStatus() {
-    if (!items.length) { statusEl.textContent = qEl.value.trim() ? 'no results' : ''; return; }
-    const shown = Math.min(visible, items.length);
-    statusEl.textContent = shown < items.length
-      ? shown + ' of ' + items.length + ' results · ↓ for more'
-      : items.length + ' result' + (items.length === 1 ? '' : 's');
+    if (!items.length) {
+      statusEl.textContent = qEl.value.trim() ? 'no results' : '';
+      moreEl.style.display = 'none';
+      return;
+    }
+    statusEl.textContent = items.length + ' result' + (items.length === 1 ? '' : 's');
+    const remaining = items.length - visible;
+    if (remaining > 0) {
+      moreEl.textContent = 'show ' + remaining + ' more result' + (remaining === 1 ? '' : 's') + ' ↓';
+      moreEl.style.display = 'block';
+    } else {
+      moreEl.style.display = 'none';
+    }
   }
 
   function reveal(n) {
@@ -316,6 +336,7 @@
       rows = []; items = []; activeIndex = -1;
       statusEl.textContent = '';
       latencyEl.textContent = '';
+      moreEl.style.display = 'none';
       return;
     }
     const ctrl = new AbortController();
