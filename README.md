@@ -49,6 +49,8 @@ cp .env.example .env        # set OPENAI_API_KEY (or use ENGRAM_EMBEDDING_PROVID
 bun run src/index.ts backfill
 bun run src/index.ts search "what did we decide about chunking" --repo engram
 bun run src/index.ts ui     # local search UI at http://127.0.0.1:7777
+
+bun run src/index.ts service install   # macOS: always-on launchd watcher (auto-ingests new sessions); `service status` / `service uninstall`
 ```
 
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
