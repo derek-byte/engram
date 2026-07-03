@@ -11,6 +11,16 @@ desktop app), in leverage order.
    `engram save <url>`) snapshotting pages/highlights into raw_events. No
    firehose: "I decided this matters" produces a wiki; hoovering produces a
    dump. Bulk-inject + owner namespacing is the receiving end (built).
+
+   **2b. Live-web arm on `ask`** (sequenced after #1 — web search without the
+   answer layer is just another search box): when local knowledge misses,
+   query the web, answer with citations, and offer fetched pages for capture —
+   the web flows in *through* engram, filtered by what you keep. Search is a
+   provider layer, same pattern as embeddings: **SearXNG** self-hosted default
+   (private, keyless, JSON API, slots into docker-compose next to Postgres),
+   Exa/Brave as config-switchable paid providers for quality over purity.
+   UI: a **local / web scope tab** on the search bar — local is always the
+   default; web is an explicit reach.
 3. **Context injection** — the original coding-native wedge: SessionStart /
    post-checkout hook injecting "what you decided on this branch/project last
    time" into new Claude Code sessions; later, memory auto-attached to any
