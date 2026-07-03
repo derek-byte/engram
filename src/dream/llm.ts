@@ -91,7 +91,7 @@ export function parseItems(raw: string): DreamItem[] {
   return out;
 }
 
-async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -99,11 +99,20 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
     } catch (err) {
       lastErr = err;
       if (!isRetryable(err) || i === attempts - 1) break;
-      const delay = Math.min(2 ** i * 500, 8000);
-      await new Promise((r) => setTimeout(r, delay));
+      await new Promise((r) => setTimeout(r, retryDelayMs(err, i)));
     }
   }
   throw lastErr;
+}
+
+// TPM 429s need seconds-scale waits (the budget refills per minute); with
+// concurrent workers a sub-second backoff just re-collides.
+function retryDelayMs(err: unknown, attempt: number): number {
+  const base = Math.min(2 ** attempt * 500, 8000);
+  if (err instanceof OpenAI.APIError && err.status === 429) {
+    return Math.max(base, (attempt + 1) * 5000);
+  }
+  return base;
 }
 
 function isRetryable(err: unknown): boolean {
