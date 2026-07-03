@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { runSearch } from '../search/index.ts';
+import type { OpenAIReranker } from '../search/rerank.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
 import type { SearchFilters, SearchResult } from '../types/index.ts';
@@ -11,6 +12,8 @@ const CONTENT_PREVIEW_CHARS = 700;
 export interface McpDeps {
   backend: VectorBackend;
   embedder: Embedder;
+  reranker?: OpenAIReranker;
+  rerankDefault?: boolean;
   lastIngestAt(): string | null;
 }
 
@@ -28,9 +31,10 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
         branch: z.string().optional().describe('limit to a git branch'),
         since: z.string().optional().describe('only results after this ISO date'),
         limit: z.number().int().positive().optional().describe('max results (default 5)'),
+        rerank: z.boolean().optional().describe('rerank candidates with an LLM (default from config)'),
       },
     },
-    async ({ query, repo, branch, since, limit }) => {
+    async ({ query, repo, branch, since, limit, rerank }) => {
       const sinceDate = since ? new Date(since) : undefined;
       if (sinceDate && Number.isNaN(sinceDate.getTime())) {
         throw new Error(`invalid 'since' date: ${since} (use ISO format, e.g. 2026-01-15)`);
@@ -41,7 +45,15 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
         since: sinceDate,
         limit: limit ?? 5,
       };
-      const results = await runSearch(query, filters, deps);
+      const useRerank = rerank ?? deps.rerankDefault ?? false;
+      if (useRerank && !deps.reranker) {
+        console.error('[rerank] requested but no OPENAI_API_KEY; falling back to hybrid order');
+      }
+      const results = await runSearch(query, filters, {
+        backend: deps.backend,
+        embedder: deps.embedder,
+        reranker: useRerank ? deps.reranker : undefined,
+      });
       return { content: [{ type: 'text', text: formatResults(results) }] };
     }
   );
@@ -69,7 +81,8 @@ function formatResults(results: SearchResult[]): string {
     .map((r) => {
       const m = r.chunk.metadata;
       const ts = m.timestamp instanceof Date ? m.timestamp.toISOString() : String(m.timestamp);
-      const header = `${ts} · ${m.repo}@${m.branch || '(no-branch)'} · sim=${r.similarity.toFixed(3)}`;
+      const rank = r.rerankRank !== undefined ? ` · rank=#${r.rerankRank}` : '';
+      const header = `${ts} · ${m.repo}@${m.branch || '(no-branch)'} · sim=${r.similarity.toFixed(3)}${rank}`;
       return `${header}\n${preview(r.chunk.content, CONTENT_PREVIEW_CHARS)}\nsession: ${m.sessionId}`;
     })
     .join('\n\n---\n\n');

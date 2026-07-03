@@ -1,6 +1,5 @@
 # engram
 
-<<<<<<< HEAD
 Global semantic memory for your coding sessions. Watches `~/.claude/projects`, chunks every Claude Code trajectory, embeds it, and makes your entire coding history searchable — filtered by repo, branch, and time.
 
 ## Architecture
@@ -60,6 +59,8 @@ Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_U
 `bun run benchmarks/longmemeval.ts --dataset <longmemeval_s_cleaned.json> [--limit N]` scores engram's retrieval substrate on LongMemEval under the same raw-mode conditions MemPalace publishes (one doc per session, user turns only, fresh index per question, recall_any). Embeddings go through the pg cache, so repeat runs are free. Current numbers: R@5 0.982, NDCG@10 0.945 (vs MemPalace raw 0.966 / 0.889).
 
 Add `--path production` to score the **real** path instead of the in-memory substrate: each question's sessions are injected via `injectDocuments` → pgvector, queried through `runSearch` restricted to an owner (`bench:<question_id>`), and sessions ranked by their best-scoring chunk (max-sim). Bench rows are deleted after each question and swept on exit; `--cleanup` purges any leftovers (`owner LIKE 'bench:%'`).
+
+Add `--rerank` (production path only) to score with the LLM reranker enabled (rung 4). It ranks sessions by first appearance in the reranked order and prints a token/cost line; the baseline max-sim ranking is left untouched so the no-rerank numbers stay reproducible.
 
 ## MCP — use engram from Claude Code
 

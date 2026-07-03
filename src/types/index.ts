@@ -39,12 +39,21 @@ export interface SearchResult {
   similarity: number;
   keywordRank: number;
   combined: number;
+  // 1-based position assigned by the LLM reranker. Absent when rerank didn't
+  // run or the LLM omitted this chunk from its ranking.
+  rerankRank?: number;
 }
 
 export interface ScoringConfig {
   vectorWeight: number;
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
+}
+
+export interface RerankConfig {
+  enabled: boolean;
+  model: string;
+  topK: number;
 }
 
 export interface EngramConfig {
@@ -59,6 +68,7 @@ export interface EngramConfig {
   vectorWeight: number;
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
+  rerank: RerankConfig;
 }
 
 export interface RawEvent {

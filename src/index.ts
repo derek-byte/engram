@@ -23,6 +23,7 @@ program
   .option('--repo <repo>', 'limit to a repo')
   .option('--since <date>', 'only results after this ISO date')
   .option('--limit <n>', 'max results', '5')
+  .option('--rerank', 'rerank top-K candidates with an LLM (needs OPENAI_API_KEY)')
   .option('--json', 'emit JSON instead of formatted output')
   .action(async (query, opts) => {
     await searchCommand(query, opts);

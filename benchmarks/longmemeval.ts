@@ -5,6 +5,7 @@ import { Embedder, MAX_CHARS_PER_INPUT, buildProvider } from '../src/ingest/embe
 import { CHUNKER_VERSION } from '../src/ingest/chunker.ts';
 import { injectDocuments } from '../src/ingest/inject.ts';
 import { runSearch } from '../src/search/index.ts';
+import { OpenAIReranker } from '../src/search/rerank.ts';
 
 interface Turn {
   role: string;
@@ -39,6 +40,9 @@ const OUTPUT_PATH = 'benchmarks/results_engram_raw.jsonl';
 const DEFAULT_DATASET = 'benchmarks/longmemeval_s_cleaned.json';
 const PRICE_PER_MILLION_TOKENS = 0.02;
 const BENCH_OWNER_PREFIX = 'bench:';
+// gpt-4.1-mini list price ($ per 1M tokens); estimate only, off for override models.
+const GPT41_MINI_IN = 0.4;
+const GPT41_MINI_OUT = 1.6;
 
 function dcg(relevances: number[], k: number): number {
   let score = 0;
@@ -116,11 +120,12 @@ function rankByCosine(queryVec: number[], docVecs: number[][]): number[] {
 
 type Mode = 'substrate' | 'production';
 
-function parseArgs(argv: string[]): { dataset: string; limit?: number; path: Mode; cleanup: boolean } {
+function parseArgs(argv: string[]): { dataset: string; limit?: number; path: Mode; cleanup: boolean; rerank: boolean } {
   let dataset = DEFAULT_DATASET;
   let limit: number | undefined;
   let path: Mode = 'substrate';
   let cleanup = false;
+  let rerank = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '--limit') limit = Number(argv[++i]);
@@ -134,9 +139,10 @@ function parseArgs(argv: string[]): { dataset: string; limit?: number; path: Mod
       path = v;
     }
     else if (a === '--cleanup') cleanup = true;
+    else if (a === '--rerank') rerank = true;
     else if (!a.startsWith('--')) dataset = a;
   }
-  return { dataset, limit, path, cleanup };
+  return { dataset, limit, path, cleanup, rerank };
 }
 
 // Turn a partial ranking (best-first indices into corpusIds) into the metrics.
@@ -234,7 +240,7 @@ async function scoreSubstrate(entry: Entry, embedder: Embedder): Promise<Questio
 // sessions by their best-scoring chunk (max-sim), then retract the bench rows.
 async function scoreProduction(
   entry: Entry,
-  deps: { backend: PgVectorBackend; embedder: Embedder; config: ReturnType<typeof loadConfig> }
+  deps: { backend: PgVectorBackend; embedder: Embedder; config: ReturnType<typeof loadConfig>; reranker?: OpenAIReranker }
 ): Promise<QuestionScore> {
   const { docs, ids } = buildCorpus(entry);
   if (docs.length === 0) return emptyScore();
@@ -253,17 +259,33 @@ async function scoreProduction(
       deps
     );
 
-    const best = new Map<string, number>();
-    for (const r of results) {
-      const sid = r.chunk.metadata.sessionId;
-      const prev = best.get(sid);
-      if (prev === undefined || r.similarity > prev) best.set(sid, r.similarity);
-    }
     const idIndex = new Map(ids.map((id, i) => [id, i] as const));
-    const ranked = [...best.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([sid]) => idIndex.get(sid))
-      .filter((x): x is number => x !== undefined);
+    let ranked: number[];
+    if (deps.reranker) {
+      // Rerank order is ordinal — rank sessions by the FIRST appearance of any
+      // of their chunks in the returned order.
+      const seen = new Set<string>();
+      ranked = [];
+      for (const r of results) {
+        const sid = r.chunk.metadata.sessionId;
+        if (seen.has(sid)) continue;
+        seen.add(sid);
+        const idx = idIndex.get(sid);
+        if (idx !== undefined) ranked.push(idx);
+      }
+    } else {
+      // Baseline: rank sessions by their best-scoring chunk (max-sim). Untouched.
+      const best = new Map<string, number>();
+      for (const r of results) {
+        const sid = r.chunk.metadata.sessionId;
+        const prev = best.get(sid);
+        if (prev === undefined || r.similarity > prev) best.set(sid, r.similarity);
+      }
+      ranked = [...best.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([sid]) => idIndex.get(sid))
+        .filter((x): x is number => x !== undefined);
+    }
 
     return {
       num_sessions: docs.length,
@@ -330,10 +352,14 @@ async function runHarness(
 }
 
 async function main(): Promise<void> {
-  const { dataset, limit, path, cleanup } = parseArgs(process.argv.slice(2));
+  const { dataset, limit, path, cleanup, rerank } = parseArgs(process.argv.slice(2));
   const config = loadConfig();
   if (!config.openaiApiKey || !config.databaseUrl) {
     console.error('missing OPENAI_API_KEY or ENGRAM_DATABASE_URL (config.json or env)');
+    process.exit(1);
+  }
+  if (rerank && path !== 'production') {
+    console.error('--rerank requires --path production');
     process.exit(1);
   }
 
@@ -352,15 +378,26 @@ async function main(): Promise<void> {
   if (limit !== undefined) entries = entries.slice(0, limit);
 
   const embedder = new Embedder(buildProvider(config), backend);
+  const reranker = rerank ? new OpenAIReranker(config.openaiApiKey, config.rerank) : undefined;
 
-  console.error(`mode=${path} questions=${entries.length}`);
+  console.error(`mode=${path} questions=${entries.length}${rerank ? ` rerank=${config.rerank.model}` : ''}`);
 
   try {
     if (path === 'production') {
-      const deps = { backend, embedder, config };
+      const deps = { backend, embedder, config, reranker };
       await runHarness(entries, (entry) => scoreProduction(entry, deps));
     } else {
       await runHarness(entries, (entry) => scoreSubstrate(entry, embedder));
+    }
+    if (reranker) {
+      const s = reranker.stats;
+      const isDefault = config.rerank.model === 'gpt-4.1-mini';
+      const cost = isDefault
+        ? `, est. $${((s.promptTokens / 1_000_000) * GPT41_MINI_IN + (s.completionTokens / 1_000_000) * GPT41_MINI_OUT).toFixed(4)}`
+        : ' (unknown model — token counts only)';
+      console.log(
+        `rerank: ${s.calls} calls, ${s.failures} fallbacks, ${s.promptTokens} in / ${s.completionTokens} out tok${cost}`
+      );
     }
   } finally {
     // Belt-and-suspenders: sweep any bench rows a crashed question left behind.

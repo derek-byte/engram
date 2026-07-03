@@ -184,6 +184,7 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     vectorWeight: 0.7,
     keywordWeight: 0.3,
     timeDecayHalfLifeDays: 0,
+    rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
     ...overrides,
   };
 }

@@ -27,6 +27,16 @@ The two arms are `UNION`ed (dedup by `id`), then **both** signals score the whol
 
 `SearchResult` exposes component scores: `similarity`, `keywordRank`, `combined`. `engram search --json` includes all three.
 
-Next rung: LLM reranking (top-K → top-5) slots in here without touching ingest, storage, or the CLI.
+## LLM reranker (rung 4, default OFF)
+
+`rerank.ts` adds an optional listwise reranker on top of hybrid results. When `runSearch` is given a `reranker`, it widens the backend pool to `max(topK, limit)`, sends the top-`topK` snippets (whitespace-collapsed, 600 chars each) to one OpenAI chat call, and reorders by the returned permutation:
+
+```
+hybrid pool (top-K) ──one chat call──▶ {"ranking":[indices]} ──▶ ranked (rerankRank=1..n) + LLM-omitted in hybrid order
+```
+
+- **Config** (`EngramConfig.rerank`): `{ enabled: false, model: 'gpt-4.1-mini', topK: 30 }`. Enable via config, the `--rerank` CLI flag, or the MCP `rerank` param. `topK` clamped to [1,100]; timeout (15s) and snippet length are code constants.
+- **Result shape:** ranked chunks gain `rerankRank` (1-based); absent = rerank didn't run or the LLM dropped the chunk. `--json` inherits it.
+- **Degradation:** missing `OPENAI_API_KEY`, timeout, API error, or malformed/refused JSON → `rerank()` returns `null` and `runSearch` keeps plain hybrid order. All diagnostics go to stderr (MCP stdout is the JSON-RPC channel); a rerank failure never crashes or empties a search. The prompt asks for a full permutation so a filtering-happy model can't silently drop the gold chunk.
 
 Refs: raw → hybrid → rerank ladder — [MemPalace](https://github.com/MemPalace/mempalace), [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus).
