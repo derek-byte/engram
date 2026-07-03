@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { WIKI_SYSTEM_PROMPT, buildIngestUser } from './prompt.ts';
 import { PAGE_KINDS, type PageKind } from './store.ts';
-import { isValidSlug, stripIdCitations } from './links.ts';
+import { isValidSlug, slugify, stripIdCitations } from './links.ts';
 
 export interface WikiPageOp {
   slug: string;
@@ -50,7 +50,10 @@ export class OpenAIWikiLLM implements WikiIngestLLM {
         {
           model: this.model,
           temperature: 0,
-          max_tokens: 4096,
+          // Units that update many pages return full bodies; a low cap
+          // truncates the JSON mid-string and, at temperature 0, the same
+          // unit then fails identically on every retry.
+          max_tokens: 16384,
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: WIKI_SYSTEM_PROMPT },
@@ -88,7 +91,7 @@ export function parsePageOps(raw: string): WikiPageOp[] {
   const out: WikiPageOp[] = [];
   for (const raw of list) {
     const o = raw as Record<string, unknown>;
-    const slug = typeof o.slug === 'string' ? o.slug.trim() : '';
+    let slug = typeof o.slug === 'string' ? o.slug.trim() : '';
     const action = o.action;
     let kind = o.kind;
     if (typeof kind === 'string' && KIND_ALIASES[kind]) {
@@ -99,8 +102,14 @@ export function parsePageOps(raw: string): WikiPageOp[] {
     // place they'd pollute the link graph as dangling links.
     const body = typeof o.body === 'string' ? stripIdCitations(o.body) : '';
     if (!isValidSlug(slug)) {
-      console.warn(`[wiki] dropping page op with invalid slug: ${String(o.slug)}`);
-      continue;
+      // Salvage: the model sometimes omits slug but supplies a title.
+      const derived = typeof o.title === 'string' ? slugify(o.title) : '';
+      if (!isValidSlug(derived)) {
+        console.warn(`[wiki] dropping page op with invalid slug: ${String(o.slug)}`);
+        continue;
+      }
+      console.warn(`[wiki] deriving slug '${derived}' from title for page op with invalid slug: ${String(o.slug)}`);
+      slug = derived;
     }
     if (action !== 'create' && action !== 'update') {
       console.warn(`[wiki] dropping page op ${slug} with unknown action: ${String(action)}`);
