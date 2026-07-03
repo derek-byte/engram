@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { slugify, isValidSlug, parseWikilinks, buildLinkGraph, normalizedEditDistance, stripIdCitations } from './links.ts';
+import { slugify, isValidSlug, parseWikilinks, buildLinkGraph, normalizedEditDistance, stripIdCitations, autolinkBody, type LinkTarget } from './links.ts';
 
 describe('slugify', () => {
   test('kebab-cases and trims', () => {
@@ -58,5 +58,72 @@ describe('stripIdCitations', () => {
   });
   test('keeps the label of [[<hex id>|label]]', () => {
     expect(stripIdCitations(`per [[${id}|the decision]]`)).toBe('per the decision');
+  });
+});
+
+describe('autolinkBody', () => {
+  const pg: LinkTarget = { slug: 'pgvector', title: 'pgvector', aliases: ['pg-vector'] };
+  const fp: LinkTarget = { slug: 'fingerprint-skip', title: 'fingerprint short-circuit', aliases: [] };
+  const fingerprint: LinkTarget = { slug: 'fingerprint', title: 'fingerprint', aliases: [] };
+
+  test('wraps only the first mention per page', () => {
+    const r = autolinkBody('pgvector is great. pgvector again.', [pg]);
+    expect(r.body).toBe('[[pgvector]] is great. pgvector again.');
+    expect(r.added).toEqual(['pgvector']);
+  });
+
+  test('case-insensitive match preserves original casing via label', () => {
+    expect(autolinkBody('We use Pgvector here.', [pg]).body).toBe('We use [[pgvector|Pgvector]] here.');
+  });
+
+  test('skips a mention inside a fenced code block, links the next one outside', () => {
+    const r = autolinkBody('```\npgvector\n```\nThen pgvector rocks.', [pg]);
+    expect(r.body).toBe('```\npgvector\n```\nThen [[pgvector]] rocks.');
+  });
+
+  test('skips a mention inside an inline code span', () => {
+    expect(autolinkBody('Use `pgvector` now, pgvector rules.', [pg]).body).toBe('Use `pgvector` now, [[pgvector]] rules.');
+  });
+
+  test('a page already linked (by slug or alias) gets no extra link', () => {
+    expect(autolinkBody('See [[pgvector]]. Also pgvector text.', [pg]).body).toBe('See [[pgvector]]. Also pgvector text.');
+    expect(autolinkBody('See [[pg-vector]]. Also pgvector text.', [pg]).body).toBe('See [[pg-vector]]. Also pgvector text.');
+  });
+
+  test('text inside an existing [[slug|label]] and inside [text](url) is untouched', () => {
+    const body = '[[fingerprint-skip|the pgvector thing]] and [pgvector docs](http://x).';
+    expect(autolinkBody(body, [pg, fp]).body).toBe(body);
+  });
+
+  test('overlapping titles: longest wins at a shared offset, shorter links a later standalone', () => {
+    const r = autolinkBody('The fingerprint short-circuit is fast. Also fingerprint alone.', [fp, fingerprint]);
+    expect(r.body).toBe('The [[fingerprint-skip|fingerprint short-circuit]] is fast. Also [[fingerprint]] alone.');
+    expect(r.added.sort()).toEqual(['fingerprint', 'fingerprint-skip']);
+  });
+
+  test('word boundary: a needle does not match inside a larger word', () => {
+    const log: LinkTarget = { slug: 'log', title: 'log', aliases: [] };
+    expect(autolinkBody('the logger and the log file', [log]).body).toBe('the logger and the [[log]] file');
+  });
+
+  test('self-title is not linked', () => {
+    expect(autolinkBody('pgvector notes here', [pg], 'pgvector').body).toBe('pgvector notes here');
+  });
+
+  test('ambiguous shared alias links nothing', () => {
+    const a: LinkTarget = { slug: 'alpha', title: 'Alpha', aliases: ['shared-thing'] };
+    const b: LinkTarget = { slug: 'beta', title: 'Beta', aliases: ['shared-thing'] };
+    expect(autolinkBody('the shared-thing here', [a, b]).body).toBe('the shared-thing here');
+  });
+
+  test('regex-metacharacter title is safe', () => {
+    const cpp: LinkTarget = { slug: 'cpp', title: 'C++', aliases: [] };
+    expect(autolinkBody('we use C++ daily', [cpp]).body).toBe('we use [[cpp|C++]] daily');
+  });
+
+  test('deterministic: same input → same output', () => {
+    const body = 'pgvector and the fingerprint short-circuit and fingerprint';
+    const targets = [pg, fp, fingerprint];
+    expect(autolinkBody(body, targets).body).toBe(autolinkBody(body, targets).body);
   });
 });
