@@ -60,6 +60,13 @@ It is a build system for knowledge.
 - Search integration: wiki pages embedded into pg (tier='wiki'), UI/MCP default
   to wiki+dream tiers, `--tier raw` for verbatim.
 - Watcher hook: new session → dream synthesis (wave 4) → wiki ingest, end to end.
+- **Synthesis toggle + nightly schedule:** `synthesis: { enabled: false, hour: 3 }`
+  in EngramConfig — OFF by default. When enabled, `engram service install` also
+  installs a `com.engram.synthesis` launchd agent (StartCalendarInterval, default
+  03:00) running dream synthesis → wiki ingest over anything new since the last
+  run. `engram service status` reports both agents. Toggling off removes the
+  agent. Manual `engram wiki ingest` / `engram dream` always work regardless of
+  the toggle. (The wave-6 desktop app later absorbs this scheduler — see below.)
 
 ## Non-goals (wave 5)
 
@@ -67,6 +74,20 @@ It is a build system for knowledge.
 - No query-time KV-cache/CAG layer (sequenced after the wiki exists).
 - No multi-owner/org federation changes.
 - No hand-editing workflow for wiki pages.
+- No desktop app (wave 6, below) — but nothing in wave 5 may assume a terminal:
+  every command the app will trigger must run headless with JSON-able output.
+
+## Wave 6 preview: desktop app (scoped separately, not started)
+
+Menu-bar macOS app (Tauri 2 recommended: ~10MB, native tray, existing web UI
+drops in; engram CLI runs as a sidecar) that becomes the single permission
+grant: one signed .app bundle holding the watcher, the search UI window, and
+the nightly synthesis scheduler — so Full Disk Access / folder access is
+granted once to the app instead of to bun-under-launchd. Login item = always
+resident; it absorbs both launchd agents (`com.engram.watcher`,
+`com.engram.synthesis`) and runs nightly sync in-process. The web UI stays the
+single frontend (served locally, rendered in the app webview) so browser and
+app share one codebase.
 
 ## Verification
 
