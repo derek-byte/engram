@@ -10,9 +10,11 @@ const DEFAULT_SCORING: ScoringConfig = {
   timeDecayHalfLifeDays: 0,
 };
 
-// Vector candidate pool re-ranked by hybrid score. A keyword-only match outside
-// this pool is acceptable loss at the current corpus size (see search/README.md).
+// Two-arm candidate pool re-ranked by hybrid score: vector top-100 (HNSW) UNION
+// keyword top-50 (GIN ts_rank_cd), so an exact-identifier match outside the
+// vector neighbourhood still surfaces. See search/README.md.
 const CANDIDATE_POOL = 100;
+const KEYWORD_POOL = 50;
 
 export class PgVectorBackend implements VectorBackend {
   private sql: ReturnType<typeof postgres>;
@@ -219,6 +221,7 @@ export class PgVectorBackend implements VectorBackend {
     const tierFilter = filters.tier && filters.tier !== 'both' ? filters.tier : null;
     const { vectorWeight, keywordWeight, timeDecayHalfLifeDays } = this.scoring;
     const pool = Math.max(CANDIDATE_POOL, limit);
+    const keywordPool = Math.max(KEYWORD_POOL, limit);
 
     type Row = {
       id: string;
@@ -239,17 +242,19 @@ export class PgVectorBackend implements VectorBackend {
       combined: number;
     };
 
-    // Take the vector top-N candidates, then score keyword rank (ts_rank_cd with
-    // normalization flag 32 → rank/(rank+1), i.e. [0,1)) on just those candidates
-    // and re-rank by the weighted combination. Time-decay multiplies the combined
-    // score by exp(-age_days / halfLife) when enabled.
+    // Two arms feed the candidate pool, then both signals score every candidate
+    // and re-rank by the weighted combination. Keyword rank uses ts_rank_cd with
+    // normalization flag 32 → rank/(rank+1), i.e. [0,1). Time-decay multiplies the
+    // combined score by exp(-age_days / halfLife) when enabled.
+    //   - Vector arm: top-`pool` by cosine distance (HNSW).
+    //   - Keyword arm: top-`keywordPool` by ts_rank_cd where content_tsv matches the
+    //     tsquery (GIN). A stopword-only query yields an empty tsquery: `@@` is then
+    //     false for every row, so the arm contributes nothing (no match / no error).
+    // The same filter block gates both arms. Distance and rank are recomputed over
+    // the unioned candidates so keyword-arm rows get a similarity and vice versa.
     const query = (sql: postgres.TransactionSql | ReturnType<typeof postgres>) => sql<Row[]>`
-      WITH candidates AS (
-        SELECT
-          id, content, content_tsv, repo, branch, timestamp, file_paths,
-          exit_code, session_id, cwd, tier,
-          trajectory_id, chunk_index, chunk_count,
-          embedding <=> ${vec}::vector AS distance
+      WITH vector_arm AS (
+        SELECT id
         FROM chunks
         WHERE
           (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
@@ -258,15 +263,37 @@ export class PgVectorBackend implements VectorBackend {
           AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
           AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
           AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
-        ORDER BY distance ASC
+        ORDER BY embedding <=> ${vec}::vector ASC
         LIMIT ${pool}
+      ),
+      keyword_arm AS (
+        SELECT id
+        FROM chunks
+        WHERE
+          content_tsv @@ websearch_to_tsquery('english', ${queryText})
+          AND (${filters.repo ?? null}::text IS NULL OR repo = ${filters.repo ?? null})
+          AND (${filters.branch ?? null}::text IS NULL OR branch = ${filters.branch ?? null})
+          AND (${filters.since ?? null}::timestamptz IS NULL OR timestamp >= ${filters.since ?? null})
+          AND (${tierFilter}::text IS NULL OR tier = ${tierFilter})
+          AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
+          AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
+        ORDER BY ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) DESC
+        LIMIT ${keywordPool}
+      ),
+      candidate_ids AS (
+        SELECT id FROM vector_arm
+        UNION
+        SELECT id FROM keyword_arm
       ),
       scored AS (
         SELECT
-          *,
-          (1 - distance) AS similarity,
-          ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
-        FROM candidates
+          c.id, c.content, c.repo, c.branch, c.timestamp, c.file_paths,
+          c.exit_code, c.session_id, c.cwd, c.tier,
+          c.trajectory_id, c.chunk_index, c.chunk_count,
+          (1 - (c.embedding <=> ${vec}::vector)) AS similarity,
+          ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
+        FROM chunks c
+        JOIN candidate_ids ci ON ci.id = c.id
       )
       SELECT
         id, content, repo, branch, timestamp, file_paths,
