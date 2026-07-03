@@ -7,6 +7,7 @@ import { watchInternalCommand } from './commands/watch.ts';
 import { uiCommand } from './commands/ui.ts';
 import { mcpCommand } from './commands/mcp.ts';
 import { serviceCommand } from './commands/service.ts';
+import { dreamCommand } from './commands/dream.ts';
 
 const program = new Command();
 
@@ -22,6 +23,7 @@ program
   .option('--branch <branch>', 'limit to a git branch')
   .option('--repo <repo>', 'limit to a repo')
   .option('--since <date>', 'only results after this ISO date')
+  .option('--tier <tier>', 'raw | dream | both (default both)', 'both')
   .option('--limit <n>', 'max results', '5')
   .option('--json', 'emit JSON instead of formatted output')
   .action(async (query, opts) => {
@@ -63,6 +65,20 @@ program
   .argument('<action>', 'install, uninstall, or status')
   .action(async (action) => {
     await serviceCommand(action);
+  });
+
+program
+  .command('dream')
+  .description('Synthesize a dream-tier memory layer over raw chunks (incremental, fingerprinted)')
+  .option('--repo <repo>', 'limit to a repo')
+  .option('--since <date>', 'only units with activity after this ISO date')
+  .option('--limit <n>', 'max units to synthesize this run', '20')
+  .option('--owner <owner>', 'source owner to synthesize from', 'derek')
+  .option('--dream-owner <owner>', 'owner to write dream chunks under (default = --owner)')
+  .option('--dry-run', 'print the unit plan + token estimate without calling the LLM or writing')
+  .option('--json', 'emit JSON instead of formatted output')
+  .action(async (opts) => {
+    await dreamCommand(opts);
   });
 
 program
