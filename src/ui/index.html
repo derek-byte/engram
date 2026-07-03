@@ -100,6 +100,7 @@
     transition: background-color 0.1s ease;
   }
   .result:hover, .result.active { background: var(--surface-hi); }
+  .result.hidden { display: none; }
   .result.active { outline: 1px solid var(--border-hi); outline-offset: -1px; }
   .result .body { min-width: 0; flex: 1; }
   .result .snippet {
@@ -178,7 +179,8 @@
   </div>
 </div>
 <script>
-  const K = 3;
+  const FETCH_K = 25;       // fetched per query (server clamps at 50)
+  const INITIAL_VISIBLE = 3; // compact default; ↓ past the last row reveals more
   const DEBOUNCE_MS = 200;
 
   const qEl = document.getElementById('q');
@@ -196,6 +198,7 @@
   let rows = [];       // current result <div> elements
   let items = [];      // current result data
   let activeIndex = -1;
+  let visible = INITIAL_VISIBLE;
 
   function fmtTime(ts) {
     if (!ts) return '';
@@ -251,14 +254,29 @@
     }
   }
 
+  function updateStatus() {
+    if (!items.length) { statusEl.textContent = qEl.value.trim() ? 'no results' : ''; return; }
+    const shown = Math.min(visible, items.length);
+    statusEl.textContent = shown < items.length
+      ? shown + ' of ' + items.length + ' results · ↓ for more'
+      : items.length + ' result' + (items.length === 1 ? '' : 's');
+  }
+
+  function reveal(n) {
+    visible = Math.min(n, items.length);
+    rows.forEach((row, i) => row.classList.toggle('hidden', i >= visible));
+    updateStatus();
+  }
+
   function renderResults(list) {
     clear(resultsEl);
     rows = [];
     items = list;
     activeIndex = -1;
+    visible = INITIAL_VISIBLE;
     list.forEach((r, i) => {
       const row = document.createElement('div');
-      row.className = 'result';
+      row.className = i < visible ? 'result' : 'result hidden';
 
       const body = document.createElement('div');
       body.className = 'body';
@@ -305,15 +323,15 @@
     statusEl.textContent = 'searching…';
     const t0 = performance.now();
     try {
-      const res = await fetch('/api/search?q=' + encodeURIComponent(q) + '&k=' + K, { signal: ctrl.signal });
+      const res = await fetch('/api/search?q=' + encodeURIComponent(q) + '&k=' + FETCH_K, { signal: ctrl.signal });
       const list = await res.json();
       if (ctrl.signal.aborted) return;
       inflight = null;
       const ms = Math.round(performance.now() - t0);
       if (!Array.isArray(list)) { statusEl.textContent = 'error'; return; }
       latencyEl.textContent = ms + 'ms';
-      statusEl.textContent = list.length ? list.length + ' result' + (list.length === 1 ? '' : 's') : 'no results';
       renderResults(list);
+      updateStatus();
     } catch (err) {
       if (err.name === 'AbortError') return;
       statusEl.textContent = 'error';
@@ -379,7 +397,12 @@
       clearTimeout(debounceTimer);
       search(qEl.value);
     } else if (e.key === 'ArrowDown') {
-      if (rows.length) { e.preventDefault(); setActive(Math.min(activeIndex + 1, rows.length - 1)); }
+      if (rows.length) {
+        e.preventDefault();
+        // Stepping past the last visible row reveals the next hidden one.
+        if (activeIndex >= visible - 1 && visible < items.length) reveal(visible + 1);
+        setActive(Math.min(activeIndex + 1, visible - 1));
+      }
     } else if (e.key === 'ArrowUp') {
       if (rows.length) { e.preventDefault(); setActive(Math.max(activeIndex - 1, 0)); }
     }
