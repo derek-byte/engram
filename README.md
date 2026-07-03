@@ -17,7 +17,10 @@ Global semantic memory for your coding sessions. Watches `~/.claude/projects`, c
   search/   query embedding → cosine similarity + metadata filters
         │
         ▼
-  commands/ search · status · backfill · watch-internal
+  dream/    group raw chunks → LLM synthesis (decisions/fixes/gotchas) → tier='dream' chunks
+        │
+        ▼
+  commands/ search · status · backfill · dream · watch-internal
 ```
 
 Two design invariants:
@@ -32,6 +35,7 @@ Two design invariants:
 | [`src/ingest/`](src/ingest/README.md) | Parse session JSONL → trajectories → chunks → embeddings; file watcher |
 | [`src/storage/`](src/storage/README.md) | pgvector backend (raw events, chunks, embedding cache) + local sqlite state |
 | [`src/search/`](src/search/README.md) | Query orchestration: embed query, delegate to backend |
+| [`src/dream/`](src/dream/README.md) | Dream layer: incremental LLM synthesis over raw chunks, fingerprint short-circuit |
 | [`src/commands/`](src/commands/README.md) | CLI entrypoints (commander) |
 | [`src/config/`](src/config/README.md) | `~/.engram` config loading, env overrides |
 | [`src/types/`](src/types/README.md) | Shared domain types |
@@ -47,6 +51,7 @@ cp .env.example .env        # set OPENAI_API_KEY (or use ENGRAM_EMBEDDING_PROVID
 
 bun run src/index.ts backfill
 bun run src/index.ts search "what did we decide about chunking" --repo engram
+bun run src/index.ts dream --repo engram --dry-run   # plan a dream-layer synthesis (no cost); drop --dry-run to run it
 bun run src/index.ts ui     # local search UI at http://127.0.0.1:7777
 
 bun run src/index.ts service install   # macOS: always-on launchd watcher (auto-ingests new sessions); `service status` / `service uninstall`
@@ -79,5 +84,5 @@ claude mcp add engram -- bun run /absolute/path/to/engram/src/index.ts mcp
 - [MemPalace](https://github.com/MemPalace/mempalace) — benchmark bar; verbatim thesis, retrieval ladder, eval conditions
 - [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) — embedding fallback latch, local fastembed, 0.7/0.3 hybrid
 - [LongMemEval](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) — eval dataset
-- LLM Wiki pattern — incremental synthesis artifacts (planned dream layer)
+- LLM Wiki pattern — incremental synthesis artifacts (the [dream layer](src/dream/README.md))
 - Type: [Departure Mono](https://departuremono.com) (OFL)

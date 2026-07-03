@@ -1,0 +1,220 @@
+import type { Chunk, EngramConfig, RawEvent } from '../types/index.ts';
+import type { DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend } from '../storage/backend.ts';
+import type { Embedder } from '../ingest/embed.ts';
+import type { DreamLLM } from './llm.ts';
+import { chunkHash, contentSha256 } from '../ingest/hash.ts';
+import { CHARS_PER_TOKEN } from '../ingest/chunker.ts';
+import { buildTranscript, buildUnitHeader } from './prompt.ts';
+
+export interface SynthesizeParams {
+  sourceOwner: string;
+  dreamOwner: string;
+  repo?: string;
+  since?: Date;
+  limit: number;
+  dryRun: boolean;
+}
+
+export interface SynthesizeDeps {
+  backend: DreamStore & Pick<VectorBackend, 'insertRawEvents' | 'upsert'>;
+  embedder: Embedder;
+  llm: DreamLLM;
+  config: EngramConfig;
+}
+
+export interface UnitPlan {
+  sessionId: string;
+  repo: string;
+  chunks: number;
+  estTokens: number;
+  status: 'new' | 'changed';
+}
+
+export interface SynthesizeResult {
+  synthesized: number;
+  dreamChunks: number;
+  emptyUnits: number;
+  skipped: number;
+  deferred: number;
+  failed: number;
+  promptTokens: number;
+  completionTokens: number;
+  dryRun: boolean;
+  plan?: UnitPlan[];
+  estTotalTokens?: number;
+}
+
+function unitKey(sessionId: string, repo: string): string {
+  return `${sessionId}\n${repo}`;
+}
+
+export function fingerprintOf(unit: SynthesisUnit): string {
+  // Sort defensively so the fingerprint is invariant to physical row order,
+  // independent of whether the backend pre-sorted (SQL does; be robust anyway).
+  return contentSha256([...unit.chunkIds].sort().join('\n'));
+}
+
+export async function synthesizeDreams(
+  params: SynthesizeParams,
+  deps: SynthesizeDeps
+): Promise<SynthesizeResult> {
+  const { backend, embedder, llm, config } = deps;
+
+  const units = await backend.listSynthesisUnits({
+    owner: params.sourceOwner,
+    repo: params.repo,
+    since: params.since,
+  });
+
+  const existing = new Map<string, DreamUnitRow>();
+  for (const row of await backend.getDreamUnits(params.dreamOwner)) {
+    existing.set(unitKey(row.sessionId, row.repo), row);
+  }
+
+  // Partition into changed/new (need work) vs unchanged (skipped for free).
+  let skipped = 0;
+  const pending: Array<{ unit: SynthesisUnit; fingerprint: string; status: 'new' | 'changed'; prior?: DreamUnitRow }> = [];
+  for (const unit of units) {
+    const fingerprint = fingerprintOf(unit);
+    const prior = existing.get(unitKey(unit.sessionId, unit.repo));
+    if (prior && prior.fingerprint === fingerprint) {
+      skipped++;
+      continue;
+    }
+    pending.push({ unit, fingerprint, status: prior ? 'changed' : 'new', prior });
+  }
+
+  const toProcess = pending.slice(0, Math.max(0, params.limit));
+  const deferred = pending.length - toProcess.length;
+
+  const capChars = config.dreamMaxInputChars;
+
+  if (params.dryRun) {
+    const plan: UnitPlan[] = toProcess.map(({ unit, status }) => ({
+      sessionId: unit.sessionId,
+      repo: unit.repo,
+      chunks: unit.chunkIds.length,
+      estTokens: Math.ceil(Math.min(unit.totalChars, capChars) / CHARS_PER_TOKEN),
+      status,
+    }));
+    return {
+      synthesized: 0,
+      dreamChunks: 0,
+      emptyUnits: 0,
+      skipped,
+      deferred,
+      failed: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      dryRun: true,
+      plan,
+      estTotalTokens: plan.reduce((s, p) => s + p.estTokens, 0),
+    };
+  }
+
+  let synthesized = 0;
+  let dreamChunks = 0;
+  let emptyUnits = 0;
+  let failed = 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+
+  for (const { unit, fingerprint, prior } of toProcess) {
+    try {
+      const trajectoryId = `dream:${fingerprint}`;
+      const rawChunks = await backend.getUnitChunks(params.sourceOwner, unit.sessionId, unit.repo);
+      const transcript = buildTranscript(rawChunks, capChars);
+      const { items, usage } = await llm.extract(buildUnitHeader(unit), transcript);
+      if (usage) {
+        promptTokens += usage.promptTokens;
+        completionTokens += usage.completionTokens;
+      }
+
+      const oldIds = prior?.dreamChunkIds ?? [];
+      let newChunkIds: string[] = [];
+
+      if (items.length > 0) {
+        const texts = items.map((it) => it.text);
+        const { embeddings, model } = await embedder.embedWithStats(
+          texts,
+          items.map((_, i) => `${trajectoryId}#${i}`)
+        );
+        const chunks: Chunk[] = items.map((item, i) => ({
+          id: chunkHash(trajectoryId, i, item.text),
+          embedding: embeddings[i]!,
+          content: item.text,
+          metadata: {
+            repo: unit.repo,
+            branch: '',
+            timestamp: unit.lastTimestamp,
+            filePaths: [],
+            exitCode: null,
+            sessionId: unit.sessionId,
+            cwd: '',
+            tier: 'dream',
+            dreamType: item.type,
+            owner: params.dreamOwner,
+            trajectoryId,
+            chunkIndex: i,
+            chunkCount: items.length,
+            sourceChunkIds: unit.chunkIds,
+            embeddingModel: model,
+          },
+        }));
+        newChunkIds = chunks.map((c) => c.id);
+
+        const rawEvent: RawEvent = {
+          owner: params.dreamOwner,
+          source: 'dream',
+          sessionId: unit.sessionId,
+          contentSha256: contentSha256(`${params.dreamOwner}\n${fingerprint}\n${JSON.stringify(items)}`),
+          occurredAt: unit.lastTimestamp,
+          payload: { sessionId: unit.sessionId, repo: unit.repo, fingerprint, items },
+        };
+        await backend.insertRawEvents([rawEvent]);
+        await backend.upsert(chunks);
+      }
+
+      // Replace stale dream chunks from a prior fingerprint (old minus new).
+      const newSet = new Set(newChunkIds);
+      const stale = oldIds.filter((id) => !newSet.has(id));
+      await backend.deleteDreamChunks(stale, params.dreamOwner);
+
+      // Fingerprint recorded LAST: a mid-unit failure leaves it unrecorded so
+      // the unit retries next run; orphaned chunks are idempotent by id.
+      await backend.upsertDreamUnit({
+        owner: params.dreamOwner,
+        sessionId: unit.sessionId,
+        repo: unit.repo,
+        fingerprint,
+        sourceChunkIds: unit.chunkIds,
+        dreamChunkIds: newChunkIds,
+        model: config.dreamModel,
+      });
+
+      if (items.length > 0) {
+        synthesized++;
+        dreamChunks += newChunkIds.length;
+      } else {
+        emptyUnits++;
+      }
+    } catch (err) {
+      failed++;
+      console.error(
+        `[dream] unit ${unit.sessionId}@${unit.repo || '(no repo)'} failed: ${err instanceof Error ? err.message : err}`
+      );
+    }
+  }
+
+  return {
+    synthesized,
+    dreamChunks,
+    emptyUnits,
+    skipped,
+    deferred,
+    failed,
+    promptTokens,
+    completionTokens,
+    dryRun: false,
+  };
+}

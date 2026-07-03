@@ -23,6 +23,8 @@ const DEFAULT_CONFIG: EngramConfig = {
   keywordWeight: 0.3,
   timeDecayHalfLifeDays: 0,
   rerank: RERANK_DEFAULTS,
+  dreamModel: 'gpt-4o-mini',
+  dreamMaxInputChars: 200_000,
 };
 
 export function ensureEngramDir(): void {
@@ -48,6 +50,7 @@ export function loadConfig(): EngramConfig {
   if (process.env.ENGRAM_DATABASE_URL) merged.databaseUrl = process.env.ENGRAM_DATABASE_URL;
   if (process.env.ENGRAM_EMBEDDING_PROVIDER)
     merged.embeddingProvider = parseProvider(process.env.ENGRAM_EMBEDDING_PROVIDER);
+  if (process.env.ENGRAM_DREAM_MODEL) merged.dreamModel = process.env.ENGRAM_DREAM_MODEL;
 
   // Model + dim follow the provider unless the file pinned them explicitly.
   // The local provider is fixed (buildProvider ignores pins for it), so pins —

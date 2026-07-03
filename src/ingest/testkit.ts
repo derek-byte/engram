@@ -2,8 +2,9 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
-import type { EmbeddingCache, VectorBackend } from '../storage/backend.ts';
+import type { DreamStore, DreamUnitRow, EmbeddingCache, SynthesisUnit, VectorBackend } from '../storage/backend.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
+import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
 import { LocalStore } from '../storage/local.ts';
 
 // ---------------------------------------------------------------------------
@@ -82,9 +83,10 @@ export class FakeCache implements EmbeddingCache {
 // In-memory VectorBackend mirroring pgvector's conflict semantics
 // ---------------------------------------------------------------------------
 
-export class FakeBackend implements VectorBackend {
+export class FakeBackend implements VectorBackend, DreamStore {
   readonly rawEvents = new Map<string, RawEvent>(); // keyed by content_sha256 (unique)
   readonly chunks = new Map<string, Chunk>(); // keyed by id (primary key)
+  readonly dreamUnits = new Map<string, DreamUnitRow>(); // keyed by owner\nsessionId\nrepo
   private cache = new FakeCache();
 
   insertRawEventsCalls = 0;
@@ -161,10 +163,109 @@ export class FakeBackend implements VectorBackend {
         rawEvents++;
       }
     }
+    for (const [k, u] of this.dreamUnits) {
+      if (u.owner === owner) this.dreamUnits.delete(k);
+    }
     return { chunks, rawEvents };
   }
 
+  // --- DreamStore: mirrors pgvector's aggregation + upsert-on-conflict --------
+
+  private unitKey(owner: string, sessionId: string, repo: string): string {
+    return `${owner}\n${sessionId}\n${repo}`;
+  }
+
+  async listSynthesisUnits(opts: { owner: string; repo?: string; since?: Date }): Promise<SynthesisUnit[]> {
+    const groups = new Map<string, Chunk[]>();
+    for (const c of this.chunks.values()) {
+      if (c.metadata.tier !== 'raw' || c.metadata.owner !== opts.owner) continue;
+      const repo = c.metadata.repo ?? '';
+      if (opts.repo !== undefined && repo !== opts.repo) continue;
+      const key = `${c.metadata.sessionId}\n${repo}`;
+      let members = groups.get(key);
+      if (!members) groups.set(key, (members = []));
+      members.push(c);
+    }
+    const units: SynthesisUnit[] = [];
+    for (const [key, members] of groups) {
+      const [sessionId, repo] = key.split('\n') as [string, string];
+      const lastTimestamp = new Date(Math.max(...members.map((m) => m.metadata.timestamp.getTime())));
+      if (opts.since && lastTimestamp < opts.since) continue;
+      units.push({
+        sessionId,
+        repo,
+        chunkIds: members.map((m) => m.id).sort(),
+        totalChars: members.reduce((s, m) => s + m.content.length, 0),
+        lastTimestamp,
+      });
+    }
+    units.sort((a, b) => b.lastTimestamp.getTime() - a.lastTimestamp.getTime());
+    return units;
+  }
+
+  async getUnitChunks(owner: string, sessionId: string, repo: string): Promise<Chunk[]> {
+    return [...this.chunks.values()]
+      .filter(
+        (c) =>
+          c.metadata.tier === 'raw' &&
+          c.metadata.owner === owner &&
+          c.metadata.sessionId === sessionId &&
+          (c.metadata.repo ?? '') === repo
+      )
+      .sort(
+        (a, b) =>
+          a.metadata.timestamp.getTime() - b.metadata.timestamp.getTime() ||
+          (a.metadata.chunkIndex ?? 0) - (b.metadata.chunkIndex ?? 0)
+      );
+  }
+
+  async getDreamUnits(owner: string): Promise<DreamUnitRow[]> {
+    return [...this.dreamUnits.values()].filter((u) => u.owner === owner);
+  }
+
+  async upsertDreamUnit(row: DreamUnitRow): Promise<void> {
+    this.dreamUnits.set(this.unitKey(row.owner, row.sessionId, row.repo), { ...row });
+  }
+
+  async deleteDreamChunks(ids: string[], owner: string): Promise<number> {
+    let n = 0;
+    for (const id of ids) {
+      const c = this.chunks.get(id);
+      if (c && c.metadata.tier === 'dream' && c.metadata.owner === owner) {
+        this.chunks.delete(id);
+        n++;
+      }
+    }
+    return n;
+  }
+
   async close(): Promise<void> {}
+}
+
+// ---------------------------------------------------------------------------
+// Scripted dream LLM
+// ---------------------------------------------------------------------------
+
+// Returns pre-scripted extractions keyed by unit header (or a default), so tests
+// can assert the fingerprint short-circuit skips units without re-invoking it.
+export class FakeDreamLLM implements DreamLLM {
+  callCount = 0;
+  calls: Array<{ header: string; transcript: string }> = [];
+
+  constructor(
+    private script: (header: string, transcript: string) => DreamExtraction | DreamItem[]
+  ) {}
+
+  async extract(header: string, transcript: string): Promise<DreamExtraction> {
+    this.callCount++;
+    this.calls.push({ header, transcript });
+    const out = this.script(header, transcript);
+    const res = Array.isArray(out) ? { items: out } : out;
+    return {
+      items: res.items,
+      usage: res.usage ?? { promptTokens: transcript.length, completionTokens: res.items.length * 20 },
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +286,8 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     keywordWeight: 0.3,
     timeDecayHalfLifeDays: 0,
     rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
+    dreamModel: 'fake-dream-model',
+    dreamMaxInputChars: 200_000,
     ...overrides,
   };
 }

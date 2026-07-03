@@ -12,6 +12,8 @@ export interface ChunkMetadata {
   chunkIndex?: number;
   chunkCount?: number;
   embeddingModel?: string;
+  dreamType?: string;
+  sourceChunkIds?: string[];
 }
 
 export interface Chunk {
@@ -69,6 +71,8 @@ export interface EngramConfig {
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
   rerank: RerankConfig;
+  dreamModel: string;
+  dreamMaxInputChars: number;
 }
 
 export interface RawEvent {
