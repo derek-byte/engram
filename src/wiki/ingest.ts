@@ -210,6 +210,10 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
         `[wiki] unit ${unit.sessionId}@${unit.repo || '(no repo)'} failed: ${err instanceof Error ? err.message : err}`
       );
     }
+    // Progress to stderr (stdout stays --json-clean).
+    console.error(
+      `[wiki] ${unitsCompiled + failed}/${toProcess.length} units · ${pagesCreated} created, ${pagesUpdated} updated`
+    );
   }
 
   if (touched.size > 0) {
