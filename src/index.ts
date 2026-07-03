@@ -6,6 +6,7 @@ import { backfillCommand } from './commands/backfill.ts';
 import { watchInternalCommand } from './commands/watch.ts';
 import { uiCommand } from './commands/ui.ts';
 import { mcpCommand } from './commands/mcp.ts';
+import { serviceCommand } from './commands/service.ts';
 
 const program = new Command();
 
@@ -54,6 +55,14 @@ program
   .description('Run the MCP server (stdio) so Claude Code can search your sessions')
   .action(async () => {
     await mcpCommand();
+  });
+
+program
+  .command('service')
+  .description('Manage the always-on launchd watcher (macOS): install | uninstall | status')
+  .argument('<action>', 'install, uninstall, or status')
+  .action(async (action) => {
+    await serviceCommand(action);
   });
 
 program
