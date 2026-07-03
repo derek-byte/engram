@@ -53,4 +53,19 @@ describe('lintWiki', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test('flags an oversized page and names the split command', async () => {
+    const dir = join(tmpdir(), `engram-wiki-lint-oversized-${crypto.randomUUID()}`);
+    const store = new WikiStore(dir);
+    try {
+      store.init();
+      store.writePage(page({ slug: 'fat-hub', title: 'Fat Hub', body: 'x'.repeat(8100) }));
+      const findings = await lintWiki(store);
+      const oversized = findings.find((f) => f.rule === 'oversized' && f.page === 'fat-hub');
+      expect(oversized?.severity).toBe('warn');
+      expect(oversized?.detail).toContain('engram wiki split fat-hub');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

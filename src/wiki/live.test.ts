@@ -11,9 +11,10 @@ import { Embedder } from '../ingest/embed.ts';
 import { FakeProvider, FakeWikiLLM, testConfig } from '../ingest/testkit.ts';
 import { WikiStore } from './store.ts';
 import { ingestWiki } from './ingest.ts';
-import type { WikiPageOp } from './llm.ts';
+import { OpenAIWikiLLM, type WikiPageOp } from './llm.ts';
 
 const LIVE = process.env.ENGRAM_TEST_LIVE === '1';
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const DB_URL = process.env.ENGRAM_DATABASE_URL ?? 'postgresql://engram:engram@localhost:5432/engram';
 const SRC = 'test:wiki-dream';
 const WIKI = 'test:wiki';
@@ -100,6 +101,51 @@ describe('live wiki ingest → search → skip → retract', () => {
     } finally {
       await backend.deleteByOwnerPrefix('test:').catch(() => {});
       await raw.end();
+      await backend.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Real-LLM reconciliation probe: a later session reverses an earlier decision;
+// chronological compile must land the revised position with an evolution line,
+// not both as co-equal facts. Flaky by nature (LLM output) → tolerant asserts;
+// runs only under ENGRAM_TEST_LIVE=1 with a real OPENAI_API_KEY (costs money).
+describe('live wiki reconciliation (real LLM)', () => {
+  test.skipIf(!LIVE || !OPENAI_KEY)('a later session revises an earlier decision, not co-equal', async () => {
+    const backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION);
+    const embedder = new Embedder(new FakeProvider({ dim: LOCAL_DIM, model: FAKE_MODEL }), backend);
+    const dir = join(tmpdir(), `engram-wiki-reconcile-${crypto.randomUUID()}`);
+    const store = new WikiStore(dir);
+    const llm = new OpenAIWikiLLM(OPENAI_KEY!, process.env.ENGRAM_WIKI_MODEL ?? 'gpt-4o-mini');
+    const config = testConfig({ wikiDir: dir, wikiModel: 'gpt-4o-mini' });
+
+    // Two sessions, overlapping entity (the DB decision), t1 older than t2.
+    const mk = (id: string, sess: string, kind: string, content: string, ts: number): Chunk => ({
+      ...dreamChunk(id, sess, kind, content),
+      metadata: { ...dreamChunk(id, sess, kind, content).metadata, timestamp: new Date(ts) },
+    });
+
+    try {
+      await backend.initialize();
+      await backend.deleteByOwnerPrefix('test:');
+      const seeds = [
+        mk('rc1', 'r-early', 'decision', 'We decided engram will use Neon (hosted Postgres) as its database.', 1_714_500_000_000),
+        mk('rc2', 'r-late', 'decision', 'Revised the earlier database decision: engram now runs local Docker Postgres instead of Neon.', 1_717_500_000_000),
+      ];
+      const vecs = await embedder.embed(seeds.map((c) => c.content));
+      seeds.forEach((c, i) => (c.embedding = vecs[i]!));
+      await backend.upsert(seeds);
+
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, { backend, store, embedder, llm, config });
+
+      const bodies = store.listPages().map((p) => p.body.toLowerCase());
+      const all = bodies.join('\n');
+      expect(all).toContain('docker'); // the current (revised) position is present
+      // Reconciled, not co-equal: an evolution line records the change.
+      expect(/originally|revised|superseded|previously/.test(all)).toBe(true);
+    } finally {
+      await backend.deleteByOwnerPrefix('test:').catch(() => {});
       await backend.close();
       rmSync(dir, { recursive: true, force: true });
     }
