@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { WIKI_SYSTEM_PROMPT, buildIngestUser } from './prompt.ts';
 import { PAGE_KINDS, type PageKind } from './store.ts';
-import { isValidSlug } from './links.ts';
+import { isValidSlug, stripIdCitations } from './links.ts';
 
 export interface WikiPageOp {
   slug: string;
@@ -24,6 +24,12 @@ export interface WikiIngestResponse {
   usage?: WikiUsage;
 }
 
+const REQUEST_TIMEOUT_MS = 120_000;
+
+// Dream item types the model sometimes leaks into page ops despite the prompt;
+// coerce to the closest wiki kind instead of dropping the whole page.
+const KIND_ALIASES: Record<string, PageKind> = { fix: 'gotcha', preference: 'topic' };
+
 // The wiki-ingest LLM seam: one call per synthesis unit returns full page ops.
 export interface WikiIngestLLM {
   ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse>;
@@ -40,16 +46,21 @@ export class OpenAIWikiLLM implements WikiIngestLLM {
 
   async ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse> {
     const res = await withRetry(() =>
-      this.client.chat.completions.create({
-        model: this.model,
-        temperature: 0,
-        max_tokens: 4096,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: WIKI_SYSTEM_PROMPT },
-          { role: 'user', content: buildIngestUser(header, itemsText, candidatesText, inventory) },
-        ],
-      })
+      this.client.chat.completions.create(
+        {
+          model: this.model,
+          temperature: 0,
+          max_tokens: 4096,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: WIKI_SYSTEM_PROMPT },
+            { role: 'user', content: buildIngestUser(header, itemsText, candidatesText, inventory) },
+          ],
+        },
+        // Without a timeout the SDK default is 10 minutes — one hung request
+        // stalls the whole ingest. withRetry owns the retries.
+        { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 }
+      )
     );
     const content = res.choices[0]?.message?.content ?? '';
     return {
@@ -79,8 +90,14 @@ export function parsePageOps(raw: string): WikiPageOp[] {
     const o = raw as Record<string, unknown>;
     const slug = typeof o.slug === 'string' ? o.slug.trim() : '';
     const action = o.action;
-    const kind = o.kind;
-    const body = typeof o.body === 'string' ? o.body : '';
+    let kind = o.kind;
+    if (typeof kind === 'string' && KIND_ALIASES[kind]) {
+      console.warn(`[wiki] coercing page op ${slug} kind '${kind}' → '${KIND_ALIASES[kind]}'`);
+      kind = KIND_ALIASES[kind];
+    }
+    // Strip inline [[<chunk id>]] citations: hex ids are valid slugs, so left in
+    // place they'd pollute the link graph as dangling links.
+    const body = typeof o.body === 'string' ? stripIdCitations(o.body) : '';
     if (!isValidSlug(slug)) {
       console.warn(`[wiki] dropping page op with invalid slug: ${String(o.slug)}`);
       continue;

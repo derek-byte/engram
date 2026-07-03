@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { slugify, isValidSlug, parseWikilinks, buildLinkGraph, normalizedEditDistance } from './links.ts';
+import { slugify, isValidSlug, parseWikilinks, buildLinkGraph, normalizedEditDistance, stripIdCitations } from './links.ts';
 
 describe('slugify', () => {
   test('kebab-cases and trims', () => {
@@ -46,5 +46,17 @@ describe('normalizedEditDistance', () => {
   test('near-duplicate slugs score low', () => {
     expect(normalizedEditDistance('pgvector', 'pg-vector')).toBeLessThan(0.25);
     expect(normalizedEditDistance('alpha', 'omega')).toBeGreaterThan(0.5);
+  });
+});
+
+describe('stripIdCitations', () => {
+  const id = 'a'.repeat(64);
+  test('removes [[<hex id>]] citations, keeps real wikilinks', () => {
+    expect(stripIdCitations(`Chose pgvector. [[${id}]]`)).toBe('Chose pgvector.');
+    expect(stripIdCitations(`See [[pgvector]] and [[${id}]].`)).toBe('See [[pgvector]] and.');
+    expect(stripIdCitations('no ids here [[dream-layer]]')).toBe('no ids here [[dream-layer]]');
+  });
+  test('keeps the label of [[<hex id>|label]]', () => {
+    expect(stripIdCitations(`per [[${id}|the decision]]`)).toBe('per the decision');
   });
 });

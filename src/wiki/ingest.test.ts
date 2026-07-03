@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk } from '../types/index.ts';
@@ -130,6 +130,22 @@ describe('ingestWiki', () => {
     }
   });
 
+
+  test('filters op sources to real item ids from the unit', async () => {
+    const dir = join(tmpdir(), `engram-wiki-src-${crypto.randomUUID()}`);
+    const llm = new FakeWikiLLM(() => ({
+      pages: [{ slug: 'pgvector', action: 'create' as const, kind: 'tool' as const, title: 'pgvector', summary: 'x', aliases: [], body: 'b [[fingerprint-skip]]', sources: ['d1', 'gotcha', 'made-up'] }],
+    }));
+    const { backend, deps } = makeDeps(dir, llm);
+    try {
+      await backend.upsert([dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector')]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+      expect(deps.store.readPage('pgvector')!.sources).toEqual(['d1']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('dry-run plans without writing or calling the LLM', async () => {
     const dir = join(tmpdir(), `engram-wiki-dry-${crypto.randomUUID()}`);
     const llm = new FakeWikiLLM(script);
@@ -141,6 +157,7 @@ describe('ingestWiki', () => {
       expect(res.plan?.length).toBe(1);
       expect(llm.callCount).toBe(0);
       expect(deps.store.listSlugs()).toEqual([]);
+      expect(existsSync(dir)).toBe(false); // dry-run must not bootstrap the wiki dir
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

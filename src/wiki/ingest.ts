@@ -65,7 +65,7 @@ function unitKey(sessionId: string, repo: string): string {
 
 export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps): Promise<WikiIngestResult> {
   const { backend, store, embedder, llm, config } = deps;
-  store.init();
+  if (!params.dryRun) store.init(); // a dry-run must not bootstrap the wiki dir
 
   const units = await backend.listDreamUnitsAsUnits(params.sourceOwner, { repo: params.repo, since: params.since });
 
@@ -152,6 +152,7 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
       const trajectoryId = `dream:${fingerprint}`;
       const now = new Date().toISOString();
       const pagesForUnit: string[] = [];
+      const itemIds = new Set(items.map((it) => it.id));
 
       for (const op of ops) {
         const existingPage = store.readPage(op.slug);
@@ -168,7 +169,10 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
           continue;
         }
 
-        const sources = mergeUnique(existingPage?.sources ?? [], op.sources);
+        // Provenance must be real item ids from this unit — the model sometimes
+        // emits stray strings (e.g. a kind name) that would corrupt the fingerprint.
+        const validSources = op.sources.filter((s) => itemIds.has(s));
+        const sources = mergeUnique(existingPage?.sources ?? [], validSources);
         const trajectories = mergeUnique(existingPage?.trajectories ?? [], [trajectoryId]);
         const page: WikiPage = {
           slug: op.slug,

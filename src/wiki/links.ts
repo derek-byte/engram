@@ -43,6 +43,23 @@ export function parseWikilinks(body: string): string[] {
   return [...out];
 }
 
+// Chunk ids are sha256 hex — a [[<hex id>]] in a body is an inline provenance
+// citation the LLM sometimes emits despite instructions, not a real wikilink.
+const HEX_ID_RE = /^[0-9a-f]{40,64}$/;
+
+// Strip inline id citations from a page body: [[<hex id>]] is removed (with any
+// immediately preceding space), [[<hex id>|label]] keeps just the label.
+// Provenance belongs in frontmatter `sources`, not in the link graph.
+export function stripIdCitations(body: string): string {
+  return body
+    .replace(/\[\[([0-9a-f]{40,64})\|([^\]]*)\]\]/g, '$2')
+    .replace(/ ?\[\[[0-9a-f]{40,64}\]\]/g, '');
+}
+
+export function isHexId(s: string): boolean {
+  return HEX_ID_RE.test(s);
+}
+
 export interface LinkNode {
   slug: string;
   aliases: string[];

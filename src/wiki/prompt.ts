@@ -13,9 +13,10 @@ Rules:
 - Do NOT invent. Every claim must be supported by the provided items or the existing page you are updating. If nothing durable applies, return {"pages":[]}.
 - REUSE existing slugs from the inventory. Never mint a near-duplicate (e.g. "pgvector" when "pg-vector" exists). Prefer updating an existing page over creating a new one.
 - Every page MUST link the other entities it mentions using [[slug]] or [[slug|label]], reusing inventory slugs. A page with no links is a failure.
+- Every [[link]] target must be a page that exists in the inventory or one you create in this same response. Recurring entities (the project itself, key tools, people) deserve their own hub page — create it rather than leaving links dangling.
 - For an "update", return the FULL new body (you own the page). Preserve prior knowledge — merge, don't drop. Do not delete pages.
-- kind ∈ {${PAGE_KINDS.join(', ')}}. slug matches ^[a-z0-9-]{1,64}$. summary is one line.
-- "sources" is the subset of the provided item ids that support the page.
+- kind ∈ {${PAGE_KINDS.join(', ')}} — these are PAGE kinds; item kinds like "fix" or "preference" are not valid page kinds. slug matches ^[a-z0-9-]{1,64}$. summary is one line.
+- "sources" is the subset of the provided item ids that support the page. NEVER put item ids in the body — no inline citations, no [[<item id>]] links. Wikilinks are for entity pages only.
 
 Respond with STRICT JSON only:
 {"pages":[{"slug":"...","action":"create|update","kind":"decision","title":"...","summary":"...","aliases":["..."],"body":"markdown with [[links]]","sources":["<item id>"]}]}
