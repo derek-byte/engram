@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "bun run src/index.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build": "bun build src/index.ts --target=bun --outdir=dist"
   },
