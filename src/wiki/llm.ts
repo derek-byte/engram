@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
-import { WIKI_SYSTEM_PROMPT, buildIngestUser } from './prompt.ts';
-import { PAGE_KINDS, type PageKind } from './store.ts';
+import { WIKI_SYSTEM_PROMPT, WIKI_SPLIT_SYSTEM_PROMPT, buildIngestUser, buildSplitUser } from './prompt.ts';
+import { PAGE_KINDS, type PageKind, type WikiPage } from './store.ts';
 import { isValidSlug, slugify, stripIdCitations } from './links.ts';
 
 export interface WikiPageOp {
@@ -35,7 +35,13 @@ export interface WikiIngestLLM {
   ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse>;
 }
 
-export class OpenAIWikiLLM implements WikiIngestLLM {
+// The hub-split seam: one call takes an oversized page + inventory, returns a
+// rewritten hub op plus child page ops (same STRICT JSON shape as ingest).
+export interface WikiSplitLLM {
+  split(page: WikiPage, inventory: string): Promise<WikiIngestResponse>;
+}
+
+export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
   private client: OpenAI;
   private model: string;
 
@@ -62,6 +68,31 @@ export class OpenAIWikiLLM implements WikiIngestLLM {
         },
         // Without a timeout the SDK default is 10 minutes — one hung request
         // stalls the whole ingest. withRetry owns the retries.
+        { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 }
+      )
+    );
+    const content = res.choices[0]?.message?.content ?? '';
+    return {
+      pages: parsePageOps(content),
+      usage: res.usage
+        ? { promptTokens: res.usage.prompt_tokens, completionTokens: res.usage.completion_tokens }
+        : undefined,
+    };
+  }
+
+  async split(page: WikiPage, inventory: string): Promise<WikiIngestResponse> {
+    const res = await withRetry(() =>
+      this.client.chat.completions.create(
+        {
+          model: this.model,
+          temperature: 0,
+          max_tokens: 16384,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: WIKI_SPLIT_SYSTEM_PROMPT },
+            { role: 'user', content: buildSplitUser(page, inventory) },
+          ],
+        },
         { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 }
       )
     );

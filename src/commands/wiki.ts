@@ -7,6 +7,7 @@ import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { OpenAIWikiLLM } from '../wiki/llm.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { ingestWiki, reindexWiki, type WikiIngestResult, type WikiUnitPlan } from '../wiki/ingest.ts';
+import { splitPage } from '../wiki/split.ts';
 import { lintWiki, type Finding } from '../wiki/lint.ts';
 import { acquireSynthesisLock } from './synthesisLock.ts';
 
@@ -36,7 +37,7 @@ function requireConfigured(config: ReturnType<typeof loadConfig>): void {
   }
 }
 
-export async function wikiCommand(action: string, opts: WikiOptions): Promise<void> {
+export async function wikiCommand(action: string, slug: string | undefined, opts: WikiOptions): Promise<void> {
   switch (action) {
     case 'ingest':
       return wikiIngest(opts);
@@ -46,8 +47,10 @@ export async function wikiCommand(action: string, opts: WikiOptions): Promise<vo
       return wikiStatus(opts);
     case 'reindex':
       return wikiReindex(opts);
+    case 'split':
+      return wikiSplit(slug, opts);
     default:
-      console.error(`Unknown action '${action}'. Use: ingest | lint | status | reindex`);
+      console.error(`Unknown action '${action}'. Use: ingest | lint | status | reindex | split`);
       process.exit(1);
   }
 }
@@ -136,6 +139,64 @@ async function wikiReindex(opts: WikiOptions): Promise<void> {
     if (opts.json) console.log(JSON.stringify(res, null, 2));
     else console.log(`reindexed ${res.pages} page(s), dropped ${res.dropped} stale pg chunk(s).`);
   } finally {
+    await backend.close();
+  }
+}
+
+async function wikiSplit(slug: string | undefined, opts: WikiOptions): Promise<void> {
+  if (!slug) {
+    console.error('engram wiki split needs a page slug: engram wiki split <slug>');
+    process.exit(1);
+  }
+  const config = loadConfig();
+  requireConfigured(config);
+
+  if (!opts.dryRun && !config.openaiApiKey) {
+    console.error('engram wiki split needs an OpenAI API key (set OPENAI_API_KEY) to rewrite the hub.');
+    process.exit(1);
+  }
+
+  const wikiOwner = opts.wikiOwner ?? opts.owner ?? 'derek';
+
+  // Writes pages + pg like ingest → share the synthesis lock (dry-run neither
+  // calls the LLM nor writes).
+  const lock = opts.dryRun ? { release() {} } : acquireSynthesisLock();
+  if (!lock) {
+    const msg = { skipped: 'locked' as const };
+    if (opts.json) console.log(JSON.stringify(msg, null, 2));
+    else console.log('another synthesis run is active; skipping.');
+    return;
+  }
+
+  const backend = makeBackend(config);
+  await backend.initialize();
+  const embedder = new Embedder(buildProvider(config), backend);
+  const store = new WikiStore(config.wikiDir);
+  const llm = new OpenAIWikiLLM(config.openaiApiKey, config.wikiModel);
+
+  try {
+    const result = await splitPage(
+      { wikiOwner, slug, dryRun: Boolean(opts.dryRun) },
+      { backend, store, embedder, llm, config }
+    );
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (result.dryRun) {
+      console.log(`Would split [[${result.slug}]] (${result.hubChars.before} chars, ~${result.estTokens} tokens) with ${config.wikiModel}.`);
+    } else {
+      console.log(
+        `split [[${result.slug}]]: ${result.children.length} child page(s) — hub ${result.hubChars.before} → ${result.hubChars.after} chars ` +
+          `(shrink guard bypassed), sources inherited ${result.sourcesInherited.subset} subset / ${result.sourcesInherited.full} full`
+      );
+      console.log(`children: ${result.children.map((c) => `[[${c}]]`).join(', ')}`);
+      console.log(`tokens: ${result.promptTokens} prompt, ${result.completionTokens} completion`);
+      console.log(`wiki: ${store.dir}`);
+    }
+  } catch (err) {
+    console.error(`wiki split failed: ${err instanceof Error ? err.message : err}`);
+    process.exitCode = 1;
+  } finally {
+    lock.release();
     await backend.close();
   }
 }

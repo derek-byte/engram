@@ -1,11 +1,12 @@
 import type { Chunk, EngramConfig } from '../types/index.ts';
 import type { DreamStore, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
-import type { WikiIngestLLM } from './llm.ts';
+import type { WikiIngestLLM, WikiPageOp } from './llm.ts';
 import { chunkHash } from '../ingest/hash.ts';
 import { CHARS_PER_TOKEN } from '../ingest/chunker.ts';
 import { fingerprintOf } from '../dream/synthesize.ts';
 import { WikiStore, pageFingerprint, type WikiPage } from './store.ts';
+import { autolinkBody, type LinkTarget } from './links.ts';
 import { buildUnitHeader, buildItemsText, buildCandidatesText, type DreamItemInput } from './prompt.ts';
 
 // A page body under this many chars stays one chunk; larger pages split on ##.
@@ -49,6 +50,7 @@ export interface WikiIngestResult {
   pagesCreated: number;
   pagesUpdated: number;
   pagesSkippedGuard: number;
+  pagesAutolinked: number;
   unitsSkipped: number;
   deferred: number;
   failed: number;
@@ -86,6 +88,14 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
     pending.push({ unit, fingerprint, status: prior ? 'changed' : 'new' });
   }
 
+  // Compile OLDEST-first: full-page rewrites let a late unit clobber knowledge a
+  // newer unit already merged, so newest knowledge must merge LAST. aggregateUnits
+  // returns newest-first (deliberate for the dream layer's --limit) — sort here,
+  // scoped to ingest, without touching the shared SQL. --limit N therefore drains
+  // the OLDEST N pending units (deferred = newest, next run picks them up): correct
+  // for an order-sensitive merge where order IS the dependency.
+  pending.sort((a, b) => a.unit.lastTimestamp.getTime() - b.unit.lastTimestamp.getTime());
+
   const toProcess = pending.slice(0, Math.max(0, params.limit));
   const deferred = pending.length - toProcess.length;
   const capChars = config.wikiMaxInputChars;
@@ -103,6 +113,7 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
       pagesCreated: 0,
       pagesUpdated: 0,
       pagesSkippedGuard: 0,
+      pagesAutolinked: 0,
       unitsSkipped,
       deferred,
       failed: 0,
@@ -118,6 +129,7 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
   let pagesCreated = 0;
   let pagesUpdated = 0;
   let pagesSkippedGuard = 0;
+  let pagesAutolinked = 0;
   let failed = 0;
   let promptTokens = 0;
   let completionTokens = 0;
@@ -158,14 +170,24 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
       const pagesForUnit: string[] = [];
       const itemIds = new Set(items.map((it) => it.id));
 
+      // Deterministic auto-linking (runs BEFORE the shrink guard — it only adds
+      // characters, so the guard becomes marginally more permissive, never
+      // stricter). Targets = current inventory OVERLAID with this batch's ops, so
+      // sibling pages created in the same response interlink.
+      const targets = buildLinkTargets(store.listPages(), ops);
+      for (const op of ops) {
+        const linked = autolinkBody(op.body, targets, op.slug);
+        op.body = linked.body;
+        pagesAutolinked += linked.added.length;
+        if (linked.added.length > 0) {
+          console.error(`[wiki] autolink: ${op.slug} += [[${linked.added.join(']], [[')}]] (LLM omitted)`);
+        }
+      }
+
       for (const op of ops) {
         const existingPage = store.readPage(op.slug);
         // Shrink guard: reject a rewrite that collapses a substantial page.
-        if (
-          existingPage &&
-          existingPage.body.length > SHRINK_MIN_OLD &&
-          op.body.length < existingPage.body.length * SHRINK_FLOOR
-        ) {
+        if (existingPage && violatesShrinkGuard(existingPage.body, op.body)) {
           pagesSkippedGuard++;
           console.warn(
             `[wiki] shrink guard: ${op.slug} update ${op.body.length} < 40% of ${existingPage.body.length} chars — keeping old page`
@@ -226,6 +248,7 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
     pagesCreated,
     pagesUpdated,
     pagesSkippedGuard,
+    pagesAutolinked,
     unitsSkipped,
     deferred,
     failed,
@@ -233,6 +256,23 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
     completionTokens,
     dryRun: false,
   };
+}
+
+// Shrink guard: reject a rewrite that collapses a substantial page below the
+// floor. Extracted so the split path can deliberately NOT invoke it for the hub
+// op (which legitimately shrinks) while ingest behavior stays byte-identical.
+export function violatesShrinkGuard(oldBody: string, newBody: string): boolean {
+  return oldBody.length > SHRINK_MIN_OLD && newBody.length < oldBody.length * SHRINK_FLOOR;
+}
+
+// Auto-link targets = existing inventory OVERLAID with this batch's page ops, so
+// co-created sibling pages link each other and an op for an existing slug uses the
+// op's (newer) title/aliases.
+export function buildLinkTargets(pages: WikiPage[], ops: WikiPageOp[] = []): LinkTarget[] {
+  const map = new Map<string, LinkTarget>();
+  for (const p of pages) map.set(p.slug, { slug: p.slug, title: p.title, aliases: p.aliases });
+  for (const op of ops) map.set(op.slug, { slug: op.slug, title: op.title, aliases: op.aliases });
+  return [...map.values()];
 }
 
 function ledgerRow(

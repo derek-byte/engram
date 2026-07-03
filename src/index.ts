@@ -73,8 +73,9 @@ program
 
 program
   .command('wiki')
-  .description('Compile dream chunks into a knowledge wiki: ingest | lint | status | reindex')
-  .argument('<action>', 'ingest, lint, status, or reindex')
+  .description('Compile dream chunks into a knowledge wiki: ingest | lint | status | reindex | split')
+  .argument('<action>', 'ingest, lint, status, reindex, or split')
+  .argument('[slug]', 'page slug (split only)')
   .option('--repo <repo>', 'limit to a repo')
   .option('--since <date>', 'only units with activity after this ISO date')
   .option('--limit <n>', 'max units to compile this run', '20')
@@ -83,8 +84,8 @@ program
   .option('--dry-run', 'print the compile plan + token estimate without calling the LLM or writing')
   .option('--llm', 'wiki lint: also run the LLM contradiction pass')
   .option('--json', 'emit JSON instead of formatted output')
-  .action(async (action, opts) => {
-    await wikiCommand(action, opts);
+  .action(async (action, slug, opts) => {
+    await wikiCommand(action, slug, opts);
   });
 
 program

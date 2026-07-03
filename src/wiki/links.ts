@@ -139,3 +139,140 @@ function levenshtein(a: string, b: string): number {
   }
   return prev[n]!;
 }
+
+// ---------------------------------------------------------------------------
+// Deterministic auto-linking
+// ---------------------------------------------------------------------------
+
+export interface LinkTarget {
+  slug: string;
+  title: string;
+  aliases: string[];
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Byte ranges [start,end) whose text must NOT be auto-linked: fenced code blocks,
+// inline code spans, existing wikilinks, and markdown links (label + URL). Unlike
+// stripFences we mask (not delete) so offsets survive for splicing. Ranges may
+// overlap harmlessly — a candidate is disqualified if it touches ANY of them.
+function protectedRanges(body: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const patterns = [
+    /```[\s\S]*?```/g, // fenced ```
+    /~~~[\s\S]*?~~~/g, // fenced ~~~
+    /`[^`]*`/g, // inline code span
+    /\[\[[^\]]*\]\]/g, // existing wikilink
+    /\[[^\]]*\]\([^)]*\)/g, // markdown link
+  ];
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body)) !== null) {
+      ranges.push([m.index, m.index + m[0].length]);
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  }
+  return ranges;
+}
+
+// Auto-wrap the FIRST unlinked, word-bounded, code-free mention of each target
+// page's title/alias in [[slug|matched]] (or bare [[slug]] when the matched text
+// equals the slug exactly). Guarantees edges regardless of LLM compliance.
+// Pure + deterministic: longest needle wins at a shared offset, claimed ranges
+// accumulate, ambiguous aliases (mapping to >1 slug) link nothing, a page already
+// linked anywhere in the body is left alone ("first mention" = first UNLINKED page).
+export function autolinkBody(
+  body: string,
+  targets: LinkTarget[],
+  selfSlug?: string
+): { body: string; added: string[] } {
+  if (!body || targets.length === 0) return { body, added: [] };
+
+  // Alias → canonical slug resolution (mirrors buildLinkGraph).
+  const resolve = new Map<string, string>();
+  for (const t of targets) {
+    resolve.set(t.slug, t.slug);
+    for (const a of t.aliases) {
+      const s = isValidSlug(a) ? a : slugify(a);
+      if (s && !resolve.has(s)) resolve.set(s, t.slug);
+    }
+  }
+
+  // Pages already linked anywhere in the body get no auto-link.
+  const alreadyLinked = new Set<string>();
+  for (const raw of parseWikilinks(body)) alreadyLinked.add(resolve.get(raw) ?? raw);
+
+  // Needle (lowercased phrase) → slug; a needle resolving to two slugs is dropped.
+  const needleToSlug = new Map<string, string | null>();
+  for (const t of targets) {
+    if (t.slug === selfSlug) continue;
+    if (alreadyLinked.has(t.slug)) continue;
+    for (const phrase of [t.title, ...t.aliases]) {
+      const n = phrase.trim().toLowerCase();
+      if (n.length < 3) continue;
+      if (needleToSlug.has(n)) {
+        if (needleToSlug.get(n) !== t.slug) needleToSlug.set(n, null); // ambiguous
+      } else {
+        needleToSlug.set(n, t.slug);
+      }
+    }
+  }
+
+  const needles = [...needleToSlug.entries()]
+    .filter((e): e is [string, string] => e[1] !== null)
+    .map(([needle, slug]) => ({ needle, slug }))
+    // Longest first (ties alphabetical) so "fingerprint short-circuit" beats
+    // "fingerprint" at a shared offset; deterministic across runs.
+    .sort((a, b) => b.needle.length - a.needle.length || a.needle.localeCompare(b.needle));
+
+  const protectedR = protectedRanges(body);
+  const claimed: Array<[number, number]> = [];
+  const isWordChar = (c: string | undefined): boolean => c !== undefined && /[A-Za-z0-9_]/.test(c);
+  const overlaps = (s: number, e: number, ranges: Array<[number, number]>): boolean =>
+    ranges.some(([rs, re]) => s < re && rs < e);
+
+  interface Repl {
+    start: number;
+    end: number;
+    text: string;
+    slug: string;
+  }
+  const repls: Repl[] = [];
+  const done = new Set<string>();
+
+  for (const { needle, slug } of needles) {
+    if (done.has(slug)) continue;
+    const re = new RegExp(escapeRegex(needle), 'gi');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body)) !== null) {
+      const s = m.index;
+      const e = s + m[0].length;
+      if (m[0].length === 0) {
+        re.lastIndex++;
+        continue;
+      }
+      // Explicit [A-Za-z0-9_] boundary (not \b, so "pg" never matches inside
+      // "pgvector" and "_" is treated as a word char / non-boundary).
+      if (isWordChar(body[s - 1]) || isWordChar(body[e])) continue;
+      if (overlaps(s, e, protectedR)) continue;
+      if (overlaps(s, e, claimed)) continue;
+      const matched = m[0];
+      const text = matched === slug ? `[[${slug}]]` : `[[${slug}|${matched}]]`;
+      repls.push({ start: s, end: e, text, slug });
+      claimed.push([s, e]);
+      done.add(slug);
+      break;
+    }
+  }
+
+  if (repls.length === 0) return { body, added: [] };
+  // Apply back-to-front so earlier offsets stay valid.
+  repls.sort((a, b) => b.start - a.start);
+  let out = body;
+  for (const r of repls) out = out.slice(0, r.start) + r.text + out.slice(r.end);
+  // Report in document order for stable logging.
+  const added = [...repls].sort((a, b) => a.start - b.start).map((r) => r.slug);
+  return { body: out, added };
+}

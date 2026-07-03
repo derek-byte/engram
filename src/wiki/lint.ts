@@ -10,6 +10,7 @@ export interface Finding {
 }
 
 const STUB_CHARS = 120;
+const OVERSIZED_CHARS = 8000; // a hub this large demonstrably degraded compile quality → warn
 const DRIFT_THRESHOLD = 0.25; // normalized edit distance ≤ this ⇒ possible duplicate
 const DRIFT_MIN_LEN = 4;
 
@@ -60,6 +61,14 @@ export async function lintWiki(store: WikiStore, opts: LintOptions = {}): Promis
     }
     if (p.body.trim().length < STUB_CHARS) {
       findings.push({ severity: 'info', rule: 'stub', page: p.slug, detail: `body is only ${p.body.trim().length} chars` });
+    }
+    if (p.body.length > OVERSIZED_CHARS) {
+      findings.push({
+        severity: 'warn',
+        rule: 'oversized',
+        page: p.slug,
+        detail: `body is ${p.body.length} chars (> ${OVERSIZED_CHARS}) — consider engram wiki split ${p.slug}`,
+      });
     }
     if (p.fingerprint && p.fingerprint !== pageFingerprint(p.sources)) {
       findings.push({ severity: 'warn', rule: 'fingerprint-mismatch', page: p.slug, detail: 'frontmatter fingerprint ≠ sha256(sorted sources)' });

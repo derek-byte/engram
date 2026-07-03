@@ -163,6 +163,66 @@ describe('ingestWiki', () => {
     }
   });
 
+  test('compiles units OLDEST-first with the session date in each header', async () => {
+    const dir = join(tmpdir(), `engram-wiki-chrono-${crypto.randomUUID()}`);
+    // One page per session so nothing clobbers; capture header order via the fake.
+    const llm = new FakeWikiLLM((header) => ({
+      pages: [
+        header.includes('s-late')
+          ? { slug: 'late', action: 'create' as const, kind: 'topic' as const, title: 'Late', summary: 'l', aliases: [], body: 'later knowledge [[early]]', sources: ['dl'] }
+          : { slug: 'early', action: 'create' as const, kind: 'topic' as const, title: 'Early', summary: 'e', aliases: [], body: 'earlier knowledge here', sources: ['de'] },
+      ],
+    }));
+    const { backend, deps } = makeDeps(dir, llm);
+    try {
+      // Insert newest first (mirrors pg DESC aggregation) so the ASC sort is exercised.
+      await backend.upsert([
+        dreamChunk('dl', 's-late', 'engram', 'decision', 'late decision', 1_700_000_000_000),
+        dreamChunk('de', 's-early', 'engram', 'decision', 'early decision', 1_600_000_000_000),
+      ]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+
+      expect(llm.calls.length).toBe(2);
+      expect(llm.calls[0]!.header).toContain('s-early'); // oldest compiled first
+      expect(llm.calls[1]!.header).toContain('s-late');
+      expect(llm.calls[0]!.header).toContain('session date 2020-'); // 1_600_000_000_000 → 2020-09
+      expect(llm.calls[1]!.header).toContain('session date 2023-'); // 1_700_000_000_000 → 2023-11
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('auto-links a plain-text sibling mention the LLM did not link (edges guaranteed)', async () => {
+    const dir = join(tmpdir(), `engram-wiki-autolink-${crypto.randomUUID()}`);
+    // Both op bodies mention the sibling in PLAIN TEXT — zero [[links]] emitted.
+    const llm = new FakeWikiLLM(() => ({
+      pages: [
+        { slug: 'pgvector', action: 'create' as const, kind: 'tool' as const, title: 'pgvector', summary: 'store', aliases: [], body: 'The vector store uses the fingerprint short-circuit to skip work.', sources: ['d1'] },
+        { slug: 'fingerprint-skip', action: 'create' as const, kind: 'decision' as const, title: 'fingerprint short-circuit', summary: 'skip', aliases: [], body: 'This decision relies on pgvector heavily for storage.', sources: ['d2'] },
+      ],
+    }));
+    const { backend, deps } = makeDeps(dir, llm);
+    try {
+      await backend.upsert([
+        dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector'),
+        dreamChunk('d2', 's1', 'engram', 'gotcha', 'fp skip'),
+      ]);
+      const res = await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+      expect(res.pagesAutolinked).toBe(2);
+
+      // Bodies were rewritten to carry the [[links]] the LLM omitted.
+      expect(deps.store.readPage('pgvector')!.body).toContain('[[fingerprint-skip|fingerprint short-circuit]]');
+      expect(deps.store.readPage('fingerprint-skip')!.body).toContain('[[pgvector]]');
+
+      // Graph now has edges both directions; neither page is link-less.
+      const graph = deps.store.linkGraph();
+      expect(graph.inbound.get('fingerprint-skip')).toContain('pgvector');
+      expect(graph.inbound.get('pgvector')).toContain('fingerprint-skip');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('reindex drops pg chunks for deleted pages', async () => {
     const dir = join(tmpdir(), `engram-wiki-reindex-${crypto.randomUUID()}`);
     const llm = new FakeWikiLLM(script);

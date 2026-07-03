@@ -5,7 +5,8 @@ import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCa
 import type { DreamStore, DreamUnitRow, EmbeddingCache, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from '../storage/backend.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
 import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
-import type { WikiIngestLLM, WikiIngestResponse } from '../wiki/llm.ts';
+import type { WikiIngestLLM, WikiIngestResponse, WikiSplitLLM } from '../wiki/llm.ts';
+import type { WikiPage } from '../wiki/store.ts';
 import { LocalStore } from '../storage/local.ts';
 
 // ---------------------------------------------------------------------------
@@ -329,9 +330,11 @@ export class FakeDreamLLM implements DreamLLM {
 
 // Returns pre-scripted page ops keyed by the unit header + item texts, so tests
 // assert the fingerprint short-circuit skips units without re-invoking it.
-export class FakeWikiLLM implements WikiIngestLLM {
+export class FakeWikiLLM implements WikiIngestLLM, WikiSplitLLM {
   callCount = 0;
+  splitCallCount = 0;
   calls: Array<{ header: string; itemsText: string; candidatesText: string; inventory: string }> = [];
+  splitCalls: Array<{ page: WikiPage; inventory: string }> = [];
 
   constructor(
     private script: (
@@ -339,7 +342,9 @@ export class FakeWikiLLM implements WikiIngestLLM {
       itemsText: string,
       candidatesText: string,
       inventory: string
-    ) => WikiIngestResponse
+    ) => WikiIngestResponse,
+    // Optional scripted split for the hub-split path.
+    private splitScript?: (page: WikiPage, inventory: string) => WikiIngestResponse
   ) {}
 
   async ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse> {
@@ -349,6 +354,17 @@ export class FakeWikiLLM implements WikiIngestLLM {
     return {
       pages: out.pages,
       usage: out.usage ?? { promptTokens: itemsText.length, completionTokens: out.pages.length * 40 },
+    };
+  }
+
+  async split(page: WikiPage, inventory: string): Promise<WikiIngestResponse> {
+    this.splitCallCount++;
+    this.splitCalls.push({ page, inventory });
+    if (!this.splitScript) throw new Error('FakeWikiLLM: no split script provided');
+    const out = this.splitScript(page, inventory);
+    return {
+      pages: out.pages,
+      usage: out.usage ?? { promptTokens: page.body.length, completionTokens: out.pages.length * 40 },
     };
   }
 }
