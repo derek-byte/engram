@@ -183,9 +183,12 @@ describe('parseItems', () => {
     expect(() => parseItems('{"foo":1}')).toThrow();
   });
 
-  test('drops items with an unknown type', () => {
-    const items = parseItems('{"items":[{"type":"decision","text":"keep"},{"type":"bogus","text":"drop"}]}');
-    expect(items).toEqual([{ type: 'decision', text: 'keep' }]);
+  test('coerces items with an unknown type to note', () => {
+    const items = parseItems('{"items":[{"type":"decision","text":"keep"},{"type":"bogus","text":"salvaged"}]}');
+    expect(items).toEqual([
+      { type: 'decision', text: 'keep' },
+      { type: 'note', text: 'salvaged' },
+    ]);
   });
 
   test('drops empty-text items and returns [] for empty list', () => {

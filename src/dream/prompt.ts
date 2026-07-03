@@ -19,6 +19,7 @@ Rules:
 
 Respond with STRICT JSON only, matching:
 {"items":[{"type":"decision|fix|gotcha|preference","text":"..."}]}
+"type" MUST be exactly one of decision, fix, gotcha, preference — never any other value.
 Return {"items":[]} when nothing qualifies.`;
 
 export function buildUnitHeader(unit: SynthesisUnit): string {

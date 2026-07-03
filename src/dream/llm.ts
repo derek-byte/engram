@@ -1,7 +1,11 @@
 import OpenAI from 'openai';
 import { SYSTEM_PROMPT } from './prompt.ts';
 
-export type DreamItemType = 'decision' | 'fix' | 'gotcha' | 'preference';
+// 'note' is never requested from the model — it's the coercion bucket for
+// off-enum types the model invents, so the item's text survives with an
+// honest label instead of being dropped (a dropped item is unrecoverable
+// once the unit's fingerprint lands).
+export type DreamItemType = 'decision' | 'fix' | 'gotcha' | 'preference' | 'note';
 const ITEM_TYPES: readonly DreamItemType[] = ['decision', 'fix', 'gotcha', 'preference'];
 
 export interface DreamItem {
@@ -37,7 +41,9 @@ export class OpenAIDreamLLM implements DreamLLM {
       this.client.chat.completions.create({
         model: this.model,
         temperature: 0,
-        max_tokens: 4096,
+        // Big units yield many items; a low cap truncates the JSON mid-string
+        // and, at temperature 0, the same unit then fails identically forever.
+        max_tokens: 16384,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
@@ -58,7 +64,7 @@ export class OpenAIDreamLLM implements DreamLLM {
 }
 
 // Strict parse: throw on malformed JSON (unit fails → retried next run). Items
-// with an unknown type are dropped with a warning rather than failing the unit.
+// with an unknown type are coerced to 'note' rather than dropped.
 export function parseItems(raw: string): DreamItem[] {
   let parsed: unknown;
   try {
@@ -76,7 +82,8 @@ export function parseItems(raw: string): DreamItem[] {
     const text = (raw as { text?: unknown })?.text;
     if (typeof text !== 'string' || text.trim().length === 0) continue;
     if (!ITEM_TYPES.includes(type as DreamItemType)) {
-      console.warn(`[dream] dropping item with unknown type: ${String(type)}`);
+      console.warn(`[dream] coercing unknown item type '${String(type)}' to note: ${text.trim().slice(0, 80)}`);
+      out.push({ type: 'note', text: text.trim() });
       continue;
     }
     out.push({ type: type as DreamItemType, text: text.trim() });

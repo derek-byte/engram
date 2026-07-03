@@ -137,6 +137,7 @@ export async function synthesizeDreams(
   let failed = 0;
   let promptTokens = 0;
   let completionTokens = 0;
+  let completedUnits = 0;
 
   // Units are independent (distinct session/repo keys, trajectory ids, and
   // per-unit ledger rows), so their LLM calls run concurrently. Counter
@@ -226,6 +227,9 @@ export async function synthesizeDreams(
         `[dream] unit ${unit.sessionId}@${unit.repo || '(no repo)'} failed: ${err instanceof Error ? err.message : err}`
       );
     }
+    completedUnits++;
+    // Progress to stderr (stdout stays --json-clean).
+    console.error(`[dream] ${completedUnits}/${toProcess.length} units · ${dreamChunks} dream chunks`);
   };
   await mapWithConcurrency(toProcess, DREAM_CONCURRENCY, processUnit);
 
