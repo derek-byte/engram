@@ -6,12 +6,12 @@ Exposes engram to Claude Code (and any MCP client) over **stdio**.
 
 | Tool | Params | Returns |
 | --- | --- | --- |
-| `engram_search` | `query` (required), `repo`, `branch`, `since` (ISO), `limit` (default 5) | Compact text blocks: `timestamp · repo@branch · sim`, content (trimmed to ~700 chars), session id. |
+| `engram_search` | `query` (required), `repo`, `branch`, `since` (ISO), `limit` (default 5), `rerank` (default from config) | Compact text blocks: `timestamp · repo@branch · sim [· rank=#N]`, content (trimmed to ~700 chars), session id. |
 | `engram_status` | — | Total indexed chunk count + last ingest time. |
 
 ## Layout
 
-- `server.ts` — `startMcpServer(deps)`: registers the two tools, wires `runSearch`, connects a `StdioServerTransport`. Deliberately thin — no search logic lives here.
+- `server.ts` — `startMcpServer(deps)`: registers the two tools, wires `runSearch`, connects a `StdioServerTransport`. Deliberately thin — no search logic lives here. `rerank` falls back to `rerankDefault` (config) when omitted; requesting it without a key logs to stderr and proceeds in hybrid order (never throws).
 - Wiring lives in `../commands/mcp.ts` (`engram mcp`): `loadConfig → PgVectorBackend + Embedder + LocalStore → startMcpServer`.
 
 ## stdio discipline

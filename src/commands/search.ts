@@ -3,6 +3,7 @@ import { PgVectorBackend } from '../storage/pgvector.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { runSearch } from '../search/index.ts';
+import { buildReranker } from '../search/rerank.ts';
 import type { SearchFilters, SearchResult } from '../types/index.ts';
 
 export interface SearchOptions {
@@ -10,6 +11,7 @@ export interface SearchOptions {
   repo?: string;
   since?: string;
   limit?: string;
+  rerank?: boolean;
   json?: boolean;
 }
 
@@ -35,8 +37,11 @@ export async function searchCommand(query: string, opts: SearchOptions): Promise
   await backend.initialize();
   const embedder = new Embedder(buildProvider(config));
 
+  const rerankOn = opts.rerank ?? config.rerank.enabled;
+  const reranker = rerankOn ? buildReranker(config) : undefined;
+
   try {
-    const results = await runSearch(query, filters, { backend, embedder });
+    const results = await runSearch(query, filters, { backend, embedder, reranker });
     if (opts.json) {
       console.log(JSON.stringify(results, null, 2));
     } else {
@@ -56,7 +61,8 @@ function printResults(results: SearchResult[]): void {
     const m = r.chunk.metadata;
     const when = relativeTime(m.timestamp);
     const scores = `combined=${r.combined.toFixed(3)} sim=${r.similarity.toFixed(3)} kw=${r.keywordRank.toFixed(3)}`;
-    console.log(`◆ ${m.repo}@${m.branch || '(no-branch)'} · ${when} · ${scores}`);
+    const rank = r.rerankRank !== undefined ? ` rank=#${r.rerankRank}` : '';
+    console.log(`◆ ${m.repo}@${m.branch || '(no-branch)'} · ${when} · ${scores}${rank}`);
     console.log(`  ${preview(r.chunk.content, 200)}`);
     if (m.filePaths.length > 0) {
       console.log(`  files: ${m.filePaths.slice(0, 3).join(', ')}${m.filePaths.length > 3 ? '…' : ''}`);

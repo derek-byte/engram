@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { EngramConfig } from '../types/index.ts';
 import { PROVIDER_DEFAULTS, type EmbeddingProviderKind } from '../ingest/embed.ts';
+import { RERANK_DEFAULTS } from '../search/rerank.ts';
 
 export const ENGRAM_DIR = join(homedir(), '.engram');
 export const CONFIG_PATH = join(ENGRAM_DIR, 'config.json');
@@ -21,6 +22,7 @@ const DEFAULT_CONFIG: EngramConfig = {
   vectorWeight: 0.7,
   keywordWeight: 0.3,
   timeDecayHalfLifeDays: 0,
+  rerank: RERANK_DEFAULTS,
 };
 
 export function ensureEngramDir(): void {
@@ -35,6 +37,11 @@ export function loadConfig(): EngramConfig {
     ? JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
     : {};
   const merged: EngramConfig = { ...DEFAULT_CONFIG, ...raw };
+
+  // rerank is a nested block; older config.json files lack it entirely.
+  merged.rerank = { ...DEFAULT_CONFIG.rerank, ...(raw.rerank ?? {}) };
+  const topK = Math.trunc(Number(merged.rerank.topK));
+  merged.rerank.topK = Number.isFinite(topK) && topK >= 1 && topK <= 100 ? topK : RERANK_DEFAULTS.topK;
 
   // Env vars (incl. anything Bun auto-loads from .env) override the file.
   if (process.env.OPENAI_API_KEY) merged.openaiApiKey = process.env.OPENAI_API_KEY;
