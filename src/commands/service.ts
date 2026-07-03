@@ -74,7 +74,9 @@ function buildPlist(): string {
 function unloadExisting(): void {
   // Modern form first, then the pre-bootstrap fallback. Both ignore not-loaded.
   launchctl(['bootout', serviceTarget()]);
-  if (existsSync(PLIST_PATH)) launchctl(['unload', '-w', PLIST_PATH]);
+  // No -w: that would persist a disabled override that survives uninstall
+  // and makes every future bootstrap fail.
+  if (existsSync(PLIST_PATH)) launchctl(['unload', PLIST_PATH]);
 }
 
 function install(): void {
@@ -85,6 +87,8 @@ function install(): void {
   unloadExisting();
   writeFileSync(PLIST_PATH, buildPlist());
 
+  // Clear any stale disabled override (older installs, manual `launchctl disable`).
+  launchctl(['enable', serviceTarget()]);
   const boot = launchctl(['bootstrap', domainTarget(), PLIST_PATH]);
   if (!boot.ok) {
     const legacy = launchctl(['load', '-w', PLIST_PATH]);
