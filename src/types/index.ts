@@ -6,7 +6,7 @@ export interface ChunkMetadata {
   exitCode: number | null;
   sessionId: string;
   cwd: string;
-  tier: 'raw' | 'dream';
+  tier: 'raw' | 'dream' | 'wiki';
   owner?: string;
   trajectoryId?: string;
   chunkIndex?: number;
@@ -27,7 +27,8 @@ export interface SearchFilters {
   repo?: string;
   branch?: string;
   since?: Date;
-  tier?: 'raw' | 'dream' | 'both';
+  // 'synth' = wiki+dream; 'all' = no tier filter; 'both' is a deprecated alias of 'all'.
+  tier?: 'raw' | 'dream' | 'wiki' | 'synth' | 'all' | 'both';
   exitCode?: number;
   owner?: string;
   limit?: number;
@@ -58,6 +59,11 @@ export interface RerankConfig {
   topK: number;
 }
 
+export interface SynthesisConfig {
+  enabled: boolean;
+  hour: number;
+}
+
 export interface EngramConfig {
   databaseUrl: string;
   openaiApiKey: string;
@@ -73,6 +79,10 @@ export interface EngramConfig {
   rerank: RerankConfig;
   dreamModel: string;
   dreamMaxInputChars: number;
+  wikiDir: string;
+  wikiModel: string;
+  wikiMaxInputChars: number;
+  synthesis: SynthesisConfig;
 }
 
 export interface RawEvent {

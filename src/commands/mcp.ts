@@ -5,6 +5,7 @@ import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { startMcpServer } from '../mcp/server.ts';
 import { buildReranker } from '../search/rerank.ts';
+import { WikiStore } from '../wiki/store.ts';
 
 export async function mcpCommand(): Promise<void> {
   const config = loadConfig();
@@ -24,5 +25,6 @@ export async function mcpCommand(): Promise<void> {
     reranker: config.openaiApiKey ? buildReranker(config) : undefined,
     rerankDefault: config.rerank.enabled,
     lastIngestAt: () => local.getStat('last_ingest_at'),
+    store: new WikiStore(config.wikiDir),
   });
 }

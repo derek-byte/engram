@@ -2,9 +2,10 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
-import type { DreamStore, DreamUnitRow, EmbeddingCache, SynthesisUnit, VectorBackend } from '../storage/backend.ts';
+import type { DreamStore, DreamUnitRow, EmbeddingCache, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from '../storage/backend.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
 import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
+import type { WikiIngestLLM, WikiIngestResponse } from '../wiki/llm.ts';
 import { LocalStore } from '../storage/local.ts';
 
 // ---------------------------------------------------------------------------
@@ -79,14 +80,29 @@ export class FakeCache implements EmbeddingCache {
   }
 }
 
+// Concrete tier set for a SearchFilters tier, or null for "no filter".
+function tierSet(tier: SearchFilters['tier']): Set<string> | null {
+  switch (tier) {
+    case 'raw':
+    case 'dream':
+    case 'wiki':
+      return new Set([tier]);
+    case 'synth':
+      return new Set(['wiki', 'dream']);
+    default:
+      return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // In-memory VectorBackend mirroring pgvector's conflict semantics
 // ---------------------------------------------------------------------------
 
-export class FakeBackend implements VectorBackend, DreamStore {
+export class FakeBackend implements VectorBackend, DreamStore, WikiLedger {
   readonly rawEvents = new Map<string, RawEvent>(); // keyed by content_sha256 (unique)
   readonly chunks = new Map<string, Chunk>(); // keyed by id (primary key)
   readonly dreamUnits = new Map<string, DreamUnitRow>(); // keyed by owner\nsessionId\nrepo
+  readonly wikiUnits = new Map<string, WikiUnitRow>(); // keyed by owner\nsessionId\nrepo
   private cache = new FakeCache();
 
   insertRawEventsCalls = 0;
@@ -128,7 +144,10 @@ export class FakeBackend implements VectorBackend, DreamStore {
   }
 
   async search(queryEmbedding: number[], _queryText: string, filters: SearchFilters): Promise<SearchResult[]> {
-    const rows = [...this.chunks.values()].filter((c) => !filters.owner || c.metadata.owner === filters.owner);
+    const allowed = tierSet(filters.tier);
+    const rows = [...this.chunks.values()].filter(
+      (c) => (!filters.owner || c.metadata.owner === filters.owner) && (!allowed || allowed.has(c.metadata.tier))
+    );
     const scored = rows.map((chunk) => {
       const dot = chunk.embedding.reduce((s, v, i) => s + v * (queryEmbedding[i] ?? 0), 0);
       return { chunk, similarity: dot, keywordRank: 0, combined: dot };
@@ -166,6 +185,9 @@ export class FakeBackend implements VectorBackend, DreamStore {
     for (const [k, u] of this.dreamUnits) {
       if (u.owner === owner) this.dreamUnits.delete(k);
     }
+    for (const [k, u] of this.wikiUnits) {
+      if (u.owner === owner) this.wikiUnits.delete(k);
+    }
     return { chunks, rawEvents };
   }
 
@@ -175,12 +197,17 @@ export class FakeBackend implements VectorBackend, DreamStore {
     return `${owner}\n${sessionId}\n${repo}`;
   }
 
-  async listSynthesisUnits(opts: { owner: string; repo?: string; since?: Date }): Promise<SynthesisUnit[]> {
+  private aggregateUnits(
+    tier: 'raw' | 'dream',
+    owner: string,
+    opts: { repo?: string; since?: Date; sessionId?: string }
+  ): SynthesisUnit[] {
     const groups = new Map<string, Chunk[]>();
     for (const c of this.chunks.values()) {
-      if (c.metadata.tier !== 'raw' || c.metadata.owner !== opts.owner) continue;
+      if (c.metadata.tier !== tier || c.metadata.owner !== owner) continue;
       const repo = c.metadata.repo ?? '';
       if (opts.repo !== undefined && repo !== opts.repo) continue;
+      if (opts.sessionId !== undefined && c.metadata.sessionId !== opts.sessionId) continue;
       const key = `${c.metadata.sessionId}\n${repo}`;
       let members = groups.get(key);
       if (!members) groups.set(key, (members = []));
@@ -203,11 +230,15 @@ export class FakeBackend implements VectorBackend, DreamStore {
     return units;
   }
 
-  async getUnitChunks(owner: string, sessionId: string, repo: string): Promise<Chunk[]> {
+  async listSynthesisUnits(opts: { owner: string; repo?: string; since?: Date; sessionId?: string }): Promise<SynthesisUnit[]> {
+    return this.aggregateUnits('raw', opts.owner, opts);
+  }
+
+  async getUnitChunks(owner: string, sessionId: string, repo: string, tier: 'raw' | 'dream' = 'raw'): Promise<Chunk[]> {
     return [...this.chunks.values()]
       .filter(
         (c) =>
-          c.metadata.tier === 'raw' &&
+          c.metadata.tier === tier &&
           c.metadata.owner === owner &&
           c.metadata.sessionId === sessionId &&
           (c.metadata.repo ?? '') === repo
@@ -227,16 +258,40 @@ export class FakeBackend implements VectorBackend, DreamStore {
     this.dreamUnits.set(this.unitKey(row.owner, row.sessionId, row.repo), { ...row });
   }
 
-  async deleteDreamChunks(ids: string[], owner: string): Promise<number> {
+  async deleteChunksByIds(ids: string[], owner: string, tier: string): Promise<number> {
     let n = 0;
     for (const id of ids) {
       const c = this.chunks.get(id);
-      if (c && c.metadata.tier === 'dream' && c.metadata.owner === owner) {
+      if (c && c.metadata.tier === tier && c.metadata.owner === owner) {
         this.chunks.delete(id);
         n++;
       }
     }
     return n;
+  }
+
+  async deleteDreamChunks(ids: string[], owner: string): Promise<number> {
+    return this.deleteChunksByIds(ids, owner, 'dream');
+  }
+
+  // --- WikiLedger ------------------------------------------------------------
+
+  async listDreamUnitsAsUnits(owner: string, opts: { repo?: string; since?: Date } = {}): Promise<SynthesisUnit[]> {
+    return this.aggregateUnits('dream', owner, opts);
+  }
+
+  async listWikiChunkIds(owner: string): Promise<Array<{ id: string; trajectoryId: string | null }>> {
+    return [...this.chunks.values()]
+      .filter((c) => c.metadata.tier === 'wiki' && c.metadata.owner === owner)
+      .map((c) => ({ id: c.id, trajectoryId: c.metadata.trajectoryId ?? null }));
+  }
+
+  async getWikiUnits(owner: string): Promise<WikiUnitRow[]> {
+    return [...this.wikiUnits.values()].filter((u) => u.owner === owner);
+  }
+
+  async upsertWikiUnit(row: WikiUnitRow): Promise<void> {
+    this.wikiUnits.set(this.unitKey(row.owner, row.sessionId, row.repo), { ...row });
   }
 
   async close(): Promise<void> {}
@@ -269,6 +324,36 @@ export class FakeDreamLLM implements DreamLLM {
 }
 
 // ---------------------------------------------------------------------------
+// Scripted wiki ingest LLM
+// ---------------------------------------------------------------------------
+
+// Returns pre-scripted page ops keyed by the unit header + item texts, so tests
+// assert the fingerprint short-circuit skips units without re-invoking it.
+export class FakeWikiLLM implements WikiIngestLLM {
+  callCount = 0;
+  calls: Array<{ header: string; itemsText: string; candidatesText: string; inventory: string }> = [];
+
+  constructor(
+    private script: (
+      header: string,
+      itemsText: string,
+      candidatesText: string,
+      inventory: string
+    ) => WikiIngestResponse
+  ) {}
+
+  async ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse> {
+    this.callCount++;
+    this.calls.push({ header, itemsText, candidatesText, inventory });
+    const out = this.script(header, itemsText, candidatesText, inventory);
+    return {
+      pages: out.pages,
+      usage: out.usage ?? { promptTokens: itemsText.length, completionTokens: out.pages.length * 40 },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Config + LocalStore helpers
 // ---------------------------------------------------------------------------
 
@@ -288,6 +373,10 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
     dreamModel: 'fake-dream-model',
     dreamMaxInputChars: 200_000,
+    wikiDir: join(tmpdir(), `engram-wiki-${crypto.randomUUID()}`),
+    wikiModel: 'fake-wiki-model',
+    wikiMaxInputChars: 60_000,
+    synthesis: { enabled: false, hour: 3 },
     ...overrides,
   };
 }

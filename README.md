@@ -20,8 +20,13 @@ Global semantic memory for your coding sessions. Watches `~/.claude/projects`, c
   dream/    group raw chunks → LLM synthesis (decisions/fixes/gotchas) → tier='dream' chunks
         │
         ▼
-  commands/ search · status · backfill · dream · watch-internal
+  wiki/     compile dream chunks → git-versioned [[wikilinked]] markdown pages → tier='wiki' chunks
+        │
+        ▼
+  commands/ search · status · backfill · dream · wiki · service · watch-internal
 ```
+
+The knowledge pyramid: L0 raw chunks/events → L1 dream chunks → L2 wiki pages → L3 `index.md`. Each layer is synthesized only from the one below, with a fingerprint short-circuit (sha256 of sorted source ids) making every layer an incremental build. Search defaults flip to the compiled tiers (MCP/UI default `synth` = wiki+dream; `--tier raw` for verbatim drill-down); the wiki→dream→raw provenance chain rides `sourceChunkIds` + the trajectory overlay.
 
 Two design invariants:
 
@@ -36,6 +41,7 @@ Two design invariants:
 | [`src/storage/`](src/storage/README.md) | pgvector backend (raw events, chunks, embedding cache) + local sqlite state |
 | [`src/search/`](src/search/README.md) | Query orchestration: embed query, delegate to backend |
 | [`src/dream/`](src/dream/README.md) | Dream layer: incremental LLM synthesis over raw chunks, fingerprint short-circuit |
+| [`src/wiki/`](src/wiki/README.md) | Wiki layer: compile dream chunks → git-versioned markdown pages, derived pg index |
 | [`src/commands/`](src/commands/README.md) | CLI entrypoints (commander) |
 | [`src/config/`](src/config/README.md) | `~/.engram` config loading, env overrides |
 | [`src/types/`](src/types/README.md) | Shared domain types |
@@ -52,10 +58,14 @@ cp .env.example .env        # set OPENAI_API_KEY (or use ENGRAM_EMBEDDING_PROVID
 bun run src/index.ts backfill
 bun run src/index.ts search "what did we decide about chunking" --repo engram
 bun run src/index.ts dream --repo engram --dry-run   # plan a dream-layer synthesis (no cost); drop --dry-run to run it
+bun run src/index.ts wiki ingest --repo engram --dry-run   # plan a wiki compile (no cost); drop --dry-run to write pages
+bun run src/index.ts wiki lint       # orphans, dangling links, spelling drift, broken provenance
 bun run src/index.ts ui     # local search UI at http://127.0.0.1:7777
 
-bun run src/index.ts service install   # macOS: always-on launchd watcher (auto-ingests new sessions); `service status` / `service uninstall`
+bun run src/index.ts service install   # macOS: launchd watcher (+ nightly com.engram.synthesis when synthesis.enabled); `service status` / `service uninstall`
 ```
+
+Synthesis toggle (off by default): set `synthesis: { "enabled": true, "hour": 3 }` in `~/.engram/config.json`. When on, `service install` also installs a `com.engram.synthesis` launchd agent (StartCalendarInterval, default 03:00) that runs `synthesis-run` (dream → wiki over anything new); toggling off + `service install` removes it. The watcher also runs dream → wiki after each ingest (debounced, shared advisory lock). `engram wiki ingest` / `engram dream` always work regardless of the toggle.
 
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
 

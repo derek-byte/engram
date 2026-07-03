@@ -25,6 +25,10 @@ const DEFAULT_CONFIG: EngramConfig = {
   rerank: RERANK_DEFAULTS,
   dreamModel: 'gpt-4o-mini',
   dreamMaxInputChars: 200_000,
+  wikiDir: join(ENGRAM_DIR, 'wiki'),
+  wikiModel: 'gpt-4o-mini',
+  wikiMaxInputChars: 60_000,
+  synthesis: { enabled: false, hour: 3 },
 };
 
 export function ensureEngramDir(): void {
@@ -45,12 +49,20 @@ export function loadConfig(): EngramConfig {
   const topK = Math.trunc(Number(merged.rerank.topK));
   merged.rerank.topK = Number.isFinite(topK) && topK >= 1 && topK <= 100 ? topK : RERANK_DEFAULTS.topK;
 
+  // synthesis is a nested block too (older config.json files lack it); clamp hour to 0–23.
+  merged.synthesis = { ...DEFAULT_CONFIG.synthesis, ...(raw.synthesis ?? {}) };
+  const hour = Math.trunc(Number(merged.synthesis.hour));
+  merged.synthesis.hour = Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : DEFAULT_CONFIG.synthesis.hour;
+  merged.synthesis.enabled = Boolean(merged.synthesis.enabled);
+
   // Env vars (incl. anything Bun auto-loads from .env) override the file.
   if (process.env.OPENAI_API_KEY) merged.openaiApiKey = process.env.OPENAI_API_KEY;
   if (process.env.ENGRAM_DATABASE_URL) merged.databaseUrl = process.env.ENGRAM_DATABASE_URL;
   if (process.env.ENGRAM_EMBEDDING_PROVIDER)
     merged.embeddingProvider = parseProvider(process.env.ENGRAM_EMBEDDING_PROVIDER);
   if (process.env.ENGRAM_DREAM_MODEL) merged.dreamModel = process.env.ENGRAM_DREAM_MODEL;
+  if (process.env.ENGRAM_WIKI_DIR) merged.wikiDir = process.env.ENGRAM_WIKI_DIR;
+  if (process.env.ENGRAM_WIKI_MODEL) merged.wikiModel = process.env.ENGRAM_WIKI_MODEL;
 
   // Model + dim follow the provider unless the file pinned them explicitly.
   // The local provider is fixed (buildProvider ignores pins for it), so pins —
