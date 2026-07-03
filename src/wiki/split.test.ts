@@ -162,3 +162,26 @@ describe('splitPage', () => {
     }
   });
 });
+
+describe('splitPage duplicate child slugs', () => {
+  test('a slug emitted twice in one response is written once', async () => {
+    const dir = join(tmpdir(), `engram-wiki-split-dup-${crypto.randomUUID()}`);
+    const { store, deps } = makeDeps(dir, () => ({
+      pages: [
+        { slug: 'fat-hub', action: 'update', kind: 'project', title: 'Fat Hub', summary: 'i', aliases: [], body: 'index [[child-a]]', sources: [] },
+        { slug: 'child-a', action: 'create', kind: 'tool', title: 'A', summary: 'a', aliases: [], body: 'first body', sources: ['s1'] },
+        { slug: 'child-a', action: 'create', kind: 'tool', title: 'A dup', summary: 'a2', aliases: [], body: 'second body', sources: ['s2'] },
+      ],
+    }));
+    try {
+      store.init();
+      store.writePage(fatHub());
+      const res = await splitPage({ wikiOwner: WIKI, slug: 'fat-hub', dryRun: false }, deps);
+      expect(res.children).toEqual(['child-a']); // no duplicate entry
+      expect(res.sourcesInherited).toEqual({ subset: 1, full: 0 }); // counted once
+      expect(store.readPage('child-a')!.body).toBe('first body'); // first op wins
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -78,6 +78,7 @@ export async function splitPage(params: WikiSplitParams, deps: WikiSplitDeps): P
   // unrelated existing page.
   const existingSlugs = new Set(store.listSlugs());
   const childOps: WikiPageOp[] = [];
+  const childSlugs = new Set<string>();
   for (const op of ops) {
     if (op.slug === hub.slug) continue;
     if (op.action !== 'create') {
@@ -88,6 +89,11 @@ export async function splitPage(params: WikiSplitParams, deps: WikiSplitDeps): P
       console.warn(`[wiki] split: dropping child op ${op.slug} — slug already exists (would overwrite an unrelated page)`);
       continue;
     }
+    if (childSlugs.has(op.slug)) {
+      console.warn(`[wiki] split: dropping duplicate child op ${op.slug} — same slug emitted twice in one response`);
+      continue;
+    }
+    childSlugs.add(op.slug);
     childOps.push(op);
   }
   if (childOps.length === 0) {
