@@ -104,11 +104,11 @@ function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max) + `... [truncated ${s.length - max} chars]`;
 }
 
-const CHARS_PER_TOKEN = 4;
+export const CHARS_PER_TOKEN = 4;
 const TARGET_TOKENS = 1000;
 const MAX_SEGMENT_TOKENS = 1200;
 const OVERLAP_TOKENS = 120;
-const HARD_CAP_TOKENS = 5000;
+export const HARD_CAP_TOKENS = 5000;
 
 export function chunkTrajectory(t: Trajectory): string[] {
   return packSegments(trajectorySegments(t));
@@ -175,7 +175,7 @@ function hardSplit(s: string, maxTokens: number): string[] {
   return out;
 }
 
-function overlapTail(text: string): string {
+export function overlapTail(text: string): string {
   const maxChars = OVERLAP_TOKENS * CHARS_PER_TOKEN;
   if (text.length <= maxChars) return text;
   const tail = text.slice(text.length - maxChars);
