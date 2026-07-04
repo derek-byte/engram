@@ -157,8 +157,18 @@
     color: var(--dim);
   }
   #cardbar .left, #cardbar .right { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #cardbar .right { font-variant-numeric: tabular-nums; }
+  #cardbar .right { font-variant-numeric: tabular-nums; display: flex; align-items: baseline; gap: 12px; overflow: visible; }
   #cardbar .accent { color: var(--accent); }
+  /* Clickable "⌘↵ ask" affordance; dims to a disabled state when no API key. */
+  #ask-btn {
+    color: var(--accent);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    transition: color 0.1s ease, opacity 0.1s ease;
+  }
+  #ask-btn:hover { color: #435c33; }
+  #ask-btn.disabled { color: var(--dim); cursor: default; opacity: 0.6; }
 
   /* ── scope toggle ── */
   #scope {
@@ -304,6 +314,84 @@
     transition: color 0.1s ease;
   }
   #more:hover { color: var(--muted); }
+
+  /* ── ask answer card ── */
+  /* Grounded answer sits at the top of #results-pane, above the wiki cards.
+     Reuses the wiki-card recessed --inset fill + accent left edge so it reads
+     as part of the same knowledge surface, one notch more prominent. */
+  #answer { max-width: 760px; }
+  .ask-card {
+    background: var(--inset);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: 10px;
+    margin: 8px 0 16px;
+    padding: 14px 16px;
+  }
+  .ask-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .ask-head .ask-kind {
+    color: var(--accent);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .ask-head .ask-cancel {
+    margin-left: auto;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 9px;
+    cursor: pointer;
+    transition: background-color 0.1s ease, color 0.1s ease;
+  }
+  .ask-head .ask-cancel:hover { background: var(--surface-hi); color: var(--fg); }
+  .ask-q { color: var(--fg); font-size: 13.5px; line-height: 1.5; margin-bottom: 10px; }
+  .ask-body {
+    color: var(--fg);
+    font-size: 13.5px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .ask-body .cite-chip {
+    color: var(--accent);
+    cursor: pointer;
+    font-variant-numeric: tabular-nums;
+  }
+  .ask-body .cite-chip:hover { text-decoration: underline; }
+  .ask-note { color: var(--dim); font-size: 11.5px; line-height: 1.5; margin-top: 10px; }
+  .ask-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .ask-foot-label {
+    color: var(--dim);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 6px;
+  }
+  .ask-src {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 11.5px;
+    color: var(--muted);
+    padding: 3px 0;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.1s ease;
+  }
+  .ask-src:hover { color: var(--fg); }
+  .ask-src .ask-src-n { color: var(--accent); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 
   /* ── sliding selection pill ── */
   /* ONE absolutely-positioned pill per discrete selection control (sidebar nav,
@@ -616,12 +704,16 @@
             <span data-scope="history">history</span>
             <span data-scope="all">all</span>
           </span>
-          <span class="right" id="latency"></span>
+          <span class="right">
+            <span id="ask-btn" role="button" tabindex="0" title="Ask a grounded question (⌘↵)">⌘↵ ask</span>
+            <span id="latency"></span>
+          </span>
         </div>
       </div>
       <div id="status"></div>
     </div>
     <div id="results-pane">
+      <div id="answer"></div>
       <div id="results"></div>
       <div id="more"></div>
     </div>
@@ -661,6 +753,9 @@
   const statsEl = document.getElementById('stats');
   const latencyEl = document.getElementById('latency');
   const moreEl = document.getElementById('more');
+  const askBtnEl = document.getElementById('ask-btn');
+  const answerEl = document.getElementById('answer');
+  const resultsPaneEl = document.getElementById('results-pane');
   const overlayEl = document.getElementById('overlay');
   const overlayMetaEl = document.getElementById('overlay-meta');
   const turnsEl = document.getElementById('turns');
@@ -1101,48 +1196,75 @@
     snip.textContent = item.label || item.key;
     body.appendChild(snip);
     row.appendChild(body);
+    if (item._aside) {
+      const aside = document.createElement('div');
+      aside.className = 'aside';
+      const sim = document.createElement('span');
+      sim.className = 'sim';
+      sim.textContent = item._aside;
+      aside.appendChild(sim);
+      row.appendChild(aside);
+    }
     row.addEventListener('click', () => openItem(item));
     row.addEventListener('mouseenter', () => setActive(i));
     return row;
   }
 
-  // Empty-state: recency-ranked recent searches + recently viewed pages/trajectories.
+  function appendRecentGroup(heading, group) {
+    if (!group.length) return;
+    const lab = document.createElement('div');
+    lab.className = 'section-label';
+    lab.textContent = heading;
+    resultsEl.appendChild(lab);
+    for (const item of group) {
+      const i = items.length;
+      const row = buildRecentRow(item, i);
+      resultsEl.appendChild(row);
+      rows.push(row); items.push(item);
+    }
+  }
+
+  // Empty-state: recent searches / asks / recently viewed, then "unanswered
+  // lately" (unmet-demand queries) below. Recents come from /api/recents; the
+  // demand group from GET /api/demand — both are cosmetic, so a missing endpoint
+  // (404 / network / T2 not yet landed) just drops its group, never throws.
   async function showRecents() {
     if (inflight) { inflight.abort(); inflight = null; }
     clear(resultsEl);
     rows = []; items = []; activeIndex = -1; wikiN = 0;
     moreEl.style.display = 'none';
     statusEl.textContent = '';
-    let list = null;
-    try {
-      const res = await fetch('/api/recents');
-      list = await res.json();
-    } catch { /* recents are cosmetic */ }
-    if (!Array.isArray(list) || list.length === 0) return;
+    const [list, demand] = await Promise.all([
+      fetch('/api/recents').then((r) => r.json()).catch(() => null),
+      fetch('/api/demand?days=30').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
     // The log keeps non-consecutive repeats (it doubles as the demand signal);
     // the display is LRU-style — one row per kind+key, newest wins.
-    const seen = new Set();
-    const uniq = list.filter((r) => {
-      const k = r.kind + '\n' + r.key;
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-    const searches = uniq.filter((r) => r.kind === 'search').slice(0, 8);
-    const views = uniq.filter((r) => r.kind === 'view').slice(0, 8);
-    for (const [heading, group] of [['recent searches', searches], ['recently viewed', views]]) {
-      if (!group.length) continue;
-      const lab = document.createElement('div');
-      lab.className = 'section-label';
-      lab.textContent = heading;
-      resultsEl.appendChild(lab);
-      for (const rec of group) {
-        const item = { _recent: rec.kind, key: rec.key, label: rec.label, timestamp: normTs(rec.timestamp) };
-        const i = items.length;
-        const row = buildRecentRow(item, i);
-        resultsEl.appendChild(row);
-        rows.push(row); items.push(item);
-      }
+    if (Array.isArray(list)) {
+      const seen = new Set();
+      const uniq = list.filter((r) => {
+        const k = r.kind + '\n' + r.key;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      const toItems = (kind) => uniq.filter((r) => r.kind === kind).slice(0, 8)
+        .map((rec) => ({ _recent: rec.kind, key: rec.key, label: rec.label, timestamp: normTs(rec.timestamp) }));
+      appendRecentGroup('recent searches', toItems('search'));
+      appendRecentGroup('recent asks', toItems('ask'));
+      appendRecentGroup('recently viewed', toItems('view'));
+    }
+    // Unmet demand: queries that returned nothing / weak / uncovered. Clicking a
+    // row restores the query so it can be re-run (or asked).
+    if (demand && Array.isArray(demand.unmet) && demand.unmet.length) {
+      const unmet = demand.unmet.slice(0, 8).map((u) => ({
+        _recent: 'demand',
+        key: u.query,
+        label: u.query,
+        timestamp: normTs(u.latestTs),
+        _aside: u.count ? u.count + '×' : '',
+      }));
+      appendRecentGroup('unanswered lately', unmet);
     }
     // All recents are visible; keep the reveal machinery inert (no hiding, no
     // "show more from history" in the empty state).
@@ -1200,6 +1322,11 @@
   }
 
   async function search(q) {
+    // Keep the answer card only while it still matches the query. Typing already
+    // clears it on `input`; this covers programmatic query changes (back/forward,
+    // clicking a recent row). A scope change re-runs search with the SAME query,
+    // so the card survives — the tier-keyed cache guards against a mismatch.
+    if (askCardQuery !== null && askCardQuery !== q.trim()) clearAnswer();
     if (inflight) inflight.abort();
     if (!q.trim()) {
       latencyEl.textContent = '';
@@ -1228,7 +1355,10 @@
 
   // Open dispatch shared by clicks, Enter, and recents rows.
   function openItem(r) {
-    if (r._recent === 'search') { qEl.value = r.key; search(r.key); updateHash({ view: 'search', q: r.key.trim() }, {}); return; }
+    if (r._recent === 'search' || r._recent === 'demand') { qEl.value = r.key; search(r.key); updateHash({ view: 'search', q: r.key.trim() }, {}); return; }
+    // A recent ask row is a deliberate re-ask: restore the query and fire it
+    // (search runs too, to populate the results beneath the card).
+    if (r._recent === 'ask') { qEl.value = r.key; search(r.key); updateHash({ view: 'search', q: r.key.trim() }, {}); runAskUI(); return; }
     if (r._recent === 'view') { openRecentView(r.key); return; }
     if (r.tier === 'wiki') { openWikiPage(r); return; }
     openTrajectory(r);
@@ -1238,6 +1368,285 @@
     if (key.startsWith('wiki:')) openWikiPage({ slug: key.slice(5), trajectoryId: key, tier: 'wiki' });
     else if (key.startsWith('traj:')) openTrajectory({ trajectoryId: key.slice(5) });
   }
+
+  // ── ask (grounded answer) ──
+  // A verb, never a scope: fires ONLY on Cmd+Enter or the #ask-btn click, never
+  // per keystroke / debounce / scope change / plain Enter / zero results. The
+  // answer is state within #/search and is NOT routed — back/forward must never
+  // re-fire a paid call, and returning from a citation overlay must not lose the
+  // card. An in-memory session cache keyed q+tier+repo makes re-asking free and
+  // preserves the card across navigation.
+  //
+  // Interaction decisions:
+  //  · Cmd+Enter while an ask is in flight → no-op (stop it via the cancel chip).
+  //  · Empty query → no-op.
+  //  · Scope change mid-answer → the card STAYS (it's the answer to the question
+  //    as asked); the tier-keyed cache means re-asking under the new scope can't
+  //    serve the wrong answer. Editing the query text clears the card + aborts.
+  //  · Cancel aborts the client fetch only; the server call still completes (and
+  //    may cost) — the card says so.
+  const askCache = new Map(); // key `q\ntier\nrepo` → terminal result (never errors)
+  let askCtrl = null;         // in-flight AbortController, or null
+  let askTick = null;         // elapsed-ticker interval id, or null
+  let askCardQuery = null;    // query echoed in the current card (null ⇒ no card)
+
+  function askKey(q) { return q + '\n' + SCOPE_TIER[scope] + '\n' + ''; } // repo unused in the UI
+  function askModelLabel() { return (settingsCfg && settingsCfg.wikiModel) || 'the wiki model'; }
+
+  // Empty #answer, stop the ticker, abort any in-flight fetch. Called on query
+  // edit and before rebuilding the card for a new state.
+  function clearAnswer() {
+    if (askTick) { clearInterval(askTick); askTick = null; }
+    if (askCtrl) { askCtrl.abort(); askCtrl = null; }
+    askCardQuery = null;
+    clear(answerEl);
+  }
+
+  // Fresh .ask-card in a cleared #answer; scrolls the pane to the top so the
+  // card is visible even if the user had scrolled into the results.
+  function startCard(q) {
+    if (askTick) { clearInterval(askTick); askTick = null; }
+    clear(answerEl);
+    askCardQuery = q;
+    const card = document.createElement('div');
+    card.className = 'ask-card';
+    answerEl.appendChild(card);
+    resultsPaneEl.scrollTop = 0;
+    return card;
+  }
+  function askHead(card, metaText, withCancel) {
+    const head = document.createElement('div');
+    head.className = 'ask-head';
+    const kind = document.createElement('span');
+    kind.className = 'ask-kind';
+    kind.textContent = 'ask';
+    head.appendChild(kind);
+    const meta = document.createElement('span');
+    meta.className = 'ask-meta';
+    meta.textContent = metaText;
+    head.appendChild(meta);
+    if (withCancel) {
+      const cancel = document.createElement('span');
+      cancel.className = 'ask-cancel';
+      cancel.textContent = 'cancel';
+      cancel.addEventListener('click', cancelAsk);
+      head.appendChild(cancel);
+    }
+    card.appendChild(head);
+    return meta;
+  }
+  function askQLine(card, q) {
+    const el = document.createElement('div');
+    el.className = 'ask-q';
+    el.textContent = q;
+    card.appendChild(el);
+  }
+  function askNote(card, text) {
+    const el = document.createElement('div');
+    el.className = 'ask-note';
+    el.textContent = text;
+    card.appendChild(el);
+  }
+
+  // Citation click-through: wiki → the compiled page; dream/raw → the trajectory
+  // overlay with the source chunk highlighted (matchId = chunkId).
+  function openAskSource(s) {
+    if (s.tier === 'wiki') openWikiPage({ slug: s.ref, trajectoryId: 'wiki:' + s.ref, tier: 'wiki' });
+    else openTrajectory({ trajectoryId: s.trajectoryId, id: s.chunkId, tier: s.tier });
+  }
+
+  // Prose → text nodes + clickable [n] chips. Split on [n] markers by text (no
+  // innerHTML); a marker with no matching source stays literal text.
+  function renderProse(container, text, sources) {
+    const byN = new Map();
+    for (const s of sources) byN.set(s.n, s);
+    const re = /\[(\d+)\]/g;
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) container.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const n = parseInt(m[1], 10);
+      const src = byN.get(n);
+      if (src) {
+        const chip = document.createElement('span');
+        chip.className = 'cite-chip';
+        chip.textContent = '[' + n + ']';
+        chip.addEventListener('click', () => openAskSource(src));
+        container.appendChild(chip);
+      } else {
+        container.appendChild(document.createTextNode(m[0]));
+      }
+      last = re.lastIndex;
+    }
+    if (last < text.length) container.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  // Compact source line, mirroring formatSourceLine (src/ask/index.ts): a green
+  // [n] then `badge · ref · YYYY-MM-DD`. Clickable through to the source.
+  function askSrcBadge(s) {
+    if (s.tier === 'wiki') return 'wiki:' + (s.dreamType || '?');
+    if (s.tier === 'dream') return 'dream:' + (s.dreamType || '?');
+    return 'raw';
+  }
+  function renderCitedFooter(card, cited) {
+    const foot = document.createElement('div');
+    foot.className = 'ask-foot';
+    const label = document.createElement('div');
+    label.className = 'ask-foot-label';
+    label.textContent = cited.length + ' cited source' + (cited.length === 1 ? '' : 's');
+    foot.appendChild(label);
+    for (const s of cited) {
+      const row = document.createElement('div');
+      row.className = 'ask-src';
+      const num = document.createElement('span');
+      num.className = 'ask-src-n';
+      num.textContent = '[' + s.n + ']';
+      row.appendChild(num);
+      const rest = document.createElement('span');
+      rest.textContent = askSrcBadge(s) + ' · ' + (s.ref || '?') + ' · ' + String(s.date || '').slice(0, 10);
+      row.appendChild(rest);
+      row.addEventListener('click', () => openAskSource(s));
+      foot.appendChild(row);
+    }
+    card.appendChild(foot);
+  }
+
+  // Terminal render from a cached-or-fresh result. Three success shapes:
+  // answer===null (no candidates), answer with no cited sources (not covered),
+  // and a normal cited answer.
+  function renderAnswerResult(q, r) {
+    const card = startCard(q);
+    if (r.answer === null || r.answer === undefined) {
+      askHead(card, 'no match', false);
+      askQLine(card, q);
+      askNote(card, 'No indexed material matched this question — logged as unmet demand. Try the "all" scope, or search below.');
+      return;
+    }
+    const cited = (r.sources || []).filter((s) => s.cited);
+    const meta = [r.model, (r.tookMs != null ? (r.tookMs / 1000).toFixed(1) + 's' : null)].filter(Boolean).join(' · ');
+    askHead(card, meta, false);
+    askQLine(card, q);
+    const body = document.createElement('div');
+    body.className = 'ask-body';
+    renderProse(body, r.answer, r.sources || []);
+    card.appendChild(body);
+    if (cited.length) {
+      renderCitedFooter(card, cited);
+    } else {
+      askNote(card, 'Not covered by memory — logged as unmet demand.');
+    }
+  }
+
+  function renderAskError(q, msg) {
+    const card = startCard(q);
+    askHead(card, 'failed', false);
+    askQLine(card, q);
+    askNote(card, 'ask failed: ' + msg + ' — results below are plain search.');
+  }
+  function renderAskNoKey(q) {
+    const card = startCard(q);
+    askHead(card, 'no api key', false);
+    askQLine(card, q);
+    askNote(card, 'ask needs an OpenAI API key (Settings) — search below still works.');
+  }
+  function cancelAsk() {
+    if (askTick) { clearInterval(askTick); askTick = null; }
+    if (askCtrl) { askCtrl.abort(); askCtrl = null; }
+    const q = askCardQuery;
+    const card = startCard(q);
+    askHead(card, 'cancelled', false);
+    askQLine(card, q);
+    askNote(card, 'ask cancelled — the server request still completes (and may cost).');
+  }
+
+  async function runAskUI() {
+    const q = qEl.value.trim();
+    if (!q) return;                 // empty query → no-op
+    if (askCtrl) return;            // in flight → no-op (cancel via the card chip)
+    if (askBtnEl.classList.contains('disabled')) { renderAskNoKey(q); return; }
+    const tier = SCOPE_TIER[scope];
+    const key = askKey(q);
+    if (askCache.has(key)) { renderAnswerResult(q, askCache.get(key)); return; }
+
+    // Known-no-key shortcut; otherwise POST and let a 503 surface the message.
+    const cfg = await ensureConfig();
+    if (qEl.value.trim() !== q) return; // query changed while probing config
+    if (cfg && cfg.hasOpenaiKey === false) { renderAskNoKey(q); return; }
+
+    const card = startCard(q);
+    const meta = askHead(card, 'asking ' + askModelLabel() + '… 0s', true);
+    askQLine(card, q);
+    const t0 = Date.now();
+    askTick = setInterval(() => {
+      meta.textContent = 'asking ' + askModelLabel() + '… ' + Math.round((Date.now() - t0) / 1000) + 's';
+    }, 1000);
+
+    const ctrl = new AbortController();
+    askCtrl = ctrl;
+    let res;
+    try {
+      res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ q, tier }),
+        signal: ctrl.signal,
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') return; // cancelled / query edited — handled elsewhere
+      if (askTick) { clearInterval(askTick); askTick = null; }
+      askCtrl = null;
+      renderAskError(q, 'network error');
+      return;
+    }
+    if (ctrl.signal.aborted) return;
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON body */ }
+    if (ctrl.signal.aborted) return;
+    if (askTick) { clearInterval(askTick); askTick = null; }
+    askCtrl = null;
+
+    if (res.status === 503 || (data && data.error === 'no_api_key')) { renderAskNoKey(q); return; }
+    if (!res.ok || !data || typeof data !== 'object' || typeof data.answer === 'undefined') {
+      renderAskError(q, (data && data.error) ? String(data.error) : ('http ' + res.status));
+      return; // errors are transient — never cached
+    }
+    const result = {
+      answer: data.answer === null ? null : String(data.answer),
+      sources: Array.isArray(data.sources) ? data.sources : [],
+      model: data.model,
+      tookMs: data.tookMs,
+    };
+    askCache.set(key, result);
+    renderAnswerResult(q, result);
+  }
+
+  // Shared, lazily-fetched /api/config. The ask affordance needs hasOpenaiKey;
+  // the settings pane (below) fetches the full view into settingsCfg. Whichever
+  // loads first populates it — this probe fetches once on demand and dedupes.
+  let cfgProbe = null;
+  function ensureConfig() {
+    if (settingsCfg) return Promise.resolve(settingsCfg);
+    if (!cfgProbe) {
+      cfgProbe = fetch('/api/config')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((c) => { if (c) settingsCfg = c; cfgProbe = null; updateAskAffordance(); return c; })
+        .catch(() => { cfgProbe = null; return null; });
+    }
+    return cfgProbe;
+  }
+  // Disable the affordance only when we KNOW there's no key; unknown stays
+  // enabled (optimistic) and a POST 503 surfaces the message in-card.
+  function updateAskAffordance() {
+    const off = !!(settingsCfg && settingsCfg.hasOpenaiKey === false);
+    askBtnEl.classList.toggle('disabled', off);
+    askBtnEl.title = off
+      ? 'Ask needs an OpenAI API key — add one in Settings'
+      : 'Ask a grounded question (⌘↵)';
+  }
+
+  askBtnEl.addEventListener('click', () => { if (!askBtnEl.classList.contains('disabled')) runAskUI(); });
+  askBtnEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!askBtnEl.classList.contains('disabled')) runAskUI(); }
+  });
 
   // Overlay hosts either the trajectory turns or the wiki page; exactly one is
   // shown. back/Escape always returns to results (no view stack).
@@ -1467,6 +1876,7 @@
   }
 
   qEl.addEventListener('input', () => {
+    clearAnswer(); // editing the query invalidates the echoed answer
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       search(qEl.value);
@@ -1474,6 +1884,13 @@
     }, DEBOUNCE_MS);
   });
   qEl.addEventListener('keydown', (e) => {
+    // Cmd/Ctrl+Enter = ask (a paid, grounded call); plain Enter keeps its
+    // open-row / re-run-search semantics below.
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      runAskUI();
+      return;
+    }
     if (e.key === 'Enter') {
       if (activeIndex >= 0 && items[activeIndex]) { openItem(items[activeIndex]); return; }
       clearTimeout(debounceTimer);
@@ -1562,6 +1979,7 @@
     settingsCfg = cfg;
     settingsError('');
     renderConfigCards();
+    updateAskAffordance(); // a key added/removed in Settings flips the ask affordance
   }
 
   // Save-on-change: PUT the patch, then re-render from the response. On failure,
@@ -1579,6 +1997,7 @@
       if (cfg.reembedRequired) reembedPending = true;
       settingsError('');
       renderConfigCards();
+      updateAskAffordance();
       // A synthesis toggle/hour change may have reconciled the launchd agent.
       if (cfg.synthesisReconcile) refreshServices();
       return cfg;
@@ -1898,5 +2317,6 @@
   navHL.moveTo(sidebarEl.querySelector('.nav-item.active')); // seat the pill in place on load
   renderScope();                                             // …renderScope seats the scope pill
   loadStats();
+  ensureConfig();                                            // seat the ask affordance (disabled if no OpenAI key)
   routeFromHash();                                           // apply the initial hash (deep links, else #/search → recents)
 </script>

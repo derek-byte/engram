@@ -24,8 +24,9 @@ import { isValidSlug } from '../wiki/links.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { runSearch } from '../search/index.ts';
+import { runAsk, askOutcome, OpenAIAskLLM, AskError } from '../ask/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
-import type { SearchFilters } from '../types/index.ts';
+import type { EngramConfig, SearchFilters } from '../types/index.ts';
 
 const SNIPPET_CHARS = 300;
 const HTML_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'index.html');
@@ -64,6 +65,12 @@ export interface UiDeps {
   dim: number;
   port: number;
   services?: ServiceOps;
+  // POST /api/ask builds its LLM per request from the on-disk config (a key
+  // added in Settings works without a restart). Injected so route tests supply
+  // a fake OpenAIAskLLM (real class + fake AskChatClient) with no network, and
+  // a keyless config returns null to exercise the 503 path — same seam
+  // philosophy as `services`. Default builds the real one from loadConfig().
+  buildAskLLM?: (config: EngramConfig) => OpenAIAskLLM | null;
 }
 
 // The whitelisted, secret-free config view returned by GET /api/config and
@@ -89,6 +96,9 @@ function publicConfig() {
 export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> {
   const { html, backend, embedder, local, wiki, dim, port } = deps;
   const services = deps.services ?? realServiceOps;
+  const buildAskLLM =
+    deps.buildAskLLM ??
+    ((config: EngramConfig) => (config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.wikiModel) : null));
 
   // DNS-rebinding defense: only loopback Host values are legitimate for this
   // server. A malicious site rebound to 127.0.0.1 arrives with its own Host,
@@ -186,6 +196,106 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       return Response.json({ ...publicConfig(), reembedRequired, synthesisReconcile });
     }
 
+    if (url.pathname === '/api/ask') {
+      // Ask synthesizes an answer with an LLM and can't degrade to search, so
+      // it's a POST behind the same JSON gates as PUT /api/config — a
+      // form/navigation POST can't reach the handler body.
+      if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
+        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
+      }
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: 'invalid json' }, { status: 400 });
+      }
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        return Response.json({ error: 'expected a json object' }, { status: 400 });
+      }
+      const b = body as Record<string, unknown>;
+      const q = typeof b.q === 'string' ? b.q.trim() : '';
+      if (!q) return Response.json({ error: 'q is required' }, { status: 400 });
+
+      // Built per request from the on-disk config so a key added in Settings
+      // works without a server restart. No key ⇒ 503 (client shows a Settings
+      // hint; search below still works — ask never silently degrades).
+      const llm = buildAskLLM(loadConfig());
+      if (!llm) return Response.json({ error: 'no_api_key' }, { status: 503 });
+
+      const kRaw = Math.floor(Number(b.k ?? 12));
+      const k = Number.isFinite(kRaw) ? Math.min(50, Math.max(1, kRaw)) : 12;
+      const tier: SearchFilters['tier'] = b.tier === 'raw' || b.tier === 'all' || b.tier === 'synth' ? b.tier : 'synth';
+      const repo = typeof b.repo === 'string' && b.repo.trim() ? b.repo.trim() : undefined;
+      const filters: SearchFilters = { limit: k, tier, repo };
+
+      // Recents pre-call: even a failed/unanswerable ask is demand signal
+      // (mirrors the CLI, src/commands/ask.ts:62).
+      try {
+        local.logRecent('ask', q, q);
+      } catch {
+        /* recents are cosmetic */
+      }
+
+      const t0 = Date.now();
+      try {
+        const result = await runAsk(q, filters, { backend, embedder, llm });
+        const citedCount = result.sources.filter((s) => s.cited).length;
+        const outcome = askOutcome(result);
+        // AskSource carries no similarity/sessionId (src/ask/index.ts:45-54), so
+        // an ask row logs top_tier (from the first source) but leaves
+        // top_similarity / top_session_id null — the targeted-synthesis handle
+        // is sourced from search rows, which do carry both.
+        const top = result.sources[0];
+        try {
+          local.logDemand({
+            surface: 'ui',
+            kind: 'ask',
+            query: q,
+            tier,
+            repo,
+            resultCount: result.sources.length,
+            topTier: top?.tier ?? null,
+            outcome,
+            citedCount,
+          });
+        } catch {
+          /* demand log is cosmetic */
+        }
+        return Response.json({
+          answer: result.answer,
+          sources: result.sources,
+          usage: result.usage,
+          model: result.model,
+          tookMs: Date.now() - t0,
+        });
+      } catch (err) {
+        try {
+          local.logDemand({ surface: 'ui', kind: 'ask', query: q, tier, repo, resultCount: 0, outcome: 'error' });
+        } catch {
+          /* demand log is cosmetic */
+        }
+        // AskError = a real answering failure (bad key, model refusal, timeout);
+        // surface it as JSON, never Bun's default error page. Anything else 500s.
+        if (err instanceof AskError) return Response.json({ error: err.message }, { status: 502 });
+        console.error('ask failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'ask failed' }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === '/api/demand') {
+      // Unmet-demand report for the search empty state (roadmap #6). days is
+      // clamped 1–365; body is {days, summary, unmet:[...]}.
+      const daysRaw = Math.floor(Number(url.searchParams.get('days') ?? '30'));
+      const days = Number.isFinite(daysRaw) ? Math.min(365, Math.max(1, daysRaw)) : 30;
+      try {
+        return Response.json({ days, summary: local.demandSummary(days), unmet: local.unmetDemand(days) });
+      } catch (err) {
+        console.error('demand failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'demand failed' }, { status: 500 });
+      }
+    }
+
     // Page index for the Wiki nav view (list only, no bodies).
     if (url.pathname === '/api/wiki') {
       try {
@@ -235,14 +345,36 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       const filters: SearchFilters = { limit: k, tier };
       try {
         const results = await runSearch(q, filters, { backend, embedder });
-        // Cosmetic usage log; never let a failure break search. Only meaningful
-        // queries (>=3 chars, with hits) are logged; consecutive-identical /
-        // prefix-refinement dedupe lives in LocalStore.logRecent.
-        if (q.length >= 3 && results.length > 0) {
+        if (q.length >= 3) {
+          // Cosmetic usage log; never let a failure break search. Only meaningful
+          // queries (>=3 chars, with hits) become a `search` recent;
+          // consecutive-identical / prefix-refinement dedupe lives in
+          // LocalStore.logRecent.
+          if (results.length > 0) {
+            try {
+              local.logRecent('search', q, q);
+            } catch {
+              /* recents are cosmetic */
+            }
+          }
+          // Demand signal (roadmap #6): log EVERY settled query >=3 chars incl.
+          // zero-hit — a zero-hit search is the strongest unmet-demand signal
+          // and was previously dropped. top_* come from the best hit when
+          // present; a zero-hit row leaves them null.
           try {
-            local.logRecent('search', q, q);
+            const top = results[0];
+            local.logDemand({
+              surface: 'ui',
+              kind: 'search',
+              query: q,
+              tier,
+              resultCount: results.length,
+              topSimilarity: top?.similarity ?? null,
+              topTier: top?.chunk.metadata.tier ?? null,
+              topSessionId: top?.chunk.metadata.sessionId ?? null,
+            });
           } catch {
-            /* recents are cosmetic */
+            /* demand log is cosmetic */
           }
         }
         return Response.json(
@@ -268,6 +400,14 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
         );
       } catch (err) {
         console.error('search failed:', err instanceof Error ? err.message : err);
+        // A failed search is still a settled demand signal — nothing was found.
+        if (q.length >= 3) {
+          try {
+            local.logDemand({ surface: 'ui', kind: 'search', query: q, tier, resultCount: 0 });
+          } catch {
+            /* demand log is cosmetic */
+          }
+        }
         return Response.json({ error: 'search failed' }, { status: 500 });
       }
     }
@@ -380,6 +520,11 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port,
+    // Verified on Bun 1.3.14: the default 10s idleTimeout severs a pending
+    // response (POST /api/ask runs a 5–60s LLM call), and the client sees a
+    // dropped socket rather than the answer. 240s comfortably covers the ask
+    // path's own 60s LLM timeout + retry.
+    idleTimeout: 240,
     fetch: buildUiFetch({ html, backend, embedder, local, wiki, dim: config.embeddingDim, port }),
   });
 

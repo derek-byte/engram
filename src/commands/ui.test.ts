@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildUiFetch, type ServiceOps } from './ui.ts';
+import { buildUiFetch, type ServiceOps, type UiDeps } from './ui.ts';
+import { OpenAIAskLLM, type AskChatClient } from '../ask/index.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { FakeBackend, FakeCache, FakeProvider, tempStore, type TempStore } from '../ingest/testkit.ts';
 import { WikiStore, pageFingerprint, type WikiPage } from '../wiki/store.ts';
@@ -59,6 +60,8 @@ describe('buildUiFetch', () => {
   let wikiDir: string;
   let configPath: string;
   let serviceCalls: { restart: string[]; reconcile: number };
+  let embedder: Embedder;
+  let services: ServiceOps;
   let fetch: (req: Request) => Promise<Response>;
 
   beforeEach(() => {
@@ -88,7 +91,7 @@ describe('buildUiFetch', () => {
     );
     // Fake launchd seam — route tests never shell out to the real launchctl.
     serviceCalls = { restart: [], reconcile: 0 };
-    const services: ServiceOps = {
+    services = {
       status: () => ({
         supported: true,
         serviceInstalled: true,
@@ -106,7 +109,7 @@ describe('buildUiFetch', () => {
         return { serviceInstalled: true, action: 'installed' };
       },
     };
-    const embedder = new Embedder(new FakeProvider({ dim: 4 }), new FakeCache());
+    embedder = new Embedder(new FakeProvider({ dim: 4 }), new FakeCache());
     fetch = buildUiFetch({ html: () => '<html>', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
   });
   afterEach(() => {
@@ -327,5 +330,175 @@ describe('buildUiFetch', () => {
     expect(body.length).toBe(1);
     expect(body[0]).toEqual({ slug: 'engram', title: 'Engram', kind: 'project', updated: '2026-02-01T00:00:00Z' });
     expect('body' in body[0]).toBe(false);
+  });
+
+  // --- POST /api/ask + demand log -------------------------------------------
+
+  // A real OpenAIAskLLM wrapping a fake AskChatClient (no network): returns the
+  // given content, or throws to exercise the AskError → 502 path.
+  const fakeLLM = (content: string | null, opts: { throws?: boolean } = {}): UiDeps['buildAskLLM'] => {
+    const client: AskChatClient = {
+      chat: {
+        completions: {
+          create: async () => {
+            if (opts.throws) throw new Error('boom from model');
+            return { choices: [{ message: { content } }], usage: { prompt_tokens: 10, completion_tokens: 5 } };
+          },
+        },
+      },
+    };
+    return () => new OpenAIAskLLM('sk-test', 'fake-ask-model', client);
+  };
+
+  // Build a fetch with a specific ask-LLM factory, reusing the beforeEach deps.
+  const askFetch = (buildAskLLM: UiDeps['buildAskLLM']) =>
+    buildUiFetch({ html: () => '<html>', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services, buildAskLLM });
+
+  const postAsk = (bodyObj: unknown, f = fetch, headers: Record<string, string> = {}) =>
+    f(
+      new Request('http://' + HOST + '/api/ask', {
+        method: 'POST',
+        headers: { host: HOST, 'content-type': 'application/json', ...headers },
+        body: typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj),
+      })
+    );
+
+  const demandRows = () => (t.store as any).db.query('SELECT * FROM demand_log ORDER BY id').all() as any[];
+
+  test('POST /api/ask returns 200 with answer + sources and logs an answered demand row', async () => {
+    await backend.upsert([chunk('d1', 'dream', { dreamType: 'gotcha' })]);
+    const f = askFetch(fakeLLM('The fix is grounded in the notes [1].'));
+    const res = await postAsk({ q: 'how do we handle X' }, f);
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.answer).toBe('The fix is grounded in the notes [1].');
+    expect(body.sources.length).toBe(1);
+    expect(body.sources[0].cited).toBe(true);
+    expect(body.model).toBe('fake-ask-model');
+    expect(typeof body.tookMs).toBe('number');
+    expect(body.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
+
+    const rows = demandRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0].kind).toBe('ask');
+    expect(rows[0].surface).toBe('ui');
+    expect(rows[0].outcome).toBe('answered');
+    expect(rows[0].cited_count).toBe(1);
+    expect(rows[0].top_tier).toBe('dream');
+    // Ask rows leave the targeted-synthesis handle null (AskSource carries no id).
+    expect(rows[0].top_session_id).toBeNull();
+    expect(rows[0].top_similarity).toBeNull();
+    // A recent 'ask' row is logged pre-call.
+    expect(t.store.getRecents().some((r) => r.kind === 'ask' && r.key === 'how do we handle X')).toBe(true);
+  });
+
+  test('POST /api/ask with no OpenAI key → 503 no_api_key', async () => {
+    const f = askFetch(() => null);
+    const res = await postAsk({ q: 'anything' }, f);
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as any).error).toBe('no_api_key');
+    // No key ⇒ no runAsk ⇒ no demand row (recents still logs nothing either).
+    expect(demandRows().length).toBe(0);
+  });
+
+  test('POST /api/ask zero candidates → answer:null + no_candidates demand row (LLM untouched)', async () => {
+    // No chunks seeded → runSearch returns [] → runAsk short-circuits, never
+    // calling the LLM (a throwing fake proves it).
+    const f = askFetch(fakeLLM(null, { throws: true }));
+    const res = await postAsk({ q: 'nothing indexed yet' }, f);
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.answer).toBeNull();
+    expect(body.sources.length).toBe(0);
+    const rows = demandRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0].outcome).toBe('no_candidates');
+    expect(rows[0].result_count).toBe(0);
+  });
+
+  test('POST /api/ask answer citing nothing → not_covered demand row', async () => {
+    await backend.upsert([chunk('d1', 'dream')]);
+    const f = askFetch(fakeLLM('The material does not cover this question.'));
+    const res = await postAsk({ q: 'unrelated question' }, f);
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.answer).toContain('does not cover');
+    const rows = demandRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0].outcome).toBe('not_covered');
+    expect(rows[0].cited_count).toBe(0);
+  });
+
+  test('POST /api/ask AskError from the model → 502 JSON + error demand row', async () => {
+    await backend.upsert([chunk('d1', 'dream')]);
+    const f = askFetch(fakeLLM(null, { throws: true }));
+    const res = await postAsk({ q: 'triggers a model error' }, f);
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as any).error).toContain('boom from model');
+    const rows = demandRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0].outcome).toBe('error');
+  });
+
+  test('POST /api/ask rejects non-JSON body (400) and non-JSON content-type (400)', async () => {
+    const f = askFetch(fakeLLM('unused'));
+    expect((await postAsk('not json at all', f)).status).toBe(400);
+    expect((await postAsk({ q: 'x' }, f, { 'content-type': 'text/plain' })).status).toBe(400);
+    // Missing/empty q → 400 before any LLM build.
+    expect((await postAsk({ q: '  ' }, f)).status).toBe(400);
+    expect((await postAsk({}, f)).status).toBe(400);
+    // GET is not allowed.
+    expect((await f(req('/api/ask'))).status).toBe(405);
+  });
+
+  test('POST /api/ask with a foreign Origin is rejected (403), no demand row', async () => {
+    const f = askFetch(fakeLLM('grounded [1]'));
+    const res = await postAsk({ q: 'x' }, f, { origin: 'http://evil.example' });
+    expect(res.status).toBe(403);
+    expect(demandRows().length).toBe(0);
+  });
+
+  test('/api/search logs a demand row for a zero-hit query (strongest unmet signal)', async () => {
+    await backend.upsert([chunk('w1', 'wiki', { trajectoryId: 'wiki:engram' })]);
+    // tier=raw with only a wiki chunk seeded → zero hits.
+    const res = await fetch(req('/api/search?q=missing-topic&tier=raw'));
+    expect(((await res.json()) as any).length).toBe(0);
+    const rows = demandRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0].kind).toBe('search');
+    expect(rows[0].query).toBe('missing-topic');
+    expect(rows[0].result_count).toBe(0);
+    expect(rows[0].outcome).toBeNull();
+    // Zero-hit ⇒ not a recent (recents gate requires hits), but IS demand.
+    expect(t.store.getRecents().length).toBe(0);
+  });
+
+  test('/api/search logs a demand row with top_* for a hit', async () => {
+    await backend.upsert([chunk('d1', 'dream', { sessionId: 'sess-xyz' })]);
+    await fetch(req('/api/search?q=find-something&tier=synth'));
+    const rows = demandRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0].result_count).toBe(1);
+    expect(rows[0].top_tier).toBe('dream');
+    expect(rows[0].top_session_id).toBe('sess-xyz');
+    expect(typeof rows[0].top_similarity).toBe('number');
+  });
+
+  test('GET /api/demand returns {days, summary, unmet[]} and clamps days', async () => {
+    await backend.upsert([chunk('w1', 'wiki', { trajectoryId: 'wiki:engram' })]);
+    await fetch(req('/api/search?q=unmet-thing&tier=raw')); // zero hit → unmet
+    const body: any = await (await fetch(req('/api/demand?days=7'))).json();
+    expect(body.days).toBe(7);
+    expect(body.summary.days).toBe(7);
+    expect(body.summary.searches).toBe(1);
+    expect(body.summary.unmet).toBe(1);
+    expect(Array.isArray(body.unmet)).toBe(true);
+    expect(body.unmet[0].query).toBe('unmet-thing');
+    expect(body.unmet[0].count).toBe(1);
+
+    // days clamps to 1..365.
+    expect(((await (await fetch(req('/api/demand?days=99999'))).json()) as any).days).toBe(365);
+    expect(((await (await fetch(req('/api/demand?days=0'))).json()) as any).days).toBe(1);
+    expect(((await (await fetch(req('/api/demand'))).json()) as any).days).toBe(30);
   });
 });

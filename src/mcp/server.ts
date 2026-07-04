@@ -2,12 +2,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { runSearch } from '../search/index.ts';
-import { runAsk, OpenAIAskLLM, AskError, formatSourceLine } from '../ask/index.ts';
+import { runAsk, OpenAIAskLLM, AskError, askOutcome, formatSourceLine } from '../ask/index.ts';
 import type { OpenAIReranker } from '../search/rerank.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
 import type { SearchFilters, SearchResult } from '../types/index.ts';
 import type { WikiStore } from '../wiki/store.ts';
+import type { DemandRow } from '../storage/local.ts';
 import { serializePage } from '../wiki/store.ts';
 
 const CONTENT_PREVIEW_CHARS = 700;
@@ -21,6 +22,7 @@ export interface McpDeps {
   store?: WikiStore;
   askLLM?: OpenAIAskLLM;
   logRecent?(kind: string, key: string, label: string): void;
+  logDemand?(row: DemandRow): void;
 }
 
 function parseTier(value: string | undefined): SearchFilters['tier'] {
@@ -90,12 +92,28 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
           isError: true,
         };
       }
+      const demandBase = { surface: 'mcp' as const, kind: 'ask' as const, query: question, tier: 'synth', repo: repo ?? null };
       try {
         const result = await runAsk(
           question,
           { repo, tier: 'synth', limit: limit ?? 12 },
           { backend: deps.backend, embedder: deps.embedder, llm: deps.askLLM }
         );
+        // One demand row per ask (AskSource has no similarity/sessionId → null).
+        // Telemetry only — a sqlite hiccup must never discard a paid answer.
+        try {
+          deps.logDemand?.({
+            ...demandBase,
+            resultCount: result.sources.length,
+            topSimilarity: null,
+            topTier: result.sources[0]?.tier ?? null,
+            topSessionId: null,
+            outcome: askOutcome(result),
+            citedCount: result.sources.filter((s) => s.cited).length,
+          });
+        } catch {
+          /* demand log is telemetry */
+        }
         if (result.answer === null) {
           return { content: [{ type: 'text', text: 'No indexed material matched.' }] };
         }
@@ -103,6 +121,11 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
         const sourcesText = cited.length > 0 ? cited.map(formatSourceLine).join('\n') : '(no sources cited)';
         return { content: [{ type: 'text', text: `${result.answer}\n\n---\n${sourcesText}` }] };
       } catch (err) {
+        try {
+          deps.logDemand?.({ ...demandBase, outcome: 'error' });
+        } catch {
+          /* demand log is telemetry */
+        }
         const reason = err instanceof AskError ? err.message : err instanceof Error ? err.message : String(err);
         console.error(`[ask] ${reason}`);
         return {
