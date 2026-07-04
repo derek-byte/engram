@@ -16,7 +16,7 @@ export interface SearchOptions {
   json?: boolean;
 }
 
-function parseTier(value: string | undefined): SearchFilters['tier'] {
+export function parseTier(value: string | undefined): SearchFilters['tier'] {
   if (value === undefined) return 'all';
   if (value === 'raw' || value === 'dream' || value === 'wiki' || value === 'synth' || value === 'all' || value === 'both') {
     return value;

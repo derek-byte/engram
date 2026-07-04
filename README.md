@@ -23,7 +23,7 @@ Global semantic memory for your coding sessions. Watches `~/.claude/projects`, c
   wiki/     compile dream chunks → git-versioned [[wikilinked]] markdown pages → tier='wiki' chunks
         │
         ▼
-  commands/ search · context · hooks · status · backfill · dream · wiki · service · watch-internal
+  commands/ search · ask · context · hooks · status · backfill · dream · wiki · service · watch-internal
 ```
 
 The knowledge pyramid: L0 raw chunks/events → L1 dream chunks → L2 wiki pages → L3 `index.md`. Each layer is synthesized only from the one below, with a fingerprint short-circuit (sha256 of sorted source ids) making every layer an incremental build. Search defaults flip to the compiled tiers (MCP/UI default `synth` = wiki+dream; `--tier raw` for verbatim drill-down); the wiki→dream→raw provenance chain rides `sourceChunkIds` + the trajectory overlay.
@@ -40,6 +40,7 @@ Two design invariants:
 | [`src/ingest/`](src/ingest/README.md) | Parse session JSONL → trajectories → chunks → embeddings; file watcher |
 | [`src/storage/`](src/storage/README.md) | pgvector backend (raw events, chunks, embedding cache) + local sqlite state |
 | [`src/search/`](src/search/README.md) | Query orchestration: embed query, delegate to backend |
+| [`src/ask/`](src/ask/README.md) | Ask layer: retrieve top-k, one grounded LLM call, cited answer |
 | [`src/dream/`](src/dream/README.md) | Dream layer: incremental LLM synthesis over raw chunks, fingerprint short-circuit |
 | [`src/wiki/`](src/wiki/README.md) | Wiki layer: compile dream chunks → git-versioned markdown pages, derived pg index |
 | [`src/context/`](src/context/README.md) | Context-injection layer: compose a repo-scoped session-start block from the pyramid |
@@ -58,6 +59,7 @@ cp .env.example .env        # set OPENAI_API_KEY (or use ENGRAM_EMBEDDING_PROVID
 
 bun run src/index.ts backfill
 bun run src/index.ts search "what did we decide about chunking" --repo engram
+bun run src/index.ts ask "what did we decide about chunking and why"   # one cited answer (needs OPENAI_API_KEY)
 bun run src/index.ts dream --repo engram --dry-run   # plan a dream-layer synthesis (no cost); drop --dry-run to run it
 bun run src/index.ts wiki ingest --repo engram --dry-run   # plan a wiki compile (no cost); drop --dry-run to write pages
 bun run src/index.ts wiki lint       # orphans, dangling links, spelling drift, broken provenance
@@ -67,6 +69,12 @@ bun run src/index.ts service install   # macOS: always-on watcher + nightly synt
 ```
 
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
+
+## Ask — answers, not results
+
+`engram ask "<question>" [--repo --branch --since --tier(default synth) --k(default 12) --json]` gives one synthesized answer with `[n]` citations plus a cited-sources list, instead of a ranked list of hits. It reuses the same hybrid retrieval as `search`, then makes ONE grounded LLM call (`wikiModel`) that is instructed to answer only from the retrieved material and to say plainly when the material doesn't cover the question. `--json` emits `{answer, sources[], usage}`. See [`src/ask/README.md`](src/ask/README.md).
+
+**Cost / latency:** each ask is one `wikiModel` call (gpt-5.4-mini) over ~12 retrieved snippets — roughly 6–10k prompt tokens (about a cent) and 5–20s; retrieval itself is local and free, so use `engram search` when you want raw hits at zero cost. Ask needs `OPENAI_API_KEY` and will not degrade to plain search — no key, it exits 1 and tells you to run `engram search`.
 
 ## Always-on service (macOS / launchd)
 
@@ -97,7 +105,7 @@ Add `--rerank` (production path only) to score with the LLM reranker enabled (ru
 
 ## MCP — use engram from Claude Code
 
-`engram mcp` runs an [MCP](https://modelcontextprotocol.io) server over stdio exposing `engram_search` and `engram_status` (see [`src/mcp/README.md`](src/mcp/README.md)). Register it:
+`engram mcp` runs an [MCP](https://modelcontextprotocol.io) server over stdio exposing `engram_search`, `engram_ask`, `engram_wiki_page`, and `engram_status` (see [`src/mcp/README.md`](src/mcp/README.md)). Register it:
 
 ```bash
 claude mcp add engram -- bun run /absolute/path/to/engram/src/index.ts mcp

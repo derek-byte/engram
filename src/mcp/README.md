@@ -7,6 +7,7 @@ Exposes engram to Claude Code (and any MCP client) over **stdio**.
 | Tool | Params | Returns |
 | --- | --- | --- |
 | `engram_search` | `query` (required), `repo`, `branch`, `since` (ISO), `limit` (default 5), `rerank` (default from config) | Compact text blocks: `timestamp · repo@branch · sim [· rank=#N]`, content (trimmed to ~700 chars), session id. |
+| `engram_ask` | `question` (required), `repo`, `limit` (default 12) | One synthesized, citation-backed answer + compact cited sources. Costs an LLM call (~5–20s). `isError: true` (not a search fallback) when no `OPENAI_API_KEY`; `isError` on any ask failure. |
 | `engram_status` | — | Total indexed chunk count + last ingest time. |
 
 ## Layout
@@ -29,5 +30,6 @@ Then speak JSON-RPC on stdin (`initialize` → `notifications/initialized` → `
 ## Tools
 
 - **`engram_search`** — gains a `tier` enum (`raw|dream|wiki|synth|all`) **defaulting to `synth`** (wiki+dream; the compiled tiers are the product, raw is drill-down). Wiki hits render as `[wiki:<kind>] <slug>` with a `page: <slug> · provenance: N dream chunks` line pointing at `engram_wiki_page`.
+- **`engram_ask {question, repo?, limit?}`** — one synthesized, citation-backed answer (`tier='synth'`, k=12 by default). Logs a `recents` kind `'ask'` row before answering. Returns `isError: true` with an `engram_search` pointer when there is no key or the ask fails — deliberately **not** a silent search fallback. All diagnostics to stderr; stdout stays valid JSON-RPC.
 - **`engram_wiki_page {slug}`** — returns one compiled page's full markdown + frontmatter (agent drill-down from a wiki hit).
 - **`engram_status`** — now also reports the wiki page count.

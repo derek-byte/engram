@@ -5,6 +5,7 @@ import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { startMcpServer } from '../mcp/server.ts';
 import { buildReranker } from '../search/rerank.ts';
+import { OpenAIAskLLM } from '../ask/index.ts';
 import { WikiStore } from '../wiki/store.ts';
 
 export async function mcpCommand(): Promise<void> {
@@ -26,5 +27,7 @@ export async function mcpCommand(): Promise<void> {
     rerankDefault: config.rerank.enabled,
     lastIngestAt: () => local.getStat('last_ingest_at'),
     store: new WikiStore(config.wikiDir),
+    askLLM: config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.wikiModel) : undefined,
+    logRecent: (k, key, label) => local.logRecent(k, key, label),
   });
 }
