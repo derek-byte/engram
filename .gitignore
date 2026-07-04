@@ -8,3 +8,6 @@ benchmarks/results_*.jsonl
 benchmarks/longmemeval_s_cleaned.json
 .claude/
 .serena/
+app/node_modules/
+app/src-tauri/target/
+app/src-tauri/gen/
