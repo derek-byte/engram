@@ -79,7 +79,7 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
       inputSchema: {
         question: z.string().describe('natural-language question'),
         repo: z.string().optional().describe('limit to a repo name'),
-        limit: z.number().int().positive().optional().describe('retrieval candidates fed to the answer model (default 12)'),
+        limit: z.number().int().positive().max(50).optional().describe('retrieval candidates fed to the answer model (default 12, max 50)'),
       },
     },
     async ({ question, repo, limit }) => {
