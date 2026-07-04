@@ -6,6 +6,7 @@ import {
   configIsComplete,
   readConfigFile,
   patchConfigFile,
+  ConfigPatchError,
   EDITABLE_CONFIG_KEYS,
 } from '../config/index.ts';
 import {
@@ -125,7 +126,16 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     }
 
     if (url.pathname === '/api/config') {
-      if (req.method === 'GET') return Response.json(publicConfig());
+      // A malformed config.json on disk must surface as a JSON 500 like every
+      // other route — never Bun's default error page.
+      if (req.method === 'GET') {
+        try {
+          return Response.json(publicConfig());
+        } catch (err) {
+          console.error('config read failed:', err instanceof Error ? err.message : err);
+          return Response.json({ error: 'config read failed' }, { status: 500 });
+        }
+      }
       if (req.method !== 'PUT') return new Response('method not allowed', { status: 405 });
 
       // Writes must be JSON — a form/navigation POST can't reach this branch.
@@ -151,10 +161,14 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
         return Response.json({ error: "embeddingProvider must be 'openai' or 'local'" }, { status: 400 });
       }
 
-      const prevProvider = (readConfigFile().embeddingProvider as string | undefined) ?? 'local';
+      let prevProvider: string;
       try {
+        prevProvider = (readConfigFile().embeddingProvider as string | undefined) ?? 'local';
         patchConfigFile(patch);
       } catch (err) {
+        if (err instanceof ConfigPatchError) {
+          return Response.json({ error: err.message }, { status: 400 });
+        }
         console.error('config write failed:', err instanceof Error ? err.message : err);
         return Response.json({ error: 'config write failed' }, { status: 500 });
       }

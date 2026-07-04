@@ -242,6 +242,24 @@ describe('buildUiFetch', () => {
     expect((await putConfig({ watchPath: '/tmp' })).status).toBe(400);
   });
 
+  test('PUT /api/config rejects type-confused values (400) and leaves the file untouched', async () => {
+    const before = readFileSync(configPath, 'utf-8');
+    expect((await putConfig({ synthesis: 'on' })).status).toBe(400);
+    expect((await putConfig({ contextInjection: 42 })).status).toBe(400);
+    expect((await putConfig({ rerank: 'on' })).status).toBe(400);
+    expect((await putConfig({ rerank: [] })).status).toBe(400);
+    expect((await putConfig({ dreamModel: { a: 1 } })).status).toBe(400);
+    expect((await putConfig({ wikiModel: '  ' })).status).toBe(400);
+    expect(readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
+  test('PUT /api/config with a foreign Origin is rejected (403) and the file is untouched', async () => {
+    const before = readFileSync(configPath, 'utf-8');
+    const res = await putConfig({ dreamModel: 'evil-model' }, { origin: 'http://evil.example' });
+    expect(res.status).toBe(403);
+    expect(readFileSync(configPath, 'utf-8')).toBe(before);
+  });
+
   test('PUT /api/config requires application/json', async () => {
     const res = await putConfig({}, { 'content-type': 'text/plain' });
     expect(res.status).toBe(400);

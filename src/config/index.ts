@@ -133,6 +133,18 @@ export function readConfigFile(): Record<string, unknown> {
   return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
 }
 
+// A PUT body that names an editable key but carries the wrong shape (a string
+// where an object belongs, an object where a model name belongs). The config
+// route maps this to a 400 — it must never become a 500 or a silent bad write.
+export class ConfigPatchError extends Error {}
+
+function requirePlainObject(key: string, value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ConfigPatchError(`${key} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
 // Patch config.json in place: deep-merge only the editable keys over the on-disk
 // file, clamp bounded values, and write back. This must NOT route through
 // saveConfig(loadConfig()) — loadConfig folds in env secrets (OPENAI_API_KEY, the
@@ -150,26 +162,31 @@ export function patchConfigFile(patch: Record<string, unknown>): Record<string, 
         raw.embeddingProvider = parseProvider(String(value));
         break;
       case 'dreamModel':
-      case 'wikiModel':
-        raw[key] = String(value);
+      case 'wikiModel': {
+        if (typeof value !== 'string' || value.trim() === '') {
+          throw new ConfigPatchError(`${key} must be a non-empty string`);
+        }
+        raw[key] = value.trim();
         break;
+      }
       case 'rerank': {
         // Only the enabled toggle is editable; model/topK stay whatever the file holds.
+        const v = requirePlainObject(key, value);
         const cur = (raw.rerank ?? {}) as Record<string, unknown>;
-        raw.rerank = { ...cur, enabled: Boolean((value as Record<string, unknown> | null)?.enabled) };
+        raw.rerank = { ...cur, enabled: Boolean(v.enabled) };
         break;
       }
       case 'synthesis': {
+        const v = requirePlainObject(key, value);
         const cur = (raw.synthesis ?? {}) as Record<string, unknown>;
-        const v = (value ?? {}) as Record<string, unknown>;
         if ('enabled' in v) cur.enabled = Boolean(v.enabled);
         if ('hour' in v) cur.hour = clampHour(v.hour, SYNTHESIS_HOUR_DEFAULT);
         raw.synthesis = cur;
         break;
       }
       case 'contextInjection': {
+        const v = requirePlainObject(key, value);
         const cur = (raw.contextInjection ?? {}) as Record<string, unknown>;
-        const v = (value ?? {}) as Record<string, unknown>;
         if ('enabled' in v) cur.enabled = Boolean(v.enabled);
         if ('budget' in v) cur.budget = clampContextBudget(v.budget, CONTEXT_BUDGET_DEFAULT);
         raw.contextInjection = cur;

@@ -1346,8 +1346,10 @@
     flushPara(para);
   }
 
+  let wikiPageReq = 0; // guards rapid opens: only the latest fetch may render
   async function openWikiPage(r) {
     const slug = r.slug;
+    const reqId = ++wikiPageReq;
     overlayWikiSlug = slug;
     updateHash({ view: 'wiki', slug }, {}); // push (suppressed while the router drives)
     overlayMetaEl.textContent = '';
@@ -1358,12 +1360,15 @@
     let page = null;
     try {
       const res = await fetch('/api/wiki/' + encodeURIComponent(slug));
+      if (reqId !== wikiPageReq) return; // a newer open superseded this one
       if (!res.ok) { openTrajectory({ trajectoryId: r.trajectoryId || 'wiki:' + slug, tier: 'wiki', slug }); return; }
       page = await res.json();
     } catch {
+      if (reqId !== wikiPageReq) return;
       openTrajectory({ trajectoryId: r.trajectoryId || 'wiki:' + slug, tier: 'wiki', slug });
       return;
     }
+    if (reqId !== wikiPageReq) return;
     const head = document.createElement('div');
     head.className = 'page-head';
     const title = document.createElement('h2');
