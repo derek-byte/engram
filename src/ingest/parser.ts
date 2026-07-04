@@ -28,6 +28,44 @@ export function repoFromCwd(cwd: string): string {
   return basename(cwd);
 }
 
+// JSON legally carries \u0000 and lone-surrogate escapes, so JSON.parse yields
+// real NUL chars / ill-formed UTF-16 strings — both fatal downstream: Postgres
+// jsonb (raw_events payload) rejects \u0000 with "unsupported Unicode escape
+// sequence", and chunks.content (TEXT) can't hold 0x00. Replace both with U+FFFD.
+// The fast-path returns the input byte-identical so clean strings never churn.
+export function sanitizeUnicode(s: string): string {
+  if (!s.includes('\u0000') && s.isWellFormed()) return s;
+  return s.replaceAll('\u0000', '\uFFFD').toWellFormed();
+}
+
+// Recursively sanitize every string value AND object key (a NUL in a key
+// round-trips into jsonb too); rebuild an object/array only when something
+// changed, so a clean line passes through unchanged (no re-chunk/re-embed churn).
+function deepSanitize(v: unknown): unknown {
+  if (typeof v === 'string') return sanitizeUnicode(v);
+  if (Array.isArray(v)) {
+    let changed = false;
+    const out = v.map((x) => {
+      const s = deepSanitize(x);
+      if (s !== x) changed = true;
+      return s;
+    });
+    return changed ? out : v;
+  }
+  if (v && typeof v === 'object') {
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v)) {
+      const sk = sanitizeUnicode(k);
+      const sv = deepSanitize(val);
+      if (sk !== k || sv !== val) changed = true;
+      out[sk] = sv;
+    }
+    return changed ? out : v;
+  }
+  return v;
+}
+
 export function parseJsonl(path: string): RawMessage[] {
   const text = readFileSync(path, 'utf-8');
   const lines = text.split('\n').filter((l) => l.trim().length > 0);
@@ -36,7 +74,7 @@ export function parseJsonl(path: string): RawMessage[] {
   for (const line of lines) {
     let obj: Record<string, unknown>;
     try {
-      obj = JSON.parse(line);
+      obj = deepSanitize(JSON.parse(line)) as Record<string, unknown>;
     } catch {
       continue;
     }

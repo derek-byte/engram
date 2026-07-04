@@ -7,7 +7,7 @@ import { CHARS_PER_TOKEN } from '../ingest/chunker.ts';
 import { fingerprintOf } from '../dream/synthesize.ts';
 import { WikiStore, pageFingerprint, type WikiPage } from './store.ts';
 import { autolinkBody, type LinkTarget } from './links.ts';
-import { buildUnitHeader, buildItemsText, buildCandidatesText, type DreamItemInput } from './prompt.ts';
+import { buildUnitHeader, buildItemsText, buildCandidatesText, buildCorrectionText, isoDate, type DreamItemInput } from './prompt.ts';
 
 // A page body under this many chars stays one chunk; larger pages split on ##.
 const SINGLE_CHUNK_BUDGET = 1000 * CHARS_PER_TOKEN;
@@ -50,6 +50,8 @@ export interface WikiIngestResult {
   pagesCreated: number;
   pagesUpdated: number;
   pagesSkippedGuard: number;
+  pagesRetried: number;
+  pagesAddendum: number;
   pagesAutolinked: number;
   unitsSkipped: number;
   deferred: number;
@@ -113,6 +115,8 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
       pagesCreated: 0,
       pagesUpdated: 0,
       pagesSkippedGuard: 0,
+      pagesRetried: 0,
+      pagesAddendum: 0,
       pagesAutolinked: 0,
       unitsSkipped,
       deferred,
@@ -129,6 +133,8 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
   let pagesCreated = 0;
   let pagesUpdated = 0;
   let pagesSkippedGuard = 0;
+  let pagesRetried = 0;
+  let pagesAddendum = 0;
   let pagesAutolinked = 0;
   let failed = 0;
   let promptTokens = 0;
@@ -184,19 +190,10 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
         }
       }
 
-      for (const op of ops) {
-        const existingPage = store.readPage(op.slug);
-        // Shrink guard: reject a rewrite that collapses a substantial page.
-        if (existingPage && violatesShrinkGuard(existingPage.body, op.body)) {
-          pagesSkippedGuard++;
-          console.warn(
-            `[wiki] shrink guard: ${op.slug} update ${op.body.length} < 40% of ${existingPage.body.length} chars — keeping old page`
-          );
-          continue;
-        }
-
-        // Provenance must be real item ids from this unit — the model sometimes
-        // emits stray strings (e.g. a kind name) that would corrupt the fingerprint.
+      // One write path shared by pass 1, retry, and addendum. Provenance must be
+      // real item ids from this unit — the model sometimes emits stray strings
+      // (e.g. a kind name) that would corrupt the fingerprint.
+      const writeOp = async (op: WikiPageOp, existingPage: WikiPage | null): Promise<void> => {
         const validSources = op.sources.filter((s) => itemIds.has(s));
         const sources = mergeUnique(existingPage?.sources ?? [], validSources);
         const trajectories = mergeUnique(existingPage?.trajectories ?? [], [trajectoryId]);
@@ -220,6 +217,98 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
         pagesForUnit.push(op.slug);
         if (existingPage) pagesUpdated++;
         else pagesCreated++;
+      };
+
+      // Pass 1: write non-violating ops; collect guard trips for a single retry.
+      const violating: Array<{ op: WikiPageOp; existingPage: WikiPage }> = [];
+      for (const op of ops) {
+        const existingPage = store.readPage(op.slug);
+        if (existingPage && violatesShrinkGuard(existingPage.body, op.body)) {
+          pagesSkippedGuard++;
+          console.warn(
+            `[wiki] shrink guard: ${op.slug} update ${op.body.length} < 40% of ${existingPage.body.length} chars — retrying merge`
+          );
+          violating.push({ op, existingPage });
+          continue;
+        }
+        await writeOp(op, existingPage);
+      }
+
+      // Retry (once per unit): re-ask the LLM to MERGE the violating pages,
+      // re-supplying each full existing body. On LLM failure fall through with no
+      // retry ops — the deterministic addendum below still preserves knowledge.
+      if (violating.length > 0) {
+        let retryOps: WikiPageOp[] = [];
+        try {
+          const correction = buildCorrectionText(
+            violating.map(({ op, existingPage }) => ({
+              slug: op.slug,
+              oldLen: existingPage.body.length,
+              newLen: op.body.length,
+              oldBody: existingPage.body,
+            }))
+          );
+          const retry = await llm.ingest(
+            buildUnitHeader(unit),
+            buildItemsText(items),
+            buildCandidatesText(candidates, capChars),
+            store.inventory(),
+            correction
+          );
+          if (retry.usage) {
+            promptTokens += retry.usage.promptTokens;
+            completionTokens += retry.usage.completionTokens;
+          }
+          retryOps = retry.pages;
+        } catch (err) {
+          console.error(`[wiki] shrink retry LLM call failed: ${err instanceof Error ? err.message : err}`);
+        }
+
+        // Autolink retry bodies (only adds chars → same guard-relaxing property as
+        // pass 1) against the inventory now overlaid with pass-1-written siblings.
+        const retryTargets = buildLinkTargets(store.listPages(), retryOps);
+        for (const rop of retryOps) {
+          const linked = autolinkBody(rop.body, retryTargets, rop.slug);
+          rop.body = linked.body;
+          pagesAutolinked += linked.added.length;
+        }
+
+        const violatingSlugs = new Set(violating.map((v) => v.op.slug));
+        const retryBySlug = new Map<string, WikiPageOp>();
+        for (const rop of retryOps) {
+          if (!violatingSlugs.has(rop.slug)) {
+            console.warn(`[wiki] shrink retry: ignoring unexpected slug ${rop.slug} (pass-1 siblings already written)`);
+            continue;
+          }
+          retryBySlug.set(rop.slug, rop);
+        }
+
+        for (const { op, existingPage } of violating) {
+          const retryOp = retryBySlug.get(op.slug);
+          if (retryOp && !violatesShrinkGuard(existingPage.body, retryOp.body)) {
+            await writeOp(retryOp, existingPage);
+            pagesRetried++;
+            console.error(
+              `[wiki] shrink retry: ${op.slug} merged to ${retryOp.body.length} chars (was ${existingPage.body.length}; first attempt ${op.body.length})`
+            );
+          } else {
+            // Deterministic fallback: append the would-be-lost NEW facts as a dated
+            // addendum so knowledge is never dropped. Always the ORIGINAL pass-1 op —
+            // a still-shrinking retry is a failed merge whose body may have dropped
+            // the new facts, while op.body is guaranteed to carry them. Appending
+            // only grows the body, so it can never itself trip the guard.
+            const addendumOp: WikiPageOp = {
+              ...op,
+              action: 'update',
+              body: `${existingPage.body.trimEnd()}\n\n## Addendum (${isoDate(unit.lastTimestamp)})\n\n${op.body.trim()}`,
+            };
+            await writeOp(addendumOp, existingPage);
+            pagesAddendum++;
+            console.error(
+              `[wiki] shrink addendum: ${op.slug} appended ${op.body.trim().length} chars (retry ${retryOp ? 'still under floor' : 'gave no op'})`
+            );
+          }
+        }
       }
 
       // Ledger written LAST: a mid-unit failure leaves it unrecorded so the unit
@@ -248,6 +337,8 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
     pagesCreated,
     pagesUpdated,
     pagesSkippedGuard,
+    pagesRetried,
+    pagesAddendum,
     pagesAutolinked,
     unitsSkipped,
     deferred,

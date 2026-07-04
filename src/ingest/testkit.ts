@@ -333,7 +333,7 @@ export class FakeDreamLLM implements DreamLLM {
 export class FakeWikiLLM implements WikiIngestLLM, WikiSplitLLM {
   callCount = 0;
   splitCallCount = 0;
-  calls: Array<{ header: string; itemsText: string; candidatesText: string; inventory: string }> = [];
+  calls: Array<{ header: string; itemsText: string; candidatesText: string; inventory: string; correction?: string }> = [];
   splitCalls: Array<{ page: WikiPage; inventory: string }> = [];
 
   constructor(
@@ -341,16 +341,23 @@ export class FakeWikiLLM implements WikiIngestLLM, WikiSplitLLM {
       header: string,
       itemsText: string,
       candidatesText: string,
-      inventory: string
+      inventory: string,
+      correction?: string
     ) => WikiIngestResponse,
     // Optional scripted split for the hub-split path.
     private splitScript?: (page: WikiPage, inventory: string) => WikiIngestResponse
   ) {}
 
-  async ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse> {
+  async ingest(
+    header: string,
+    itemsText: string,
+    candidatesText: string,
+    inventory: string,
+    correction?: string
+  ): Promise<WikiIngestResponse> {
     this.callCount++;
-    this.calls.push({ header, itemsText, candidatesText, inventory });
-    const out = this.script(header, itemsText, candidatesText, inventory);
+    this.calls.push({ header, itemsText, candidatesText, inventory, correction });
+    const out = this.script(header, itemsText, candidatesText, inventory, correction);
     return {
       pages: out.pages,
       usage: out.usage ?? { promptTokens: itemsText.length, completionTokens: out.pages.length * 40 },

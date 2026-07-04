@@ -1,10 +1,15 @@
 import { describe, expect, test } from 'bun:test';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import postgres from 'postgres';
+import type { RawEvent } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from './chunker.ts';
 import { LOCAL_DIM } from './embed.ts';
 import { Embedder } from './embed.ts';
 import { injectDocuments, type InjectDoc } from './inject.ts';
+import { parseJsonl } from './parser.ts';
 import { FakeProvider, testConfig } from './testkit.ts';
 
 const LIVE = process.env.ENGRAM_TEST_LIVE === '1';
@@ -60,6 +65,57 @@ describe('live pgvector inject → search → retract', () => {
     } finally {
       await backend.deleteByOwnerPrefix('test:').catch(() => {});
       await raw.end();
+      await backend.close();
+    }
+  });
+});
+
+describe('live pgvector jsonb accepts sanitized payloads', () => {
+  test.skipIf(!LIVE)('a payload with   / lone surrogates inserts (post-parse sanitized)', async () => {
+    const backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION);
+    const dir = join(tmpdir(), `engram-live-unicode-${crypto.randomUUID()}`);
+    const path = join(dir, 'session.jsonl');
+    const OWNER_U = 'test:unicode';
+    // Real NUL / lone-surrogate chars → JSON.stringify emits them as   / \udXXX
+    // escapes in the file — the exact byte pattern that killed the cs-240 ingest.
+    const NUL = String.fromCharCode(0);
+    const LONE = String.fromCharCode(0xd83d);
+    const bad = {
+      type: 'assistant',
+      uuid: 'u1',
+      sessionId: 's-unicode',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: `pdf${NUL}extract${LONE} of notes` }],
+      },
+    };
+    try {
+      await backend.initialize();
+      await backend.deleteByOwnerPrefix('test:');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path, JSON.stringify(bad) + '\n', 'utf-8');
+
+      // Exercise the real seam: parseJsonl sanitizes, then the parsed payload
+      // (which pre-fix carried the fatal escapes) goes into jsonb.
+      const msgs = parseJsonl(path);
+      expect(msgs.length).toBe(1);
+      const event: RawEvent = {
+        owner: OWNER_U,
+        source: 'claude-code',
+        sessionId: 's-unicode',
+        contentSha256: `test-unicode-${crypto.randomUUID()}`,
+        occurredAt: new Date('2026-01-01T00:00:00.000Z'),
+        payload: msgs,
+      };
+      const inserted = await backend.insertRawEvents([event]);
+      expect(inserted).toBe(1);
+
+      const del = await backend.deleteByOwner(OWNER_U);
+      expect(del.rawEvents).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      await backend.deleteByOwnerPrefix('test:').catch(() => {});
       await backend.close();
     }
   });

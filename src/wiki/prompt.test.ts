@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { WIKI_SYSTEM_PROMPT, WIKI_SPLIT_SYSTEM_PROMPT, buildUnitHeader, buildCandidatesText } from './prompt.ts';
+import { WIKI_SYSTEM_PROMPT, WIKI_SPLIT_SYSTEM_PROMPT, buildUnitHeader, buildCandidatesText, buildCorrectionText, buildIngestUser } from './prompt.ts';
 import type { SynthesisUnit } from '../storage/backend.ts';
 import type { WikiPage } from './store.ts';
 
@@ -43,5 +43,36 @@ describe('buildCandidatesText', () => {
       sources: [], trajectories: [], fingerprint: '', created: '', updated: '2026-06-15T00:00:00.000Z', body: 'x',
     };
     expect(buildCandidatesText([page], 10_000)).toContain('updated: 2026-06-15');
+  });
+});
+
+describe('buildCorrectionText', () => {
+  test('restates each slug with both char counts, the floor, and the full old body', () => {
+    const text = buildCorrectionText([
+      { slug: 'pgvector', oldLen: 1200, newLen: 40, oldBody: 'FULL OLD BODY HERE' },
+      { slug: 'embedder', oldLen: 800, newLen: 30, oldBody: 'EMBEDDER BODY' },
+    ]);
+    expect(text).toContain('shrank pgvector from 1200 to 40 chars');
+    expect(text).toContain('shrank embedder from 800 to 30 chars');
+    expect(text).toContain('below the 40% floor');
+    expect(text).toContain('MERGE the new knowledge');
+    expect(text).toContain('FULL OLD BODY HERE');
+    expect(text).toContain('Return ops ONLY for these slugs: pgvector, embedder.');
+  });
+});
+
+describe('buildIngestUser', () => {
+  const args = ['HDR', 'ITEMS', 'CANDS', 'INV'] as const;
+
+  test('is byte-identical without a correction (protects prompt caching)', () => {
+    expect(buildIngestUser(...args)).toBe(buildIngestUser(...args, undefined));
+  });
+
+  test('appends the correction block only when provided, as a strict suffix', () => {
+    const base = buildIngestUser(...args);
+    const withCorrection = buildIngestUser(...args, 'CORRECTION BLOCK');
+    expect(withCorrection).toStartWith(base);
+    expect(withCorrection).toContain('CORRECTION BLOCK');
+    expect(withCorrection.length).toBeGreaterThan(base.length);
   });
 });
