@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { runSearch } from '../search/index.ts';
+import { runAsk, OpenAIAskLLM, AskError, formatSourceLine } from '../ask/index.ts';
 import type { OpenAIReranker } from '../search/rerank.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
@@ -18,6 +19,8 @@ export interface McpDeps {
   rerankDefault?: boolean;
   lastIngestAt(): string | null;
   store?: WikiStore;
+  askLLM?: OpenAIAskLLM;
+  logRecent?(kind: string, key: string, label: string): void;
 }
 
 function parseTier(value: string | undefined): SearchFilters['tier'] {
@@ -65,6 +68,48 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
         reranker: useRerank ? deps.reranker : undefined,
       });
       return { content: [{ type: 'text', text: formatResults(results) }] };
+    }
+  );
+
+  server.registerTool(
+    'engram_ask',
+    {
+      description:
+        "Ask Derek's coding memory a question and get ONE synthesized, citation-backed answer (wiki/dream tiers; costs an LLM call, ~5–20s). Use when you want a conclusion — 'what did we decide about X and why' — rather than raw excerpts; use engram_search when you want the underlying material or need zero-latency lookup. Says plainly when memory doesn't cover the question.",
+      inputSchema: {
+        question: z.string().describe('natural-language question'),
+        repo: z.string().optional().describe('limit to a repo name'),
+        limit: z.number().int().positive().max(50).optional().describe('retrieval candidates fed to the answer model (default 12, max 50)'),
+      },
+    },
+    async ({ question, repo, limit }) => {
+      deps.logRecent?.('ask', question, question);
+      if (!deps.askLLM) {
+        return {
+          content: [{ type: 'text', text: 'engram_ask unavailable: no OPENAI_API_KEY. Use engram_search instead.' }],
+          isError: true,
+        };
+      }
+      try {
+        const result = await runAsk(
+          question,
+          { repo, tier: 'synth', limit: limit ?? 12 },
+          { backend: deps.backend, embedder: deps.embedder, llm: deps.askLLM }
+        );
+        if (result.answer === null) {
+          return { content: [{ type: 'text', text: 'No indexed material matched.' }] };
+        }
+        const cited = result.sources.filter((s) => s.cited);
+        const sourcesText = cited.length > 0 ? cited.map(formatSourceLine).join('\n') : '(no sources cited)';
+        return { content: [{ type: 'text', text: `${result.answer}\n\n---\n${sourcesText}` }] };
+      } catch (err) {
+        const reason = err instanceof AskError ? err.message : err instanceof Error ? err.message : String(err);
+        console.error(`[ask] ${reason}`);
+        return {
+          content: [{ type: 'text', text: `engram_ask failed: ${reason}. Use engram_search instead.` }],
+          isError: true,
+        };
+      }
     }
   );
 

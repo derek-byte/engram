@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { Command } from 'commander';
 import { searchCommand } from './commands/search.ts';
+import { askCommand } from './commands/ask.ts';
 import { statusCommand } from './commands/status.ts';
 import { backfillCommand } from './commands/backfill.ts';
 import { watchInternalCommand } from './commands/watch.ts';
@@ -33,6 +34,20 @@ program
   .option('--json', 'emit JSON instead of formatted output')
   .action(async (query, opts) => {
     await searchCommand(query, opts);
+  });
+
+program
+  .command('ask')
+  .description('Ask your memory a question and get one synthesized, citation-backed answer (needs OPENAI_API_KEY)')
+  .argument('<question>', 'natural-language question')
+  .option('--repo <repo>', 'limit to a repo')
+  .option('--branch <branch>', 'limit to a git branch')
+  .option('--since <date>', 'only material after this ISO date')
+  .option('--tier <tier>', 'raw | dream | wiki | synth | all (default synth)', 'synth')
+  .option('--k <n>', 'retrieval candidates sent to the LLM', '12')
+  .option('--json', 'emit JSON instead of formatted output')
+  .action(async (question, opts) => {
+    await askCommand(question, opts);
   });
 
 program
