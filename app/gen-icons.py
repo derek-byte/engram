@@ -1,15 +1,35 @@
 #!/usr/bin/env python3
-"""Generate engram app icons with zero deps (pure-python PNG writer).
+"""Generate engram app icons.
 
 Outputs into ./icons:
-  icon-source.png  1024x1024 colored app-icon source (feed to `tauri icon`)
+  icon-source.png  1024x1024 app-icon source (feed to `tauri icon`) — the ✳ mark
+                   (accent green #4f6b3c) on a #f7f6f3 macOS-style rounded tile.
   tray-idle.png    44x44 monochrome template (donut) — no synthesis running
   tray-active.png  44x44 monochrome template (filled) — synthesis running
+
+The app-icon source is an SVG rasterized with macOS `qlmanage` (this is a macOS
+menu-bar app; no extra deps). The ✳ is drawn as geometry (eight round-capped
+spokes) rather than a font glyph so it stays crisp and legible down to 32px and
+depends on no installed font. The tray icons stay pure-python (template images:
+black + alpha), keeping the ring/disc idle/active distinction legible at 44px.
 """
-import struct, zlib, math, os
+import struct, zlib, math, os, subprocess, tempfile
 
 OUT = os.path.join(os.path.dirname(__file__), "src-tauri", "icons")
 os.makedirs(OUT, exist_ok=True)
+
+# ✳ mark on a rounded #f7f6f3 tile. Tile occupies ~80% of the 1024 canvas
+# (macOS icon inset); corner radius ~22% of the tile; spokes fill ~56%.
+SOURCE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="102" y="102" width="820" height="820" rx="180" ry="180" fill="#f7f6f3" stroke="#e7e4de" stroke-width="4"/>
+  <g stroke="#4f6b3c" stroke-width="54" stroke-linecap="round" transform="translate(512 512)">
+    <line x1="0" y1="-235" x2="0" y2="235"/>
+    <line x1="-235" y1="0" x2="235" y2="0"/>
+    <line x1="-166" y1="-166" x2="166" y2="166"/>
+    <line x1="-166" y1="166" x2="166" y2="-166"/>
+  </g>
+</svg>
+"""
 
 
 def write_png(path, w, h, pixels):
@@ -33,50 +53,18 @@ def write_png(path, w, h, pixels):
         f.write(chunk(b"IEND", b""))
 
 
-def rounded_rect_alpha(x, y, w, h, r, cx, cy):
-    """1.0 inside a rounded rect centered (cx,cy) size (w,h) radius r, else 0."""
-    dx = abs(x - cx)
-    dy = abs(y - cy)
-    hw, hh = w / 2, h / 2
-    if dx > hw or dy > hh:
-        return 0.0
-    # corner region
-    ix = dx - (hw - r)
-    iy = dy - (hh - r)
-    if ix > 0 and iy > 0:
-        d = math.hypot(ix, iy)
-        return max(0.0, min(1.0, r - d + 0.5))
-    return 1.0
-
-
 def gen_source():
-    W = 1024
-    px = bytearray(W * W * 4)
-    cx = cy = W / 2
-    # dark rounded-square plate with a teal->indigo vertical wash + a knockout ring.
-    for y in range(W):
-        t = y / W
-        # background gradient colors
-        r0, g0, b0 = 24, 32, 40
-        r1, g1, b1 = 18, 22, 30
-        bg = (int(r0 + (r1 - r0) * t), int(g0 + (g1 - g0) * t), int(b0 + (b1 - b0) * t))
-        # accent ring color
-        ar, ag, ab = 90, 200, 190
-        for x in range(W):
-            a = rounded_rect_alpha(x, y, 880, 880, 200, cx, cy)
-            if a <= 0:
-                continue
-            # ring: distance from center, band between R_in and R_out
-            d = math.hypot(x - cx, y - cy)
-            ring = 1.0 if 250 <= d <= 340 else 0.0
-            dot = 1.0 if d <= 120 else 0.0
-            i = (y * W + x) * 4
-            if ring or dot:
-                px[i] = ar; px[i + 1] = ag; px[i + 2] = ab
-            else:
-                px[i] = bg[0]; px[i + 1] = bg[1]; px[i + 2] = bg[2]
-            px[i + 3] = int(255 * a)
-    write_png(os.path.join(OUT, "icon-source.png"), W, W, px)
+    """Rasterize the ✳ tile SVG to icons/icon-source.png at 1024 via qlmanage."""
+    with tempfile.TemporaryDirectory() as tmp:
+        svg = os.path.join(tmp, "icon-source.svg")
+        with open(svg, "w") as f:
+            f.write(SOURCE_SVG)
+        subprocess.run(
+            ["qlmanage", "-t", "-s", "1024", svg, "-o", tmp],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        thumb = svg + ".png"  # qlmanage names it <input>.png
+        os.replace(thumb, os.path.join(OUT, "icon-source.png"))
 
 
 def gen_tray(name, filled):

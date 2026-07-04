@@ -1,5 +1,6 @@
 <!doctype html>
 <title>engram</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23f7f6f3'/><text x='16' y='24' font-family='sans-serif' font-size='24' text-anchor='middle' fill='%234f6b3c'>✳</text></svg>">
 <style>
   @font-face {
     font-family: "Departure Mono";
@@ -10,47 +11,125 @@
     src: url("data:font/woff2;base64,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") format("woff2");
   }
   :root {
-    --bg: #0a0a0a;
-    --surface: #121212;
-    --surface-hi: #191919;
-    --inset: #0e0e0e;
-    --border: #242424;
-    --border-hi: #333;
-    --fg: #e5e5e5;
-    --muted: #8a8a8a;
-    --dim: #555;
-    --accent: #94b47e;
-    --hl: rgba(148, 180, 126, 0.09);
+    --bg: #f7f6f3;
+    --surface: #ffffff;
+    --surface-hi: #f1efe9;
+    --inset: #f4f2ec;
+    --border: #e7e4de;
+    --border-hi: #d8d4cc;
+    --fg: #26241f;
+    --muted: #6f6a60;
+    --dim: #9b968b;
+    --accent: #4f6b3c;
+    --hl: rgba(95, 125, 70, 0.10);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0;
+    height: 100%;
+    overflow: hidden;              /* the window/body NEVER scrolls — only inner panes do */
     background: var(--bg);
     color: var(--fg);
     font: 14px/1.6 var(--mono);
     -webkit-font-smoothing: antialiased;
   }
-  #app {
-    max-width: 680px;
-    margin: 0 auto;
-    padding: 22vh 24px 24vh;
+  body {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    grid-template-rows: 100dvh;    /* single full-height row; the sheet insets within it */
+    height: 100dvh;
   }
+
+  /* ── sidebar nav ── */
+  /* Transparent on --bg; no divider — the floating sheet's edge IS the separation. */
+  #sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 18px 12px;
+    background: var(--bg);
+    overflow: hidden;
+    min-height: 0;
+  }
+  .tauri #sidebar { padding-top: 52px; }        /* macOS traffic-light clearance (Tauri only) */
+  .side-head {
+    padding: 2px 10px 18px;
+  }
+  .tauri .side-head { -webkit-app-region: drag; } /* draggable window region (Tauri only) */
+  .wordmark {
+    font-family: "Departure Mono", var(--mono);
+    font-size: 17px;
+    letter-spacing: 0.02em;
+    color: var(--fg);
+    user-select: none;
+  }
+  .wordmark .glyph { color: var(--accent); margin-right: 0.3em; }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: var(--muted);
+    font: 13px/1 var(--mono);
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.1s ease, color 0.1s ease;
+  }
+  .nav-item:not(.active):hover { background: var(--surface-hi); color: var(--fg); } /* plain static hover tint */
+  .nav-item.active { color: var(--accent); } /* soft active pill = the sliding .slide-hl behind it */
+  .nav-item svg { width: 15px; height: 15px; flex-shrink: 0; }
+  .nav-spacer { flex: 1; }
+
+  /* ── main content column ── */
+  /* One seamless white sheet floating on --bg, inset from the window edges;
+     overflow:hidden + radius clips the inner scrollers to the rounded corners. */
+  #app {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    margin: 12px 12px 12px 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .view { display: none; flex: 1; min-height: 0; flex-direction: column; }
+  .view.active { display: flex; }
+
+  /* search view: fixed header zone + scrolling results pane */
+  #header-zone { flex: none; padding: 28px 32px 0; }
+  #results-pane {
+    flex: 1;
+    min-height: 0;                 /* mandatory so this pane (not the body) scrolls */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0 32px 32px;
+  }
+
   h1 {
     font-family: "Departure Mono", var(--mono);
-    font-size: 30px;
+    font-size: 20px;
     font-weight: 400;
     letter-spacing: 0.02em;
     color: var(--fg);
-    margin: 0 0 28px;
-    text-align: center;
+    margin: 0 0 18px;
     line-height: 1;
   }
   h1 .glyph { color: var(--accent); margin-right: 0.28em; }
 
   /* ── search card ── */
+  /* Recessed search field on the white sheet (subtle --inset fill, no shadow). */
   #card {
-    background: var(--surface);
+    max-width: 760px;
+    background: var(--inset);
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 4px;
@@ -98,9 +177,10 @@
     transition: color 0.1s ease, background-color 0.1s ease;
   }
   #scope span:hover { color: var(--muted); }
-  #scope span.on { color: var(--accent); background: var(--hl); }
+  #scope span.on { color: var(--accent); } /* selected tint = the sliding .slide-hl behind it */
 
   #status {
+    max-width: 760px;
     color: var(--dim);
     font-size: 11.5px;
     margin: 16px 4px 4px;
@@ -108,19 +188,30 @@
   }
 
   /* ── result rows ── */
-  #results { margin-top: 2px; }
+  #results { max-width: 760px; margin-top: 2px; }
   .result {
     display: flex;
     align-items: baseline;
-    gap: 16px;
+    gap: 14px;
     padding: 11px 12px;
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.1s ease;
   }
+  /* Interaction is background-tint only — rows never gain a border/outline. */
   .result:hover, .result.active { background: var(--surface-hi); }
   .result.hidden { display: none; }
-  .result.active { outline: 1px solid var(--border-hi); outline-offset: -1px; }
+  /* Hairline dividers between episodic / recents / wiki-list rows (transcript style). */
+  #results .result:not(.wiki-card),
+  #wiki-list .result { border-bottom: 1px solid var(--border); }
+  /* timestamp gutter (episodic + recents rows) */
+  .result .gutter {
+    flex: 0 0 48px;
+    color: var(--dim);
+    font-size: 11.5px;
+    line-height: 1.6;
+    font-variant-numeric: tabular-nums;
+  }
   .result .body { min-width: 0; flex: 1; }
   .result .snippet {
     color: var(--fg);
@@ -145,16 +236,16 @@
     font-size: 11.5px;
     font-variant-numeric: tabular-nums;
   }
-  .result .age { color: var(--muted); }
   .result .sim { color: var(--dim); }
   .sub .tier-wiki { color: var(--accent); }
   .sub .tier-dream { color: var(--muted); }
   .sub .tier-raw { color: var(--dim); }
   .sub .dupes { color: var(--dim); }
 
-  /* ── wiki answer cards ── */
+  /* ── wiki answer cards (search results) ── */
+  /* Answer cards keep a distinct subtle --inset tint + accent edge on the sheet. */
   .result.wiki-card {
-    background: var(--surface);
+    background: var(--inset);
     border: 1px solid var(--border);
     border-left: 2px solid var(--accent);
     border-radius: 10px;
@@ -164,6 +255,8 @@
   }
   .result.wiki-card:hover, .result.wiki-card.active { background: var(--surface-hi); }
   .card-title {
+    display: flex;
+    align-items: baseline;
     color: var(--fg);
     font-size: 14px;
     margin-bottom: 6px;
@@ -175,6 +268,14 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     margin-left: 10px;
+  }
+  .card-age {
+    color: var(--dim);
+    font-size: 11px;
+    margin-left: auto;
+    padding-left: 10px;
+    text-transform: none;
+    font-variant-numeric: tabular-nums;
   }
   .snippet.card-snippet {
     color: var(--muted);
@@ -195,6 +296,7 @@
   }
   #more {
     display: none;
+    max-width: 760px;
     color: var(--dim);
     font-size: 11px;
     padding: 10px 12px;
@@ -203,16 +305,201 @@
   }
   #more:hover { color: var(--muted); }
 
+  /* ── sliding selection pill ── */
+  /* ONE absolutely-positioned pill per discrete selection control (sidebar nav,
+     scope tabs), layered behind the items: when the selection changes, the pill
+     translates/resizes from the previously-selected item to the new one instead
+     of each item toggling its own background. Items sit above it (z-index); the
+     selected item's tint IS this pill. Hover tints stay per-item and static. */
+  #sidebar, #scope { position: relative; }
+  .nav-item, #scope span { position: relative; z-index: 1; }
+  .slide-hl {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    border-radius: 8px;
+    background: var(--hl);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 0;
+    will-change: transform, width, height;
+    transition:
+      transform 170ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+      width 170ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+      height 170ms cubic-bezier(0.25, 0.46, 0.45, 0.94),
+      opacity 120ms ease;
+  }
+  /* Accessibility: no slide, no fade — the pill snaps to the new selection. */
+  @media (prefers-reduced-motion: reduce) {
+    .slide-hl { transition: none; }
+  }
+
+  /* ── wiki nav view (page index) ── */
+  #wiki-header { flex: none; padding: 28px 32px 12px; }
+  #wiki-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0 32px 32px;
+  }
+  #wiki-list .result { max-width: 760px; }
+  .wiki-title {
+    color: var(--fg);
+    font-size: 13.5px;
+    text-transform: capitalize;
+  }
+  .empty-msg { color: var(--muted); font-size: 13px; padding: 8px 12px; }
+
+  /* ── settings nav view (content filled elsewhere) ── */
+  #settings-header { flex: none; padding: 28px 32px 12px; }
+  #settings-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 0 32px 32px;
+  }
+
+  /* ── settings pane ── */
+  .set-hint { color: var(--dim); font-size: 11.5px; margin: 0 2px 16px; max-width: 640px; }
+  .set-error {
+    max-width: 640px;
+    color: #b3261e;
+    background: rgba(179, 38, 30, 0.06);
+    border: 1px solid rgba(179, 38, 30, 0.22);
+    border-radius: 8px;
+    font-size: 12px;
+    padding: 9px 12px;
+    margin: 0 0 16px;
+  }
+  /* Recessed --inset section blocks on the white sheet (not white-on-white cards). */
+  .set-card {
+    max-width: 640px;
+    background: var(--inset);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px 6px;
+    margin-bottom: 16px;
+  }
+  .set-card h2 {
+    font-family: "Departure Mono", var(--mono);
+    font-size: 12px;
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 2px;
+  }
+  .set-card .card-desc { color: var(--dim); font-size: 11.5px; margin: 0 0 8px; }
+  .set-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 11px 0;
+    border-top: 1px solid var(--border);
+  }
+  .set-card .card-desc + .set-row, .set-card h2 + .set-row { border-top: 0; }
+  .set-row .set-label { font-size: 13px; color: var(--fg); }
+  .set-row .set-sub { font-size: 11px; color: var(--dim); margin-top: 2px; }
+  .set-row .set-control { flex-shrink: 0; display: flex; align-items: center; gap: 10px; }
+
+  .toggle {
+    width: 38px; height: 22px; flex-shrink: 0;
+    border-radius: 999px; border: 1px solid var(--border-hi);
+    background: var(--border-hi); position: relative; cursor: pointer; padding: 0;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+  .toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+    transition: transform 0.15s ease;
+  }
+  .toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); }
+  .toggle[aria-pressed="true"]::after { transform: translateX(16px); }
+
+  .set-input, .set-select {
+    font: 12.5px/1.4 var(--mono);
+    color: var(--fg);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 9px;
+    outline: none;
+    transition: border-color 0.12s ease;
+  }
+  .set-input:focus, .set-select:focus { border-color: var(--accent); }
+  .set-input.num { width: 92px; text-align: right; }
+  .set-input.model { width: 232px; }
+  .set-select { cursor: pointer; }
+
+  .set-badge {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .set-badge.ok { color: var(--accent); border-color: var(--accent); background: var(--hl); }
+
+  .set-btn {
+    background: var(--surface); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 6px 12px; font: 12px/1 var(--mono); cursor: pointer;
+    box-shadow: var(--shadow);
+    transition: background-color 0.1s ease, color 0.1s ease;
+  }
+  .set-btn:hover:not(:disabled) { background: var(--surface-hi); color: var(--fg); }
+  .set-btn:disabled { opacity: 0.5; cursor: default; }
+  .set-btn.primary { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .set-btn.primary:hover:not(:disabled) { color: #fff; background: #435c33; }
+
+  .set-confirm {
+    margin: 4px 0 12px;
+    padding: 12px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border-hi);
+    border-radius: 8px;
+  }
+  .set-confirm p { margin: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--fg); }
+  .set-confirm .row { display: flex; gap: 8px; }
+  .set-notice {
+    margin: 4px 0 12px;
+    font-size: 11.5px; line-height: 1.5;
+    color: var(--accent);
+  }
+  .set-notice code, .empty-msg code {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; font-size: 11.5px;
+  }
+
+  .svc-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 11px 0; border-top: 1px solid var(--border);
+  }
+  .set-card h2 + .svc-row, .set-card .card-desc + .svc-row { border-top: 0; }
+  .svc-name { font-size: 13px; color: var(--fg); }
+  .svc-state { font-size: 11px; color: var(--dim); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .svc-dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    margin-right: 7px; background: var(--dim); vertical-align: middle;
+  }
+  .svc-dot.on { background: var(--accent); }
+
   /* ── overlay ── */
   #overlay {
     position: fixed; inset: 0; background: var(--bg); display: none;
-    overflow-y: auto; padding: 32px 24px 24vh;
+    overflow-y: auto; overscroll-behavior: contain; padding: 32px 24px 32px;
+    z-index: 10;
   }
   #overlay.open { display: block; }
   #overlay-inner { max-width: 680px; margin: 0 auto; }
   #back {
     background: var(--surface); color: var(--muted); border: 1px solid var(--border);
     border-radius: 8px; padding: 7px 13px; font: 12px/1 var(--mono); cursor: pointer; margin-bottom: 20px;
+    box-shadow: var(--shadow);
     transition: background-color 0.1s ease, color 0.1s ease;
   }
   #back:hover { background: var(--surface-hi); color: var(--fg); }
@@ -297,24 +584,60 @@
   .page-body a.wikilink { color: var(--accent); cursor: pointer; text-decoration: none; }
   .page-body a.wikilink:hover { text-decoration: underline; }
 </style>
+
+<aside id="sidebar">
+  <div class="side-head" data-tauri-drag-region>
+    <span class="wordmark"><span class="glyph">✳</span>engram</span>
+  </div>
+  <button class="nav-item active" data-view="search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <span>Search</span>
+  </button>
+  <button class="nav-item" data-view="wiki">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V4z"/><path d="M18 6h1a2 2 0 0 1 2 2v12"/><path d="M9 8h6M9 12h6"/></svg>
+    <span>Wiki</span>
+  </button>
+  <div class="nav-spacer"></div>
+  <button class="nav-item" data-view="settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    <span>Settings</span>
+  </button>
+</aside>
+
 <div id="app">
-  <h1><span class="glyph">✳</span>engram</h1>
-  <div id="card">
-    <input id="q" type="text" placeholder="Search your coding memory..." autocomplete="off" autofocus />
-    <div id="cardbar">
-      <span class="left" id="stats">—</span>
-      <span id="scope" title="Tab / Shift+Tab to cycle scope">
-        <span data-scope="knowledge">knowledge</span>
-        <span data-scope="history">history</span>
-        <span data-scope="all">all</span>
-      </span>
-      <span class="right" id="latency"></span>
+  <div id="search-view" class="view active">
+    <div id="header-zone">
+      <div id="card">
+        <input id="q" type="text" placeholder="Search your coding memory..." autocomplete="off" autofocus />
+        <div id="cardbar">
+          <span class="left" id="stats">—</span>
+          <span id="scope" title="Tab / Shift+Tab to cycle scope">
+            <span data-scope="knowledge">knowledge</span>
+            <span data-scope="history">history</span>
+            <span data-scope="all">all</span>
+          </span>
+          <span class="right" id="latency"></span>
+        </div>
+      </div>
+      <div id="status"></div>
+    </div>
+    <div id="results-pane">
+      <div id="results"></div>
+      <div id="more"></div>
     </div>
   </div>
-  <div id="status"></div>
-  <div id="results"></div>
-  <div id="more"></div>
+
+  <div id="wiki-view" class="view">
+    <div id="wiki-header"><h1>Wiki</h1></div>
+    <div id="wiki-list"></div>
+  </div>
+
+  <div id="settings-view" class="view">
+    <div id="settings-header"><h1>Settings</h1></div>
+    <div id="settings-body"></div>
+  </div>
 </div>
+
 <div id="overlay">
   <div id="overlay-inner">
     <button id="back">← back</button>
@@ -324,6 +647,10 @@
   </div>
 </div>
 <script>
+  // One design everywhere; the Tauri webview scopes traffic-light padding + drag
+  // region under this class so the browser never reserves that space.
+  if (window.__TAURI__) document.documentElement.classList.add('tauri');
+
   const FETCH_K = 25;       // fetched per query (server clamps at 50)
   const INITIAL_VISIBLE = 3; // compact default; ↓ past the last row reveals more
   const DEBOUNCE_MS = 200;
@@ -339,8 +666,88 @@
   const turnsEl = document.getElementById('turns');
   const pageEl = document.getElementById('page');
   const scopeEl = document.getElementById('scope');
+  const sidebarEl = document.getElementById('sidebar');
+  const wikiListEl = document.getElementById('wiki-list');
   document.getElementById('back').addEventListener('click', closeOverlay);
   moreEl.addEventListener('click', () => reveal(visible + 5));
+
+  // ── sliding selection pill ──
+  // Shared by the discrete selection controls (sidebar nav, scope tabs): one
+  // .slide-hl node per container, translated/resized to the selected item so
+  // the pill glides from the old selection to the new one on click / keyboard.
+  // Hover stays each item's own static CSS tint — nothing here tracks the mouse.
+  // API: { moveTo(el), hide() }
+  //   moveTo(el) — slide the pill to el; on first placement it appears in
+  //                place (no fly-in from 0,0). moveTo(null) hides it.
+  //   hide()     — fade out (no current selection)
+  function attachSlidingHighlight(container, opts) {
+    opts = opts || {};
+    const hl = document.createElement('div');
+    hl.className = 'slide-hl';
+    if (opts.radius != null) hl.style.borderRadius = opts.radius + 'px';
+    container.appendChild(hl);
+    let shown = false;
+
+    // offsetLeft/Top are relative to the container (the pill's offsetParent),
+    // the same coordinate frame the items live in.
+    function place(el) {
+      hl.style.transform = 'translate(' + el.offsetLeft + 'px,' + el.offsetTop + 'px)';
+      hl.style.width = el.offsetWidth + 'px';
+      hl.style.height = el.offsetHeight + 'px';
+    }
+    function moveTo(el) {
+      if (!el) { hide(); return; }
+      if (!shown) {
+        // First placement (view load): appear at the target rather than flying
+        // in — place with transitions off, force a reflow, then restore.
+        const prev = hl.style.transition;
+        hl.style.transition = 'none';
+        place(el);
+        void hl.offsetWidth;
+        hl.style.transition = prev;
+        shown = true;
+      } else {
+        place(el);
+      }
+      hl.style.opacity = '1';
+    }
+    function hide() {
+      hl.style.opacity = '0';
+      shown = false;
+    }
+    return { moveTo, hide };
+  }
+
+  const navHL = attachSlidingHighlight(sidebarEl, { radius: 8 });
+  const scopeHL = attachSlidingHighlight(scopeEl, { radius: 5 });
+
+  // ── sidebar nav / views ──
+  let currentView = 'search';
+  function showView(name) {
+    if (!['search', 'wiki', 'settings'].includes(name)) return;
+    currentView = name;
+    for (const v of document.querySelectorAll('.view')) v.classList.toggle('active', v.id === name + '-view');
+    for (const b of sidebarEl.querySelectorAll('.nav-item')) b.classList.toggle('active', b.dataset.view === name);
+    navHL.moveTo(sidebarEl.querySelector('.nav-item.active')); // slide the green pill to the new selection
+    if (name === 'search') qEl.focus();
+    else if (name === 'wiki') loadWiki();
+    else if (name === 'settings') loadSettings();
+  }
+  sidebarEl.addEventListener('click', (e) => {
+    const b = e.target.closest('.nav-item');
+    if (b) showView(b.dataset.view);
+  });
+
+  // Exposed for the Tauri shell (tray "Settings…", ESC composition) and the
+  // settings-pane agent. openSettings/closeSettings switch the main-region view.
+  function openSettings() { showView('settings'); }
+  function closeSettings() { showView('search'); } // showView('search') returns focus to #q
+  window.openSettings = openSettings;
+  window.closeSettings = closeSettings;
+  // True when a modal-like surface is up: the settings pane OR the overlay
+  // (wiki page / trajectory). The Tauri ESC script uses this to decide whether
+  // Esc closes a surface or hides the window.
+  window.__engramModalOpen = () => currentView === 'settings' || overlayEl.classList.contains('open');
 
   // ── tier scope ──
   // knowledge = synth (wiki+dream, the API default), history = raw, all = every tier.
@@ -354,6 +761,7 @@
     for (const s of scopeEl.querySelectorAll('span')) {
       s.classList.toggle('on', s.dataset.scope === scope);
     }
+    scopeHL.moveTo(scopeEl.querySelector('span.on')); // slide the pill to the selected tab
   }
   function setScope(next) {
     if (!SCOPE_TIER[next] || next === scope) return;
@@ -405,6 +813,11 @@
     const mo = d / 30;
     if (mo < 12) return Math.floor(mo) + 'mo';
     return Math.floor(d / 365) + 'y';
+  }
+
+  // Normalize SQLite-style "YYYY-MM-DD HH:MM:SS" (UTC) timestamps to ISO.
+  function normTs(ts) {
+    return (typeof ts === 'string' && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts)) ? ts.replace(' ', 'T') + 'Z' : ts;
   }
 
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
@@ -494,16 +907,30 @@
     const row = document.createElement('div');
     row.className = isCard ? 'result wiki-card' : 'result';
 
+    // Episodic rows get a timestamp gutter; wiki cards keep age in the header.
+    if (!isCard) {
+      const gutter = document.createElement('div');
+      gutter.className = 'gutter';
+      gutter.textContent = relAge(r.timestamp);
+      row.appendChild(gutter);
+    }
+
     const body = document.createElement('div');
     body.className = 'body';
     if (isCard) {
       const title = document.createElement('div');
       title.className = 'card-title';
-      title.textContent = (r.slug || 'page').replace(/-/g, ' ');
+      const titleText = document.createElement('span');
+      titleText.textContent = (r.slug || 'page').replace(/-/g, ' ');
+      title.appendChild(titleText);
       const kind = document.createElement('span');
       kind.className = 'card-kind';
       kind.textContent = r.kind || 'page';
       title.appendChild(kind);
+      const age = document.createElement('span');
+      age.className = 'card-age';
+      age.textContent = relAge(r.timestamp);
+      title.appendChild(age);
       body.appendChild(title);
     }
     const snip = document.createElement('div');
@@ -528,22 +955,17 @@
       }
       body.appendChild(sub);
     }
+    row.appendChild(body);
 
-    const aside = document.createElement('div');
-    aside.className = 'aside';
-    const age = document.createElement('span');
-    age.className = 'age';
-    age.textContent = relAge(r.timestamp);
-    aside.appendChild(age);
     if (!isCard) {
+      const aside = document.createElement('div');
+      aside.className = 'aside';
       const sim = document.createElement('span');
       sim.className = 'sim';
       sim.textContent = (r.similarity * 100).toFixed(0) + '%';
       aside.appendChild(sim);
+      row.appendChild(aside);
     }
-
-    row.appendChild(body);
-    row.appendChild(aside);
     row.addEventListener('click', () => (isCard ? openWikiPage(r) : openTrajectory(r)));
     row.addEventListener('mouseenter', () => setActive(i));
     return row;
@@ -586,20 +1008,17 @@
   function buildRecentRow(item, i) {
     const row = document.createElement('div');
     row.className = 'result';
+    const gutter = document.createElement('div');
+    gutter.className = 'gutter';
+    gutter.textContent = relAge(item.timestamp);
+    row.appendChild(gutter);
     const body = document.createElement('div');
     body.className = 'body';
     const snip = document.createElement('div');
     snip.className = 'snippet';
     snip.textContent = item.label || item.key;
     body.appendChild(snip);
-    const aside = document.createElement('div');
-    aside.className = 'aside';
-    const age = document.createElement('span');
-    age.className = 'age';
-    age.textContent = relAge(item.timestamp);
-    aside.appendChild(age);
     row.appendChild(body);
-    row.appendChild(aside);
     row.addEventListener('click', () => openItem(item));
     row.addEventListener('mouseenter', () => setActive(i));
     return row;
@@ -618,7 +1037,6 @@
       list = await res.json();
     } catch { /* recents are cosmetic */ }
     if (!Array.isArray(list) || list.length === 0) return;
-    const norm = (ts) => (/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts) ? ts.replace(' ', 'T') + 'Z' : ts);
     // The log keeps non-consecutive repeats (it doubles as the demand signal);
     // the display is LRU-style — one row per kind+key, newest wins.
     const seen = new Set();
@@ -637,7 +1055,7 @@
       lab.textContent = heading;
       resultsEl.appendChild(lab);
       for (const rec of group) {
-        const item = { _recent: rec.kind, key: rec.key, label: rec.label, timestamp: norm(rec.timestamp) };
+        const item = { _recent: rec.kind, key: rec.key, label: rec.label, timestamp: normTs(rec.timestamp) };
         const i = items.length;
         const row = buildRecentRow(item, i);
         resultsEl.appendChild(row);
@@ -647,6 +1065,56 @@
     // All recents are visible; keep the reveal machinery inert (no hiding, no
     // "show more from history" in the empty state).
     visible = items.length;
+  }
+
+  // ── wiki nav view (page index) ──
+  // Feature-detected: GET /api/wiki may not exist yet in every build; a 404 or
+  // network error renders an empty message rather than crashing.
+  async function loadWiki() {
+    clear(wikiListEl);
+    let pages = null;
+    try {
+      const res = await fetch('/api/wiki');
+      if (!res.ok) { showWikiMessage('Wiki index unavailable.'); return; }
+      pages = await res.json();
+    } catch {
+      showWikiMessage('Wiki index unavailable.');
+      return;
+    }
+    if (!Array.isArray(pages) || pages.length === 0) {
+      showWikiMessage('No wiki pages yet — run `engram dream` to compile knowledge.');
+      return;
+    }
+    for (const p of pages) {
+      const slug = p.slug;
+      if (!slug) continue;
+      const row = document.createElement('div');
+      row.className = 'result';
+      const gutter = document.createElement('div');
+      gutter.className = 'gutter';
+      gutter.textContent = relAge(normTs(p.updated));
+      row.appendChild(gutter);
+      const body = document.createElement('div');
+      body.className = 'body';
+      const title = document.createElement('div');
+      title.className = 'wiki-title';
+      title.textContent = (p.title || slug).replace(/-/g, ' ');
+      const kind = document.createElement('span');
+      kind.className = 'card-kind';
+      kind.textContent = p.kind || 'page';
+      title.appendChild(kind);
+      body.appendChild(title);
+      row.appendChild(body);
+      row.addEventListener('click', () => openWikiPage({ slug, trajectoryId: 'wiki:' + slug, tier: 'wiki' }));
+      wikiListEl.appendChild(row);
+    }
+  }
+  function showWikiMessage(msg) {
+    clear(wikiListEl);
+    const p = document.createElement('div');
+    p.className = 'empty-msg';
+    p.textContent = msg;
+    wikiListEl.appendChild(p);
   }
 
   async function search(q) {
@@ -925,16 +1393,411 @@
     }
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && overlayEl.classList.contains('open')) { closeOverlay(); return; }
-    // Tab cycles scope when the overlay is closed. On this single-input page Tab
-    // has no competing focus role; [ and ] stay usable as query characters.
-    if (e.key === 'Tab' && !overlayEl.classList.contains('open')) {
+    // Cmd+, opens settings from anywhere (mirrors the macOS Preferences shortcut).
+    if (e.metaKey && e.key === ',') { e.preventDefault(); openSettings(); return; }
+    if (e.key === 'Escape') {
+      // Compose: overlay first, then any non-search view, else nothing.
+      if (overlayEl.classList.contains('open')) { closeOverlay(); return; }
+      if (currentView !== 'search') { showView('search'); return; }
+      return;
+    }
+    // Tab cycles scope only in the search view with the overlay closed. On this
+    // page Tab has no competing focus role; [ and ] stay usable as query chars.
+    if (e.key === 'Tab' && currentView === 'search' && !overlayEl.classList.contains('open')) {
       e.preventDefault();
       cycleScope(e.shiftKey ? -1 : 1);
     }
   });
 
-  renderScope();
+  // ── settings pane ──
+  // Lazy: nothing here fetches until the Settings view is first opened. Every
+  // control saves-on-change (Wispr style) and re-renders from the PUT response —
+  // the server is the source of truth; a failed save reverts the optimistic UI.
+  const settingsBodyEl = document.getElementById('settings-body');
+  let settingsCfg = null;         // last known /api/config view
+  let settingsScaffolded = false; // one-time DOM scaffold
+  let reembedPending = false;     // sticky notice after a provider switch this session
+  let settingsErrEl, settingsCfgEl, settingsSvcEl;
+  const SVC_NAMES = { 'com.engram.watcher': 'Watcher', 'com.engram.synthesis': 'Synthesis' };
+
+  function buildSettingsScaffold() {
+    if (settingsScaffolded) return;
+    clear(settingsBodyEl);
+    const hint = document.createElement('div');
+    hint.className = 'set-hint';
+    hint.textContent = 'Changes apply to new runs (next watcher restart / synthesis run / session).';
+    settingsBodyEl.appendChild(hint);
+    settingsErrEl = document.createElement('div');
+    settingsErrEl.className = 'set-error';
+    settingsErrEl.style.display = 'none';
+    settingsErrEl.setAttribute('role', 'alert');
+    settingsBodyEl.appendChild(settingsErrEl);
+    settingsCfgEl = document.createElement('div');
+    settingsBodyEl.appendChild(settingsCfgEl);
+    settingsSvcEl = document.createElement('div');
+    settingsBodyEl.appendChild(settingsSvcEl);
+    settingsScaffolded = true;
+  }
+
+  function settingsError(msg) {
+    if (!settingsErrEl) return;
+    settingsErrEl.textContent = msg || '';
+    settingsErrEl.style.display = msg ? 'block' : 'none';
+  }
+
+  async function loadSettings() {
+    buildSettingsScaffold();
+    await Promise.all([refreshConfig(), refreshServices()]);
+  }
+
+  async function refreshConfig() {
+    let cfg = null;
+    try {
+      const res = await fetch('/api/config');
+      if (!res.ok) throw new Error('http ' + res.status);
+      cfg = await res.json();
+    } catch {
+      settingsError('Could not load settings — is the engram server running?');
+      return;
+    }
+    settingsCfg = cfg;
+    settingsError('');
+    renderConfigCards();
+  }
+
+  // Save-on-change: PUT the patch, then re-render from the response. On failure,
+  // re-render from the unchanged settingsCfg — which reverts the control.
+  async function putConfig(patch) {
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error('http ' + res.status);
+      const cfg = await res.json();
+      settingsCfg = cfg;
+      if (cfg.reembedRequired) reembedPending = true;
+      settingsError('');
+      renderConfigCards();
+      // A synthesis toggle/hour change may have reconciled the launchd agent.
+      if (cfg.synthesisReconcile) refreshServices();
+      return cfg;
+    } catch {
+      settingsError('Save failed — is the engram server running?');
+      renderConfigCards();
+      return null;
+    }
+  }
+
+  function makeCard(title, desc) {
+    const card = document.createElement('div');
+    card.className = 'set-card';
+    const h = document.createElement('h2');
+    h.textContent = title;
+    card.appendChild(h);
+    if (desc) {
+      const d = document.createElement('div');
+      d.className = 'card-desc';
+      d.textContent = desc;
+      card.appendChild(d);
+    }
+    return card;
+  }
+
+  function makeRow(labelText, subText) {
+    const row = document.createElement('div');
+    row.className = 'set-row';
+    const left = document.createElement('div');
+    const lab = document.createElement('div');
+    lab.className = 'set-label';
+    lab.textContent = labelText;
+    left.appendChild(lab);
+    if (subText) {
+      const s = document.createElement('div');
+      s.className = 'set-sub';
+      s.textContent = subText;
+      left.appendChild(s);
+    }
+    const control = document.createElement('div');
+    control.className = 'set-control';
+    row.appendChild(left);
+    row.appendChild(control);
+    return { row, control };
+  }
+
+  function makeToggle(on, onChange) {
+    const b = document.createElement('button');
+    b.className = 'toggle';
+    b.type = 'button';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.addEventListener('click', () => onChange(b.getAttribute('aria-pressed') !== 'true'));
+    return b;
+  }
+
+  function renderConfigCards() {
+    if (!settingsCfgEl) return;
+    clear(settingsCfgEl);
+    if (!settingsCfg) return;
+    const cfg = settingsCfg;
+    const ci = cfg.contextInjection || {};
+    const syn = cfg.synthesis || {};
+    const rr = cfg.rerank || {};
+
+    // Context Injection
+    const ciCard = makeCard('Context Injection', 'Surface relevant memory into new agent sessions.');
+    const ciEnabled = makeRow('Enabled', 'Inject memory at session start.');
+    ciEnabled.control.appendChild(makeToggle(!!ci.enabled, (on) => putConfig({ contextInjection: { enabled: on } })));
+    ciCard.appendChild(ciEnabled.row);
+    const ciBudget = makeRow('Budget', 'Max characters injected (100–20000).');
+    const budgetInput = document.createElement('input');
+    budgetInput.type = 'number';
+    budgetInput.className = 'set-input num';
+    budgetInput.min = '100'; budgetInput.max = '20000'; budgetInput.step = '100';
+    budgetInput.value = ci.budget != null ? String(ci.budget) : '';
+    budgetInput.addEventListener('change', () => {
+      let v = parseInt(budgetInput.value, 10);
+      if (isNaN(v)) { renderConfigCards(); return; }
+      v = Math.max(100, Math.min(20000, v));
+      if (v === ci.budget) { renderConfigCards(); return; }
+      putConfig({ contextInjection: { budget: v } });
+    });
+    ciBudget.control.appendChild(budgetInput);
+    ciCard.appendChild(ciBudget.row);
+    settingsCfgEl.appendChild(ciCard);
+
+    // Synthesis
+    const synCard = makeCard('Synthesis', 'Nightly compilation of raw memory into dreams and wiki pages.');
+    const synEnabled = makeRow('Enabled', 'Run synthesis on a schedule.');
+    synEnabled.control.appendChild(makeToggle(!!syn.enabled, (on) => putConfig({ synthesis: { enabled: on } })));
+    synCard.appendChild(synEnabled.row);
+    const synHour = makeRow('Hour', 'Local hour of day to run (0–23).');
+    const hourSel = document.createElement('select');
+    hourSel.className = 'set-select';
+    for (let h = 0; h < 24; h++) {
+      const opt = document.createElement('option');
+      opt.value = String(h);
+      opt.textContent = String(h).padStart(2, '0') + ':00';
+      if (h === syn.hour) opt.selected = true;
+      hourSel.appendChild(opt);
+    }
+    hourSel.addEventListener('change', () => {
+      const v = parseInt(hourSel.value, 10);
+      if (isNaN(v) || v === syn.hour) return;
+      putConfig({ synthesis: { hour: v } });
+    });
+    synHour.control.appendChild(hourSel);
+    synCard.appendChild(synHour.row);
+    settingsCfgEl.appendChild(synCard);
+
+    // Embedding
+    const embCard = makeCard('Embedding', 'Which model produces vector embeddings.');
+    const provRow = makeRow('Provider', 'local (on-device) or openai (API).');
+    const provSel = document.createElement('select');
+    provSel.className = 'set-select';
+    for (const p of ['local', 'openai']) {
+      const opt = document.createElement('option');
+      opt.value = p; opt.textContent = p;
+      if (p === cfg.embeddingProvider) opt.selected = true;
+      provSel.appendChild(opt);
+    }
+    provSel.addEventListener('change', () => {
+      const next = provSel.value;
+      if (next === cfg.embeddingProvider) return;
+      showProviderConfirm(embCard, next, provSel);
+    });
+    provRow.control.appendChild(provSel);
+    embCard.appendChild(provRow.row);
+    // Read-only "configured" badges — never the secret itself.
+    const keyRow = makeRow('OpenAI API key', 'Read from environment / config.');
+    keyRow.control.appendChild(makeBadge(cfg.hasOpenaiKey));
+    embCard.appendChild(keyRow.row);
+    const dbRow = makeRow('Database URL', 'Read from environment / config.');
+    dbRow.control.appendChild(makeBadge(cfg.hasDatabaseUrl));
+    embCard.appendChild(dbRow.row);
+    if (reembedPending) {
+      const notice = document.createElement('div');
+      notice.className = 'set-notice';
+      notice.appendChild(document.createTextNode('Provider changed — re-embed the index with '));
+      const code = document.createElement('code');
+      code.textContent = 'engram backfill';
+      notice.appendChild(code);
+      notice.appendChild(document.createTextNode('.'));
+      embCard.appendChild(notice);
+    }
+    settingsCfgEl.appendChild(embCard);
+
+    // Models
+    const modCard = makeCard('Models', 'LLMs used to compile knowledge.');
+    modCard.appendChild(makeTextRow('Dream model', 'Summarizes sessions into dream units.', cfg.dreamModel, (v) => {
+      if (v === cfg.dreamModel) return;
+      putConfig({ dreamModel: v });
+    }));
+    modCard.appendChild(makeTextRow('Wiki model', 'Compiles dreams into wiki pages.', cfg.wikiModel, (v) => {
+      if (v === cfg.wikiModel) return;
+      putConfig({ wikiModel: v });
+    }));
+    settingsCfgEl.appendChild(modCard);
+
+    // Search
+    const searchCard = makeCard('Search', 'Retrieval behavior.');
+    const rerankRow = makeRow('Rerank', 'Re-score candidates for relevance.');
+    rerankRow.control.appendChild(makeToggle(!!rr.enabled, (on) => putConfig({ rerank: { enabled: on } })));
+    searchCard.appendChild(rerankRow.row);
+    settingsCfgEl.appendChild(searchCard);
+  }
+
+  function makeBadge(on) {
+    const b = document.createElement('span');
+    b.className = 'set-badge' + (on ? ' ok' : '');
+    b.textContent = on ? 'configured' : 'not configured';
+    return b;
+  }
+
+  // Text input row that commits on change/blur; reverts to the current value if
+  // the field is blanked (a model name is never empty).
+  function makeTextRow(labelText, subText, value, commit) {
+    const { row, control } = makeRow(labelText, subText);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'set-input model';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.value = value || '';
+    input.addEventListener('change', () => {
+      const v = input.value.trim();
+      if (!v) { renderConfigCards(); return; }
+      commit(v);
+    });
+    control.appendChild(input);
+    return row;
+  }
+
+  // In-page confirm before an embedding-provider switch (no window.confirm).
+  // The PUT is withheld until the user commits; Cancel reverts the select.
+  function showProviderConfirm(card, next, sel) {
+    const prior = card.querySelector('.set-confirm');
+    if (prior) prior.remove();
+    const box = document.createElement('div');
+    box.className = 'set-confirm';
+    const p = document.createElement('p');
+    p.textContent = 'Switching providers requires re-embedding your entire index (engram backfill). Continue?';
+    box.appendChild(p);
+    const row = document.createElement('div');
+    row.className = 'row';
+    const yes = document.createElement('button');
+    yes.className = 'set-btn primary'; yes.type = 'button'; yes.textContent = 'Continue';
+    const no = document.createElement('button');
+    no.className = 'set-btn'; no.type = 'button'; no.textContent = 'Cancel';
+    yes.addEventListener('click', async () => {
+      yes.disabled = true; no.disabled = true;
+      await putConfig({ embeddingProvider: next }); // success re-renders the card (confirm gone)
+    });
+    no.addEventListener('click', () => {
+      sel.value = settingsCfg ? settingsCfg.embeddingProvider : sel.value; // revert
+      box.remove();
+    });
+    row.appendChild(yes);
+    row.appendChild(no);
+    box.appendChild(row);
+    card.appendChild(box);
+  }
+
+  // ── services ──
+  async function refreshServices() {
+    if (!settingsSvcEl) return;
+    let data = null;
+    try {
+      const res = await fetch('/api/services');
+      if (!res.ok) throw new Error('http ' + res.status);
+      data = await res.json();
+    } catch {
+      settingsError('Could not load service status — is the engram server running?');
+      return;
+    }
+    renderServices(data);
+  }
+
+  function fmtSchedule(s) {
+    if (!s || s.hour == null) return '';
+    return 'daily at ' + String(s.hour).padStart(2, '0') + ':00';
+  }
+
+  function svcStateText(a) {
+    const parts = [];
+    parts.push(a.loaded ? (a.state || 'loaded') : 'not loaded');
+    if (a.pid) parts.push('pid ' + a.pid);
+    const sched = fmtSchedule(a.schedule);
+    if (sched) parts.push(sched);
+    return parts.join(' · ');
+  }
+
+  function renderServices(data) {
+    if (!settingsSvcEl) return;
+    clear(settingsSvcEl);
+    const card = makeCard('Services', 'Background launchd agents.');
+    if (!data || !data.supported) {
+      const msg = document.createElement('div');
+      msg.className = 'empty-msg';
+      msg.textContent = 'Background services are only available on macOS.';
+      card.appendChild(msg);
+      settingsSvcEl.appendChild(card);
+      return;
+    }
+    if (!data.serviceInstalled) {
+      const msg = document.createElement('div');
+      msg.className = 'empty-msg';
+      msg.appendChild(document.createTextNode('Not installed — run '));
+      const code = document.createElement('code');
+      code.textContent = 'engram service install';
+      msg.appendChild(code);
+      msg.appendChild(document.createTextNode(' to enable background watching and synthesis.'));
+      card.appendChild(msg);
+      settingsSvcEl.appendChild(card);
+      return;
+    }
+    for (const agent of (data.agents || [])) {
+      const row = document.createElement('div');
+      row.className = 'svc-row';
+      const left = document.createElement('div');
+      const name = document.createElement('div');
+      name.className = 'svc-name';
+      const dot = document.createElement('span');
+      dot.className = 'svc-dot' + (agent.loaded ? ' on' : '');
+      name.appendChild(dot);
+      name.appendChild(document.createTextNode(SVC_NAMES[agent.label] || agent.label));
+      left.appendChild(name);
+      const state = document.createElement('div');
+      state.className = 'svc-state';
+      state.textContent = svcStateText(agent);
+      left.appendChild(state);
+      row.appendChild(left);
+      const btn = document.createElement('button');
+      btn.className = 'set-btn';
+      btn.type = 'button';
+      btn.textContent = 'Restart';
+      btn.addEventListener('click', () => restartService(agent.label, btn));
+      row.appendChild(btn);
+      card.appendChild(row);
+    }
+    settingsSvcEl.appendChild(card);
+  }
+
+  async function restartService(label, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Restarting…';
+    try {
+      const res = await fetch('/api/services/' + encodeURIComponent(label) + '/restart', { method: 'POST' });
+      if (!res.ok) throw new Error('http ' + res.status);
+      settingsError('');
+    } catch {
+      settingsError('Restart failed for ' + (SVC_NAMES[label] || label) + '.');
+    }
+    await refreshServices(); // rebuilds the rows (fresh state, re-enabled button)
+  }
+
+  navHL.moveTo(sidebarEl.querySelector('.nav-item.active')); // seat the pill in place on load
+  renderScope();                                             // …renderScope seats the scope pill
   loadStats();
   showRecents();
 </script>

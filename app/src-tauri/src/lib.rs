@@ -69,6 +69,8 @@ pub fn run() {
 
             let open_search =
                 MenuItem::with_id(app, "open_search", "Open Search", true, None::<&str>)?;
+            let open_settings =
+                MenuItem::with_id(app, "open_settings", "Settings…", true, None::<&str>)?;
             let run_now =
                 MenuItem::with_id(app, "run_synth", "Run Synthesis Now", true, None::<&str>)?;
             let ui_item = MenuItem::with_id(app, "ui_status", "UI: starting…", false, None::<&str>)?;
@@ -78,6 +80,7 @@ pub fn run() {
 
             let menu = MenuBuilder::new(app)
                 .item(&open_search)
+                .item(&open_settings)
                 .item(&run_now)
                 .separator()
                 .item(&ui_item)
@@ -109,6 +112,7 @@ pub fn run() {
                 .tooltip("engram")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open_search" => hotkey::toggle_search_window(app),
+                    "open_settings" => hotkey::open_settings(app),
                     "run_synth" => run_synthesis_now(app),
                     "quit" => app.exit(0),
                     _ => {}
