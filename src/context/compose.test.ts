@@ -130,6 +130,20 @@ describe('buildContext', () => {
     expect(r.markdown).toContain(`_from engram · ${r.pages.length} pages, ${r.memories.length} memories`);
   });
 
+  test('multi-line frontmatter summary is collapsed to one line', async () => {
+    const store = new FakeContextStore({
+      provenance: [prov('alpha', 5)],
+      dreams: [dream('d1', 'decision', 'X.', 1)],
+    });
+    const wikiStore = {
+      readPage: () => ({ title: 'Alpha\nPage', summary: 'Line one.\n## Injected header\nLine two.', updated: '2026-07-01' }),
+    } as unknown as import('../wiki/store.ts').WikiStore;
+    const r = await buildContext({ repo: 'r', ...base }, { backend: store, store: wikiStore });
+    const line = r.markdown.split('\n').find((l) => l.startsWith('- alpha'))!;
+    expect(line).toBe('- alpha — Line one. ## Injected header Line two. (updated 2026-07-01)');
+    expect(r.pages[0]!.summary).not.toContain('\n');
+  });
+
   test('header carries branch when present', async () => {
     const store = new FakeContextStore({ dreams: [dream('d1', 'decision', 'X.', 1)] });
     const r = await buildContext({ repo: 'r', branch: 'feature/foo', ...base }, { backend: store, store: null });

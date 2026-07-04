@@ -68,7 +68,10 @@ export async function contextCommand(opts: ContextOptions): Promise<void> {
     }
     // text mode + empty markdown → print nothing (silent-empty)
   } catch (err) {
-    console.error(`engram context: ${err instanceof Error ? err.message : err}`);
+    // postgres.js connect failures throw AggregateError with an empty message —
+    // fall back to code/name so the stderr line always says something.
+    const e: Error & { code?: string } = err instanceof Error ? err : new Error(String(err));
+    console.error(`engram context: ${e.message || e.code || e.name}`);
     emitEmpty(opts);
   } finally {
     if (backend) await backend.close();

@@ -241,7 +241,15 @@ function hydratePage(slug: string, excerpt: string, source: PageItem['source'], 
     try {
       const page = store.readPage(slug);
       if (page) {
-        return { slug, title: page.title || slug, summary: page.summary, updated: page.updated || undefined, source };
+        // collapse(): frontmatter allows block scalars, and a multi-line summary
+        // would break the one-line-per-item block (and could inject structure).
+        return {
+          slug,
+          title: collapse(page.title) || slug,
+          summary: collapse(page.summary),
+          updated: page.updated || undefined,
+          source,
+        };
       }
     } catch {
       // malformed frontmatter → fall through to excerpt
