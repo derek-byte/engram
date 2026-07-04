@@ -128,6 +128,9 @@
   }
   .result .age { color: var(--muted); }
   .result .sim { color: var(--dim); }
+  .sub .tier-wiki { color: var(--accent); }
+  .sub .tier-dream { color: var(--muted); }
+  .sub .tier-raw { color: var(--dim); }
   #more {
     display: none;
     color: var(--dim);
@@ -240,6 +243,14 @@
 
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
 
+  // Human label for a result's memory tier. Dream/raw are dated episodic
+  // snapshots; wiki is current compiled knowledge.
+  function tierLabel(r) {
+    if (r.tier === 'wiki') return 'wiki' + (r.kind ? ':' + r.kind : '');
+    if (r.tier === 'dream') return 'dream' + (r.kind ? ':' + r.kind : '');
+    return 'raw';
+  }
+
   async function loadStats() {
     try {
       const res = await fetch('/api/stats');
@@ -305,7 +316,15 @@
       snip.textContent = r.snippet;
       const sub = document.createElement('div');
       sub.className = 'sub';
-      sub.textContent = (r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch');
+      const badge = document.createElement('span');
+      badge.className = 'tier tier-' + (r.tier || 'raw');
+      badge.textContent = tierLabel(r);
+      sub.appendChild(badge);
+      const where = document.createElement('span');
+      where.textContent = ' · ' + (r.tier === 'wiki'
+        ? (r.slug || 'page')
+        : (r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch'));
+      sub.appendChild(where);
       body.appendChild(snip);
       body.appendChild(sub);
 
@@ -375,8 +394,12 @@
       const chunks = await res.json();
       if (!Array.isArray(chunks)) { overlayMetaEl.textContent = 'error loading trajectory'; return; }
       overlayMetaEl.textContent =
-        (r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch') + ' · ' + fmtTime(r.timestamp) +
-        ' · ' + chunks.length + ' chunks';
+        (r.tier === 'wiki'
+          ? 'wiki page · ' + (r.slug || '?') + ' · current compiled knowledge · updated ' + fmtTime(r.timestamp)
+          : r.tier === 'dream'
+            ? 'dream unit · dated snapshot of ' + fmtTime(r.timestamp) + ' · ' + (r.repo || '(no-repo)')
+            : (r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch') + ' · ' + fmtTime(r.timestamp)) +
+        ' · ' + chunks.length + ' chunk' + (chunks.length === 1 ? '' : 's');
       renderTurns(chunks, r.id);
     } catch {
       overlayMetaEl.textContent = 'error loading trajectory';
