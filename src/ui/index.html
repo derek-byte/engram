@@ -619,8 +619,17 @@
     } catch { /* recents are cosmetic */ }
     if (!Array.isArray(list) || list.length === 0) return;
     const norm = (ts) => (/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts) ? ts.replace(' ', 'T') + 'Z' : ts);
-    const searches = list.filter((r) => r.kind === 'search').slice(0, 8);
-    const views = list.filter((r) => r.kind === 'view').slice(0, 8);
+    // The log keeps non-consecutive repeats (it doubles as the demand signal);
+    // the display is LRU-style — one row per kind+key, newest wins.
+    const seen = new Set();
+    const uniq = list.filter((r) => {
+      const k = r.kind + '\n' + r.key;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    const searches = uniq.filter((r) => r.kind === 'search').slice(0, 8);
+    const views = uniq.filter((r) => r.kind === 'view').slice(0, 8);
     for (const [heading, group] of [['recent searches', searches], ['recently viewed', views]]) {
       if (!group.length) continue;
       const lab = document.createElement('div');
@@ -635,6 +644,9 @@
         rows.push(row); items.push(item);
       }
     }
+    // All recents are visible; keep the reveal machinery inert (no hiding, no
+    // "show more from history" in the empty state).
+    visible = items.length;
   }
 
   async function search(q) {
@@ -847,12 +859,18 @@
       const res = await fetch('/api/trajectory/' + encodeURIComponent(r.trajectoryId));
       const chunks = await res.json();
       if (!Array.isArray(chunks)) { overlayMetaEl.textContent = 'error loading trajectory'; return; }
+      // Reopened recents carry only the trajectory id; fall back to the fetched
+      // chunks' metadata for repo/branch/timestamp.
+      const c0 = chunks[0] || {};
+      const repo = r.repo ?? c0.repo;
+      const branch = r.branch ?? c0.branch;
+      const ts = r.timestamp ?? c0.timestamp;
       overlayMetaEl.textContent =
         (r.tier === 'wiki'
           ? 'wiki page · ' + (r.slug || '?') + ' · current compiled knowledge · updated ' + fmtTime(r.timestamp)
           : r.tier === 'dream'
-            ? 'dream unit · dated snapshot of ' + fmtTime(r.timestamp) + ' · ' + (r.repo || '(no-repo)')
-            : (r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch') + ' · ' + fmtTime(r.timestamp)) +
+            ? 'dream unit · dated snapshot of ' + fmtTime(ts) + ' · ' + (repo || '(no-repo)')
+            : (repo || '(no-repo)') + '@' + (branch || 'no-branch') + ' · ' + fmtTime(ts)) +
         ' · ' + chunks.length + ' chunk' + (chunks.length === 1 ? '' : 's');
       renderTurns(chunks, r.id);
     } catch {
