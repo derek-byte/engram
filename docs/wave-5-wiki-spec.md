@@ -96,6 +96,25 @@ raw/synth tier toggle, wiki pages rendered as pages with tier badges in the
 trajectory overlay, (3) in-app watcher + scheduler from day one (no launchd
 once the app runs; the launchd agents are the bridge until then).
 
+**Artifact hyperlinks (Derek, 2026-07-03):** wiki pages should link to the
+real things they discuss, not just other pages — generated artifacts
+(benchmark results, specs/docs by path), diagrams, dashboards, external URLs,
+and key file paths mentioned in the source sessions. Dream extraction already
+names files/tools; the wiki compile should render them as markdown links
+(file paths as `[path](file://...)` or repo-relative links, URLs verbatim).
+Deterministic where possible (URL/path detection is regexable — same
+philosophy as auto-linking); frontmatter could carry an `artifacts:` list for
+the UI to render as a resources row.
+
+**Empty-state recents (Derek, 2026-07-03):** when the app opens with nothing
+typed, show recency-ranked history — recent searches and recently viewed
+pages/trajectories — instead of a blank screen. Store both in LocalStore
+(sqlite): a `recents` log of (kind: search|view, key, timestamp), LRU-style,
+local-only, capped. Dual-purpose by design: the same query log feeds
+roadmap #6 (demand-driven synthesis — poorly-answered searches become the
+synthesis priority queue), so this UI feature and the self-managing loop
+share one table.
+
 ## Verification
 
 - Ingest 5–10 real trajectories' dream chunks; show pages + links form.

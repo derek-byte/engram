@@ -26,6 +26,18 @@ export interface WikiIngestResponse {
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
+// Per-model completion params. A generous output cap either way: truncated JSON
+// fails the unit identically on every retry. gpt-5+/o-series reasoning models
+// reject the legacy `max_tokens` and any non-default `temperature`; older chat
+// models accept `max_completion_tokens` but need `temperature: 0` for stable
+// re-runs.
+export function modelParams(model: string): { max_completion_tokens: number; temperature?: number } {
+  const reasoning = /^(gpt-5|o\d)/.test(model);
+  return reasoning
+    ? { max_completion_tokens: 16384 }
+    : { max_completion_tokens: 16384, temperature: 0 };
+}
+
 // Dream item types the model sometimes leaks into page ops despite the prompt;
 // coerce to the closest wiki kind instead of dropping the whole page.
 const KIND_ALIASES: Record<string, PageKind> = { fix: 'gotcha', preference: 'topic' };
@@ -55,11 +67,7 @@ export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
       this.client.chat.completions.create(
         {
           model: this.model,
-          temperature: 0,
-          // Units that update many pages return full bodies; a low cap
-          // truncates the JSON mid-string and, at temperature 0, the same
-          // unit then fails identically on every retry.
-          max_tokens: 16384,
+          ...modelParams(this.model),
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: WIKI_SYSTEM_PROMPT },
@@ -85,8 +93,7 @@ export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
       this.client.chat.completions.create(
         {
           model: this.model,
-          temperature: 0,
-          max_tokens: 16384,
+          ...modelParams(this.model),
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: WIKI_SPLIT_SYSTEM_PROMPT },

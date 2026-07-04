@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { SYSTEM_PROMPT } from './prompt.ts';
+import { modelParams } from '../wiki/llm.ts';
 
 // 'note' is never requested from the model — it's the coercion bucket for
 // off-enum types the model invents, so the item's text survives with an
@@ -40,10 +41,7 @@ export class OpenAIDreamLLM implements DreamLLM {
     const res = await withRetry(() =>
       this.client.chat.completions.create({
         model: this.model,
-        temperature: 0,
-        // Big units yield many items; a low cap truncates the JSON mid-string
-        // and, at temperature 0, the same unit then fails identically forever.
-        max_tokens: 16384,
+        ...modelParams(this.model),
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
