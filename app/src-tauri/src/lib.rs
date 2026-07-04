@@ -128,6 +128,7 @@ pub fn run() {
 
             hotkey::register(app.handle(), &open_search);
             spawn_poller(app.handle().clone());
+            spawn_sigterm_handler(app.handle().clone());
 
             Ok(())
         })
@@ -176,14 +177,8 @@ fn start_ui_async(handle: AppHandle) {
 /// CLI's own advisory lock is the correctness boundary.
 fn run_synthesis_now(app: &AppHandle) {
     let st = app.state::<AppState>();
-    {
-        let mut g = st.synth_child.lock().unwrap();
-        if let Some(child) = g.as_mut() {
-            match child.try_wait() {
-                Ok(None) => return, // our previous run still going
-                _ => *g = None,
-            }
-        }
+    if synth_child_running(&st) {
+        return; // our previous run still going
     }
     if synthesis::synthesis_active(&st.paths.synthesis_lock(), SystemTime::now()) {
         return; // some run (nightly or prior) holds the lock
@@ -191,19 +186,39 @@ fn run_synthesis_now(app: &AppHandle) {
     match synthesis::spawn_synthesis_run(&st.paths) {
         Ok(child) => {
             *st.synth_child.lock().unwrap() = Some(child);
+            st.last_active.store(true, Ordering::Relaxed);
             tray::update_indicator(app, true);
         }
         Err(e) => error_dialog(app, &format!("Couldn't start synthesis-run.\n\n{e}")),
     }
 }
 
-/// 5s poller: read the synthesis lock freshness and push tray updates on change.
-/// First iteration runs immediately so a lock present at launch is reflected.
+/// True iff the app's own `Run Synthesis Now` child is still running; reaps a
+/// finished child as a side effect.
+fn synth_child_running(st: &AppState) -> bool {
+    let mut g = st.synth_child.lock().unwrap();
+    match g.as_mut() {
+        Some(child) => match child.try_wait() {
+            Ok(None) => true,
+            _ => {
+                *g = None;
+                false
+            }
+        },
+        None => false,
+    }
+}
+
+/// 5s poller: active = lock freshness OR our own synthesis child still running
+/// (covers a child that dies before taking the lock — the indicator must reset).
+/// Pushes tray updates on change; first iteration runs immediately so a lock
+/// present at launch is reflected.
 fn spawn_poller(handle: AppHandle) {
     std::thread::spawn(move || loop {
         let (active, prev) = {
             let st = handle.state::<AppState>();
-            let a = synthesis::synthesis_active(&st.paths.synthesis_lock(), SystemTime::now());
+            let a = synthesis::synthesis_active(&st.paths.synthesis_lock(), SystemTime::now())
+                || synth_child_running(&st);
             let p = st.last_active.swap(a, Ordering::Relaxed);
             (a, p)
         };
@@ -211,6 +226,22 @@ fn spawn_poller(handle: AppHandle) {
             tray::update_indicator(&handle, active);
         }
         std::thread::sleep(Duration::from_secs(5));
+    });
+}
+
+/// SIGTERM (kill / logout / shutdown) → the same clean exit path as tray Quit,
+/// so the supervised ui child is killed instead of orphaned on its port.
+fn spawn_sigterm_handler(handle: AppHandle) {
+    let term = std::sync::Arc::new(AtomicBool::new(false));
+    if signal_hook::flag::register(signal_hook::consts::SIGTERM, term.clone()).is_err() {
+        return; // no handler — SIGTERM falls back to default (documented orphan case)
+    }
+    std::thread::spawn(move || loop {
+        if term.load(Ordering::Relaxed) {
+            handle.exit(0);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(300));
     });
 }
 

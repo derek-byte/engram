@@ -42,4 +42,4 @@ The env seams let a tester point the app at a stub repo + temp engram dir for ze
 - **Absorbing the launchd agents** (in-app watcher + nightly scheduler). v1 deliberately **coexists** with the live `com.engram.watcher` / `com.engram.synthesis` LaunchAgents and never touches them, `launchctl`, plists, or `~/.engram/config.json`.
 - Code signing / notarization; login item (launch at boot); bundling `bun` as a Tauri sidecar (v1 shells out to the installed `bun`).
 - Empty-state recents / tier-toggle UI widgets (a separate UI wave).
-- If the app crashes hard (vs. clean Quit), the ui child can be orphaned on its loopback port until manually killed — acceptable for a v1 dev-machine supervisor.
+- If the app crashes hard (SIGKILL/panic — SIGTERM and Quit both clean up), the ui child can be orphaned on its loopback port until manually killed — acceptable for a v1 dev-machine supervisor.
