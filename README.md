@@ -62,12 +62,29 @@ bun run src/index.ts wiki ingest --repo engram --dry-run   # plan a wiki compile
 bun run src/index.ts wiki lint       # orphans, dangling links, spelling drift, broken provenance
 bun run src/index.ts ui     # local search UI at http://127.0.0.1:7777
 
-bun run src/index.ts service install   # macOS: launchd watcher (+ nightly com.engram.synthesis when synthesis.enabled); `service status` / `service uninstall`
+bun run src/index.ts service install   # macOS: always-on watcher + nightly synthesis (see below)
 ```
 
-Synthesis toggle (off by default): set `synthesis: { "enabled": true, "hour": 3 }` in `~/.engram/config.json`. When on, `service install` also installs a `com.engram.synthesis` launchd agent (StartCalendarInterval, default 03:00) that runs `synthesis-run` (dream → wiki over anything new); toggling off + `service install` removes it. The watcher also runs dream → wiki after each ingest (debounced, shared advisory lock). `engram wiki ingest` / `engram dream` always work regardless of the toggle.
-
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
+
+## Always-on service (macOS / launchd)
+
+```bash
+bun run src/index.ts service install     # install + start both agents (idempotent; safe to re-run after config changes)
+bun run src/index.ts service status      # loaded/running state + last log lines for each agent
+bun run src/index.ts service uninstall   # stop + remove both agents completely
+```
+
+`install` writes up to two LaunchAgents (plists in `~/Library/LaunchAgents/`):
+
+| Agent | When | What it does | Log |
+|---|---|---|---|
+| `com.engram.watcher` | always on (`KeepAlive`) | watches `~/.claude/projects`, ingests finished sessions; when synthesis is enabled, also runs dream → wiki for that session (debounced) | `~/.engram/watcher.log` |
+| `com.engram.synthesis` | daily at `synthesis.hour` (default 03:00) | `synthesis-run`: dream synthesis → wiki compile over anything new since the last run; fingerprints make an empty night free | `~/.engram/synthesis.log` |
+
+The synthesis agent is only installed when `~/.engram/config.json` has `"synthesis": { "enabled": true, "hour": 3 }`; set `enabled: false` and re-run `service install` to remove just that agent. Manual `engram dream` / `engram wiki ingest` always work regardless of the toggle (a shared advisory lock at `~/.engram/synthesis.lock` prevents concurrent runs).
+
+**Scope & privacy:** the watcher reads exactly one directory — `~/.claude/projects` (the session logs Claude Code already writes). No screen capture, no other files. Capture, embeddings (local MiniLM by default), storage, and search are fully local; the synthesis step is the one thing that calls out, sending session-derived text to the OpenAI API (`dreamModel`/`wikiModel` in config).
 
 ## Benchmarks
 
