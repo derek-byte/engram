@@ -1,0 +1,15 @@
+{
+  "name": "engram-app",
+  "version": "0.1.0",
+  "description": "engram menu-bar app (Tauri 2) — tray supervisor over the engram CLI",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "remote-ui",
+  "description": "Grant the supervised loopback UI (remote origin) the single app command needed for Esc-to-hide.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "permissions": [
+    "core:default"
+  ]
+}
