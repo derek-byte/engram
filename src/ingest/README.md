@@ -4,7 +4,7 @@ Turns Claude Code session files into embedded, deduplicated chunks. Flow: `parse
 
 ## Files
 
-**`parser.ts`** — Reads a session `.jsonl` file into `RawMessage[]`. Normalizes the three content block shapes (text, tool_use, tool_result), keeps `cwd`/`gitBranch`/`sessionId` metadata, skips meta and sidechain messages. Malformed lines are ignored, not fatal.
+**`parser.ts`** — Reads a session `.jsonl` file into `RawMessage[]`. Normalizes the three content block shapes (text, tool_use, tool_result), keeps `cwd`/`gitBranch`/`sessionId` metadata, skips meta and sidechain messages. Malformed lines are ignored, not fatal. `sanitizeUnicode`/`deepSanitize` deep-walk each parsed line (values + object keys, including opaque `tool_use` input) and replace jsonb-fatal `\u0000` and lone-surrogate escapes with U+FFFD — one seam upstream of the raw_events jsonb payload AND chunks.content TEXT (both reject 0x00); a clean line passes through byte-identically (no re-chunk/re-embed churn).
 
 **`chunker.ts`** — Two stages, two exports:
 - `chunkMessages(messages)` groups raw messages into `Trajectory[]` — one per user turn, carrying the user message, assistant blocks, tool calls (outputs truncated to 2k chars), touched file paths, repo/branch.
