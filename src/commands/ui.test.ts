@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildUiFetch } from './ui.ts';
+import { buildUiFetch, type ServiceOps } from './ui.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { FakeBackend, FakeCache, FakeProvider, tempStore, type TempStore } from '../ingest/testkit.ts';
 import { WikiStore, pageFingerprint, type WikiPage } from '../wiki/store.ts';
@@ -57,6 +57,8 @@ describe('buildUiFetch', () => {
   let backend: FakeBackend;
   let wiki: WikiStore;
   let wikiDir: string;
+  let configPath: string;
+  let serviceCalls: { restart: string[]; reconcile: number };
   let fetch: (req: Request) => Promise<Response>;
 
   beforeEach(() => {
@@ -64,13 +66,64 @@ describe('buildUiFetch', () => {
     backend = new FakeBackend();
     wikiDir = join(tmpdir(), `engram-ui-test-${crypto.randomUUID()}`);
     wiki = new WikiStore(wikiDir);
+    // Redirect config reads/writes at a scratch file so the config route never
+    // touches the real ~/.engram/config.json. Seed it with secrets + a custom
+    // key to prove they never leak (GET) and survive a patch (PUT).
+    configPath = join(tmpdir(), `engram-cfg-test-${crypto.randomUUID()}.json`);
+    process.env.ENGRAM_CONFIG_PATH = configPath;
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          openaiApiKey: 'sk-TESTONLY',
+          databaseUrl: 'postgres://user:pw@host/db',
+          embeddingProvider: 'local',
+          synthesis: { enabled: false, hour: 3 },
+          contextInjection: { enabled: true, budget: 1500 },
+          customExperimental: 42,
+        },
+        null,
+        2
+      )
+    );
+    // Fake launchd seam — route tests never shell out to the real launchctl.
+    serviceCalls = { restart: [], reconcile: 0 };
+    const services: ServiceOps = {
+      status: () => ({
+        supported: true,
+        serviceInstalled: true,
+        agents: [
+          { label: 'com.engram.watcher', loaded: true, state: 'running', pid: 123, plistPresent: true, schedule: null },
+          { label: 'com.engram.synthesis', loaded: false, state: null, pid: null, plistPresent: false, schedule: { hour: 3 } },
+        ],
+      }),
+      restart: (label) => {
+        serviceCalls.restart.push(label);
+        return { ok: true, out: '' };
+      },
+      reconcileSynthesis: () => {
+        serviceCalls.reconcile++;
+        return { serviceInstalled: true, action: 'installed' };
+      },
+    };
     const embedder = new Embedder(new FakeProvider({ dim: 4 }), new FakeCache());
-    fetch = buildUiFetch({ html: '<html>', backend, embedder, local: t.store, wiki, dim: 4, port: PORT });
+    fetch = buildUiFetch({ html: () => '<html>', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
   });
   afterEach(() => {
     t.cleanup();
+    delete process.env.ENGRAM_CONFIG_PATH;
+    try { rmSync(configPath, { force: true }); } catch { /* best effort */ }
     try { rmSync(wikiDir, { recursive: true, force: true }); } catch { /* best effort */ }
   });
+
+  const putConfig = (bodyObj: unknown, headers: Record<string, string> = {}) =>
+    fetch(
+      new Request('http://' + HOST + '/api/config', {
+        method: 'PUT',
+        headers: { host: HOST, 'content-type': 'application/json', ...headers },
+        body: typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj),
+      })
+    );
 
   const req = (path: string, headers: Record<string, string> = {}) =>
     new Request('http://' + HOST + path, { headers: { host: HOST, ...headers } });
@@ -166,5 +219,95 @@ describe('buildUiFetch', () => {
     const rows: any = await (await fetch(req("/api/recents"))).json();
     expect(rows[0].key).toBe('wiki:engram');
     expect(rows[1].key).toBe('first');
+  });
+
+  test('GET /api/config returns editable keys and never leaks secrets', async () => {
+    const res = await fetch(req('/api/config'));
+    expect(res.status).toBe(200);
+    const body: any = await res.json();
+    expect(body.embeddingProvider).toBe('local');
+    expect(body.hasOpenaiKey).toBe(true);
+    expect(body.hasDatabaseUrl).toBe(true);
+    expect('openaiApiKey' in body).toBe(false);
+    expect('databaseUrl' in body).toBe(false);
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain('sk-');
+    expect(raw).not.toContain('postgres://');
+    expect(raw).not.toContain('databaseUrl');
+  });
+
+  test('PUT /api/config rejects secrets and read-only keys (400)', async () => {
+    expect((await putConfig({ openaiApiKey: 'x' })).status).toBe(400);
+    expect((await putConfig({ databaseUrl: 'postgres://y' })).status).toBe(400);
+    expect((await putConfig({ watchPath: '/tmp' })).status).toBe(400);
+  });
+
+  test('PUT /api/config requires application/json', async () => {
+    const res = await putConfig({}, { 'content-type': 'text/plain' });
+    expect(res.status).toBe(400);
+  });
+
+  test('PUT /api/config clamps context budget to the max and persists it', async () => {
+    const body: any = await (await putConfig({ contextInjection: { budget: 999999 } })).json();
+    expect(body.contextInjection.budget).toBe(20000);
+    const after: any = await (await fetch(req('/api/config'))).json();
+    expect(after.contextInjection.budget).toBe(20000);
+    expect(after.contextInjection.enabled).toBe(true); // merged, not overwritten
+  });
+
+  test('PUT /api/config preserves unknown keys and secrets already in the file', async () => {
+    await putConfig({ dreamModel: 'gpt-4o' });
+    const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(raw.customExperimental).toBe(42);
+    expect(raw.dreamModel).toBe('gpt-4o');
+    expect(raw.openaiApiKey).toBe('sk-TESTONLY'); // patch never rewrites secrets
+    expect(raw.databaseUrl).toBe('postgres://user:pw@host/db');
+  });
+
+  test('PUT embeddingProvider change flags reembedRequired (once)', async () => {
+    const first: any = await (await putConfig({ embeddingProvider: 'openai' })).json();
+    expect(first.reembedRequired).toBe(true);
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).embeddingProvider).toBe('openai');
+    const again: any = await (await putConfig({ embeddingProvider: 'openai' })).json();
+    expect(again.reembedRequired).toBe(false);
+  });
+
+  test('PUT synthesis change reconciles the launchd agent', async () => {
+    const body: any = await (await putConfig({ synthesis: { enabled: true, hour: 5 } })).json();
+    expect(serviceCalls.reconcile).toBe(1);
+    expect(body.synthesisReconcile).toEqual({ serviceInstalled: true, action: 'installed' });
+    expect(body.synthesis).toEqual({ enabled: true, hour: 5 });
+    expect(JSON.parse(readFileSync(configPath, 'utf-8')).synthesis).toEqual({ enabled: true, hour: 5 });
+  });
+
+  test('PUT without a synthesis key does not reconcile', async () => {
+    await putConfig({ dreamModel: 'gpt-4o' });
+    expect(serviceCalls.reconcile).toBe(0);
+  });
+
+  test('GET /api/services returns both agents', async () => {
+    const body: any = await (await fetch(req('/api/services'))).json();
+    expect(body.supported).toBe(true);
+    expect(body.serviceInstalled).toBe(true);
+    expect(body.agents.map((a: any) => a.label)).toEqual(['com.engram.watcher', 'com.engram.synthesis']);
+  });
+
+  test('POST /api/services/:label/restart — 404 unknown label, ok for a known one', async () => {
+    const post = (label: string) =>
+      fetch(new Request('http://' + HOST + '/api/services/' + label + '/restart', { method: 'POST', headers: { host: HOST } }));
+    const bad = await post('bogus');
+    expect(bad.status).toBe(404);
+    expect(serviceCalls.restart.length).toBe(0);
+    const ok = await post('com.engram.watcher');
+    expect(ok.status).toBe(200);
+    expect(serviceCalls.restart).toEqual(['com.engram.watcher']);
+  });
+
+  test('GET /api/wiki lists pages without bodies', async () => {
+    wiki.writePage(page());
+    const body: any = await (await fetch(req('/api/wiki'))).json();
+    expect(body.length).toBe(1);
+    expect(body[0]).toEqual({ slug: 'engram', title: 'Engram', kind: 'project', updated: '2026-02-01T00:00:00Z' });
+    expect('body' in body[0]).toBe(false);
   });
 });

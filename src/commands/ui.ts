@@ -1,7 +1,21 @@
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig, configIsComplete } from '../config/index.ts';
+import {
+  loadConfig,
+  configIsComplete,
+  readConfigFile,
+  patchConfigFile,
+  EDITABLE_CONFIG_KEYS,
+} from '../config/index.ts';
+import {
+  servicesStatus,
+  restartAgent,
+  reconcileSynthesisAgent,
+  isKnownServiceLabel,
+  type ServicesStatus,
+  type SynthesisReconcile,
+} from './service.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { WikiStore } from '../wiki/store.ts';
@@ -24,14 +38,48 @@ function snippet(s: string): string {
   return cleaned.length <= SNIPPET_CHARS ? cleaned : cleaned.slice(0, SNIPPET_CHARS) + '…';
 }
 
+// launchd operations are injected so route tests exercise the config/services
+// endpoints without shelling out to the real launchctl (or the developer's own
+// installed agents). uiCommand wires in the real service.ts functions.
+export interface ServiceOps {
+  status: () => ServicesStatus;
+  restart: (label: string) => { ok: boolean; out: string };
+  reconcileSynthesis: () => SynthesisReconcile;
+}
+
+export const realServiceOps: ServiceOps = {
+  status: servicesStatus,
+  restart: restartAgent,
+  reconcileSynthesis: reconcileSynthesisAgent,
+};
+
 export interface UiDeps {
-  html: string;
+  // Called per GET / so edits to index.html show on refresh — no server restart.
+  html: () => string;
   backend: VectorBackend;
   embedder: Embedder;
   local: LocalStore;
   wiki: WikiStore;
   dim: number;
   port: number;
+  services?: ServiceOps;
+}
+
+// The whitelisted, secret-free config view returned by GET /api/config and
+// echoed back by PUT. loadConfig folds env + defaults, so this reflects the
+// effective config a new run would see (config edits apply to new processes).
+function publicConfig() {
+  const c = loadConfig();
+  return {
+    embeddingProvider: c.embeddingProvider,
+    dreamModel: c.dreamModel,
+    wikiModel: c.wikiModel,
+    rerank: { enabled: c.rerank.enabled },
+    synthesis: c.synthesis,
+    contextInjection: c.contextInjection,
+    hasOpenaiKey: Boolean(c.openaiApiKey),
+    hasDatabaseUrl: Boolean(c.databaseUrl),
+  };
 }
 
 // The full request handler, extracted from Bun.serve so route tests can call it
@@ -39,6 +87,7 @@ export interface UiDeps {
 // philosophy as service.ts's exported buildPlist. uiCommand is a thin wire-up.
 export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> {
   const { html, backend, embedder, local, wiki, dim, port } = deps;
+  const services = deps.services ?? realServiceOps;
 
   // DNS-rebinding defense: only loopback Host values are legitimate for this
   // server. A malicious site rebound to 127.0.0.1 arrives with its own Host,
@@ -60,7 +109,9 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     const url = new URL(req.url);
 
     if (url.pathname === '/') {
-      return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+      return new Response(html(), {
+        headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+      });
     }
 
     if (url.pathname === '/api/stats') {
@@ -70,6 +121,90 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       } catch (err) {
         console.error('stats failed:', err instanceof Error ? err.message : err);
         return Response.json({ error: 'stats failed' }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === '/api/config') {
+      if (req.method === 'GET') return Response.json(publicConfig());
+      if (req.method !== 'PUT') return new Response('method not allowed', { status: 405 });
+
+      // Writes must be JSON — a form/navigation POST can't reach this branch.
+      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
+        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
+      }
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: 'invalid json' }, { status: 400 });
+      }
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        return Response.json({ error: 'expected a json object' }, { status: 400 });
+      }
+      const patch = body as Record<string, unknown>;
+      // Reject secrets and read-only keys up front — only editable keys pass.
+      const rejected = Object.keys(patch).filter((k) => !(EDITABLE_CONFIG_KEYS as readonly string[]).includes(k));
+      if (rejected.length > 0) {
+        return Response.json({ error: `not editable: ${rejected.join(', ')}` }, { status: 400 });
+      }
+      if ('embeddingProvider' in patch && patch.embeddingProvider !== 'openai' && patch.embeddingProvider !== 'local') {
+        return Response.json({ error: "embeddingProvider must be 'openai' or 'local'" }, { status: 400 });
+      }
+
+      const prevProvider = (readConfigFile().embeddingProvider as string | undefined) ?? 'local';
+      try {
+        patchConfigFile(patch);
+      } catch (err) {
+        console.error('config write failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'config write failed' }, { status: 500 });
+      }
+      // Switching embedding provider desyncs the vector column ⇒ a re-embed is required.
+      const reembedRequired = 'embeddingProvider' in patch && patch.embeddingProvider !== prevProvider;
+      // A synthesis toggle/hour change reconciles the launchd agent (only if installed).
+      let synthesisReconcile: SynthesisReconcile | undefined;
+      if ('synthesis' in patch) {
+        try {
+          synthesisReconcile = services.reconcileSynthesis();
+        } catch (err) {
+          console.error('synthesis reconcile failed:', err instanceof Error ? err.message : err);
+        }
+      }
+      return Response.json({ ...publicConfig(), reembedRequired, synthesisReconcile });
+    }
+
+    // Page index for the Wiki nav view (list only, no bodies).
+    if (url.pathname === '/api/wiki') {
+      try {
+        return Response.json(
+          wiki.listPages().map((p) => ({ slug: p.slug, title: p.title, kind: p.kind, updated: p.updated }))
+        );
+      } catch (err) {
+        console.error('wiki list failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'wiki list failed' }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === '/api/services') {
+      try {
+        return Response.json(services.status());
+      } catch (err) {
+        console.error('services status failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'services status failed' }, { status: 500 });
+      }
+    }
+
+    const restartMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/restart$/);
+    if (restartMatch) {
+      if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+      const label = decodeURIComponent(restartMatch[1]!);
+      // Unknown labels 404 before touching launchctl (labels are never interpolated).
+      if (!isKnownServiceLabel(label)) return Response.json({ error: 'unknown service' }, { status: 404 });
+      try {
+        const r = services.restart(label);
+        return Response.json({ ok: r.ok, label }, { status: r.ok ? 200 : 500 });
+      } catch (err) {
+        console.error('service restart failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'restart failed' }, { status: 500 });
       }
     }
 
@@ -219,7 +354,7 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
   }
 
   const port = opts.port ? Number(opts.port) : 7777;
-  const html = readFileSync(HTML_PATH, 'utf-8');
+  const html = () => readFileSync(HTML_PATH, 'utf-8');
 
   const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
   await backend.initialize();

@@ -9,8 +9,19 @@ export const CONTEXT_BUDGET_DEFAULT = 1500;
 export const CONTEXT_BUDGET_MIN = 100;
 export const CONTEXT_BUDGET_MAX = 20000;
 
+export const SYNTHESIS_HOUR_MIN = 0;
+export const SYNTHESIS_HOUR_MAX = 23;
+export const SYNTHESIS_HOUR_DEFAULT = 3;
+
 export const ENGRAM_DIR = join(homedir(), '.engram');
 export const CONFIG_PATH = join(ENGRAM_DIR, 'config.json');
+
+// Config reads/writes resolve the path lazily so a test can redirect them at a
+// scratch file via ENGRAM_CONFIG_PATH — the settings route patches config.json
+// in place, and no test may ever touch the real ~/.engram/config.json.
+function resolveConfigPath(): string {
+  return process.env.ENGRAM_CONFIG_PATH ?? CONFIG_PATH;
+}
 export const LOCAL_DB_PATH = process.env.ENGRAM_LOCAL_DB ?? join(ENGRAM_DIR, 'engram.sqlite');
 export const LOG_PATH = join(ENGRAM_DIR, 'engram.log');
 
@@ -32,7 +43,7 @@ const DEFAULT_CONFIG: EngramConfig = {
   wikiDir: join(ENGRAM_DIR, 'wiki'),
   wikiModel: 'gpt-4o-mini',
   wikiMaxInputChars: 60_000,
-  synthesis: { enabled: false, hour: 3 },
+  synthesis: { enabled: false, hour: SYNTHESIS_HOUR_DEFAULT },
   contextInjection: { enabled: true, budget: CONTEXT_BUDGET_DEFAULT },
 };
 
@@ -44,9 +55,8 @@ export function ensureEngramDir(): void {
 
 export function loadConfig(): EngramConfig {
   ensureEngramDir();
-  const raw = existsSync(CONFIG_PATH)
-    ? JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
-    : {};
+  const path = resolveConfigPath();
+  const raw = existsSync(path) ? JSON.parse(readFileSync(path, 'utf-8')) : {};
   return mergeConfig(raw, process.env);
 }
 
@@ -64,8 +74,7 @@ export function mergeConfig(
 
   // synthesis is a nested block too (older config.json files lack it); clamp hour to 0–23.
   merged.synthesis = { ...DEFAULT_CONFIG.synthesis, ...(raw.synthesis ?? {}) };
-  const hour = Math.trunc(Number(merged.synthesis.hour));
-  merged.synthesis.hour = Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : DEFAULT_CONFIG.synthesis.hour;
+  merged.synthesis.hour = clampHour(merged.synthesis.hour, DEFAULT_CONFIG.synthesis.hour);
   merged.synthesis.enabled = Boolean(merged.synthesis.enabled);
 
   // contextInjection is a nested block (older config.json files lack it); clamp budget.
@@ -99,7 +108,79 @@ export function mergeConfig(
 
 export function saveConfig(config: EngramConfig): void {
   ensureEngramDir();
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  writeFileSync(resolveConfigPath(), JSON.stringify(config, null, 2));
+}
+
+// The keys the settings UI may edit. Secrets (openaiApiKey, databaseUrl) and
+// structural fields (watchPath, embeddingDim, …) are deliberately excluded — the
+// config route rejects anything outside this set.
+export const EDITABLE_CONFIG_KEYS = [
+  'embeddingProvider',
+  'dreamModel',
+  'wikiModel',
+  'rerank',
+  'synthesis',
+  'contextInjection',
+] as const;
+export type EditableConfigKey = (typeof EDITABLE_CONFIG_KEYS)[number];
+
+// Raw parse of config.json with NO env folding or default merge — the on-disk
+// truth. patchConfigFile edits this so env secrets never leak back into the file.
+export function readConfigFile(): Record<string, unknown> {
+  ensureEngramDir();
+  const path = resolveConfigPath();
+  if (!existsSync(path)) return {};
+  return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+}
+
+// Patch config.json in place: deep-merge only the editable keys over the on-disk
+// file, clamp bounded values, and write back. This must NOT route through
+// saveConfig(loadConfig()) — loadConfig folds in env secrets (OPENAI_API_KEY, the
+// Neon URL) and provider-derived defaults, which would then get baked into the
+// file. Unknown keys already in the file are preserved verbatim. Returns the raw
+// file object after the patch.
+export function patchConfigFile(patch: Record<string, unknown>): Record<string, unknown> {
+  const raw = readConfigFile();
+
+  for (const key of EDITABLE_CONFIG_KEYS) {
+    if (!(key in patch)) continue;
+    const value = patch[key];
+    switch (key) {
+      case 'embeddingProvider':
+        raw.embeddingProvider = parseProvider(String(value));
+        break;
+      case 'dreamModel':
+      case 'wikiModel':
+        raw[key] = String(value);
+        break;
+      case 'rerank': {
+        // Only the enabled toggle is editable; model/topK stay whatever the file holds.
+        const cur = (raw.rerank ?? {}) as Record<string, unknown>;
+        raw.rerank = { ...cur, enabled: Boolean((value as Record<string, unknown> | null)?.enabled) };
+        break;
+      }
+      case 'synthesis': {
+        const cur = (raw.synthesis ?? {}) as Record<string, unknown>;
+        const v = (value ?? {}) as Record<string, unknown>;
+        if ('enabled' in v) cur.enabled = Boolean(v.enabled);
+        if ('hour' in v) cur.hour = clampHour(v.hour, SYNTHESIS_HOUR_DEFAULT);
+        raw.synthesis = cur;
+        break;
+      }
+      case 'contextInjection': {
+        const cur = (raw.contextInjection ?? {}) as Record<string, unknown>;
+        const v = (value ?? {}) as Record<string, unknown>;
+        if ('enabled' in v) cur.enabled = Boolean(v.enabled);
+        if ('budget' in v) cur.budget = clampContextBudget(v.budget, CONTEXT_BUDGET_DEFAULT);
+        raw.contextInjection = cur;
+        break;
+      }
+    }
+  }
+
+  ensureEngramDir();
+  writeFileSync(resolveConfigPath(), JSON.stringify(raw, null, 2));
+  return raw;
 }
 
 export function configIsComplete(config: EngramConfig): boolean {
@@ -113,6 +194,12 @@ export function clampContextBudget(value: unknown, fallback: number): number {
   const n = Math.trunc(Number(value));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(CONTEXT_BUDGET_MAX, Math.max(CONTEXT_BUDGET_MIN, n));
+}
+
+// Shared by loadConfig and patchConfigFile — clamp synthesis hour to 0–23.
+export function clampHour(value: unknown, fallback: number): number {
+  const n = Math.trunc(Number(value));
+  return Number.isFinite(n) && n >= SYNTHESIS_HOUR_MIN && n <= SYNTHESIS_HOUR_MAX ? n : fallback;
 }
 
 function parseProvider(value: string): EmbeddingProviderKind {

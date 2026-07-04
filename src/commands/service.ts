@@ -123,7 +123,10 @@ function unloadExisting(spec: AgentSpec): void {
   if (existsSync(spec.plistPath)) launchctl(['unload', spec.plistPath]);
 }
 
-function installAgent(spec: AgentSpec): void {
+// Install (or reinstall) an agent. Throws on a launchctl load failure so the
+// caller decides whether that's fatal — the CLI exits(1), the ui-server returns
+// 500 — rather than process.exit here (lethal inside the always-on server).
+export function installAgent(spec: AgentSpec): void {
   const dir = dirname(spec.plistPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   ensureEngramDir();
@@ -134,8 +137,7 @@ function installAgent(spec: AgentSpec): void {
   if (!boot.ok) {
     const legacy = launchctl(['load', '-w', spec.plistPath]);
     if (!legacy.ok) {
-      console.error(`Failed to load ${spec.label}:\n${boot.out}\n${legacy.out}`);
-      process.exit(1);
+      throw new Error(`Failed to load ${spec.label}:\n${boot.out}\n${legacy.out}`);
     }
   }
   console.log(`Installed ${spec.label}`);
@@ -145,7 +147,7 @@ function installAgent(spec: AgentSpec): void {
   console.log(`  log:    ${spec.log}`);
 }
 
-function uninstallAgent(spec: AgentSpec): void {
+export function uninstallAgent(spec: AgentSpec): void {
   unloadExisting(spec);
   if (existsSync(spec.plistPath)) {
     unlinkSync(spec.plistPath);
@@ -155,23 +157,105 @@ function uninstallAgent(spec: AgentSpec): void {
   }
 }
 
-function statusLine(spec: AgentSpec): void {
+export interface AgentStatus {
+  label: string;
+  loaded: boolean;
+  state: string | null;
+  pid: number | null;
+  plistPresent: boolean;
+  schedule: { hour: number } | null;
+}
+
+// launchctl-derived status for one agent, as data (the ui-server serves this to
+// the settings pane). statusLine renders it for the CLI.
+export function agentStatus(spec: AgentSpec): AgentStatus {
   const print = launchctl(['print', serviceTarget(spec.label)]);
+  const pid = print.ok ? print.out.match(/pid = (\d+)/)?.[1] : undefined;
+  return {
+    label: spec.label,
+    loaded: print.ok,
+    state: print.ok ? (print.out.match(/state = (\S+)/)?.[1] ?? 'unknown') : null,
+    pid: pid ? Number(pid) : null,
+    plistPresent: existsSync(spec.plistPath),
+    schedule: spec.schedule ?? null,
+  };
+}
+
+function statusLine(spec: AgentSpec): void {
+  const st = agentStatus(spec);
   console.log(`\n${spec.label}`);
-  if (print.ok) {
-    const state = print.out.match(/state = (\S+)/)?.[1] ?? 'unknown';
-    const pid = print.out.match(/pid = (\d+)/)?.[1];
-    console.log(`  service:  loaded (state ${state}${pid ? `, pid ${pid}` : ''})`);
+  if (st.loaded) {
+    console.log(`  service:  loaded (state ${st.state}${st.pid ? `, pid ${st.pid}` : ''})`);
   } else {
     console.log('  service:  not loaded');
   }
-  console.log(`  plist:    ${existsSync(spec.plistPath) ? spec.plistPath : 'absent'}`);
+  console.log(`  plist:    ${st.plistPresent ? spec.plistPath : 'absent'}`);
   if (spec.schedule) console.log(`  when:     daily at ${String(spec.schedule.hour).padStart(2, '0')}:00`);
   console.log(`  log:      ${spec.log}`);
   if (existsSync(spec.log)) {
     const lines = readFileSync(spec.log, 'utf-8').split('\n').filter(Boolean).slice(-8);
     for (const l of lines) console.log(`    ${l}`);
   }
+}
+
+export function isKnownServiceLabel(label: string): boolean {
+  return label === WATCHER_LABEL || label === SYNTHESIS_LABEL;
+}
+
+// Restart a loaded agent via `launchctl kickstart -k`. The label is validated
+// against the two known constants — never interpolated from request input.
+export function restartAgent(label: string): { ok: boolean; out: string } {
+  if (!isKnownServiceLabel(label)) throw new Error(`unknown service label: ${label}`);
+  return launchctl(['kickstart', '-k', serviceTarget(label)]);
+}
+
+export interface ServicesStatus {
+  supported: boolean;
+  serviceInstalled: boolean; // watcher plist present ⇒ `engram service install` was run
+  agents: AgentStatus[];
+}
+
+// Both agents' status for the settings pane. Non-darwin returns a clean
+// unsupported payload instead of exiting.
+export function servicesStatus(): ServicesStatus {
+  if (process.platform !== 'darwin') {
+    return { supported: false, serviceInstalled: false, agents: [] };
+  }
+  const config = loadConfig();
+  const watcher = watcherSpec();
+  const synthesis = synthesisSpec(config.synthesis.hour);
+  return {
+    supported: true,
+    serviceInstalled: existsSync(watcher.plistPath),
+    agents: [agentStatus(watcher), agentStatus(synthesis)],
+  };
+}
+
+export interface SynthesisReconcile {
+  serviceInstalled: boolean;
+  action: 'installed' | 'uninstalled' | 'none';
+}
+
+// After a config PUT changes synthesis.enabled/.hour, bring the synthesis agent
+// in line with config — but only if the service was ever installed (watcher
+// plist present). Mirrors the install-case logic in serviceCommand. If never
+// installed, it's a no-op and serviceInstalled:false tells the UI to prompt
+// `engram service install`.
+export function reconcileSynthesisAgent(): SynthesisReconcile {
+  if (process.platform !== 'darwin') return { serviceInstalled: false, action: 'none' };
+  const watcher = watcherSpec();
+  if (!existsSync(watcher.plistPath)) return { serviceInstalled: false, action: 'none' };
+  const config = loadConfig();
+  const synthesis = synthesisSpec(config.synthesis.hour);
+  if (config.synthesis.enabled) {
+    installAgent(synthesis);
+    return { serviceInstalled: true, action: 'installed' };
+  }
+  if (existsSync(synthesis.plistPath)) {
+    uninstallAgent(synthesis);
+    return { serviceInstalled: true, action: 'uninstalled' };
+  }
+  return { serviceInstalled: true, action: 'none' };
 }
 
 export interface ServiceOptions {
@@ -203,12 +287,17 @@ export async function serviceCommand(action: string, opts: ServiceOptions = {}):
         }
         return;
       }
-      installAgent(watcher);
-      if (config.synthesis.enabled) {
-        installAgent(synthesis);
-      } else {
-        // Toggle-off + install must remove a previously-installed synthesis agent.
-        if (existsSync(synthesis.plistPath)) uninstallAgent(synthesis);
+      try {
+        installAgent(watcher);
+        if (config.synthesis.enabled) {
+          installAgent(synthesis);
+        } else {
+          // Toggle-off + install must remove a previously-installed synthesis agent.
+          if (existsSync(synthesis.plistPath)) uninstallAgent(synthesis);
+        }
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : err);
+        process.exit(1);
       }
       console.log(`\nCheck it with: engram service status`);
       break;

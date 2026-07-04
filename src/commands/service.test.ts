@@ -1,5 +1,16 @@
-import { describe, expect, test } from 'bun:test';
-import { buildPlist, watcherSpec, synthesisSpec } from './service.ts';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  buildPlist,
+  watcherSpec,
+  synthesisSpec,
+  agentStatus,
+  restartAgent,
+  isKnownServiceLabel,
+  type AgentSpec,
+} from './service.ts';
 
 describe('buildPlist', () => {
   test('watcher agent: RunAtLoad + KeepAlive, no schedule', () => {
@@ -29,5 +40,40 @@ describe('buildPlist', () => {
     const xml = buildPlist({ label: 'l', plistPath: '/tmp/l.plist', programArgs: ['/bin/a&b', 'x<y'], log: '/tmp/l.log' });
     expect(xml).toContain('/bin/a&amp;b');
     expect(xml).toContain('x&lt;y');
+  });
+});
+
+describe('service labels', () => {
+  test('isKnownServiceLabel recognizes only the two engram agents', () => {
+    expect(isKnownServiceLabel('com.engram.watcher')).toBe(true);
+    expect(isKnownServiceLabel('com.engram.synthesis')).toBe(true);
+    expect(isKnownServiceLabel('com.engram.evil')).toBe(false);
+    expect(isKnownServiceLabel('')).toBe(false);
+  });
+
+  test('restartAgent rejects an unknown label before touching launchctl', () => {
+    expect(() => restartAgent('com.evil.service')).toThrow(/unknown service label/);
+  });
+});
+
+describe('agentStatus', () => {
+  // A synthetic label that is never loaded, so launchctl print returns not-loaded
+  // deterministically without reading (or touching) the real engram agents.
+  const plistPath = join(tmpdir(), `engram-svc-test-${crypto.randomUUID()}.plist`);
+  const spec: AgentSpec = { label: 'com.engram.unit-test-nonexistent', plistPath, programArgs: ['/bin/true'], log: '/tmp/x.log' };
+  afterEach(() => {
+    try { rmSync(plistPath, { force: true }); } catch { /* best effort */ }
+  });
+
+  test('reports not-loaded and reflects plist presence', () => {
+    const before = agentStatus(spec);
+    expect(before.label).toBe(spec.label);
+    expect(before.loaded).toBe(false);
+    expect(before.state).toBeNull();
+    expect(before.pid).toBeNull();
+    expect(before.plistPresent).toBe(false);
+
+    writeFileSync(plistPath, '<plist/>');
+    expect(agentStatus(spec).plistPresent).toBe(true);
   });
 });
