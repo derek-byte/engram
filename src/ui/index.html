@@ -81,6 +81,25 @@
   #cardbar .right { font-variant-numeric: tabular-nums; }
   #cardbar .accent { color: var(--accent); }
 
+  /* ── scope toggle ── */
+  #scope {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+  }
+  #scope span {
+    padding: 2px 7px;
+    border-radius: 5px;
+    color: var(--dim);
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.1s ease, background-color 0.1s ease;
+  }
+  #scope span:hover { color: var(--muted); }
+  #scope span.on { color: var(--accent); background: var(--hl); }
+
   #status {
     color: var(--dim);
     font-size: 11.5px;
@@ -213,6 +232,70 @@
     display: block; margin-bottom: 8px;
   }
   .turn.match .idx { color: var(--accent); }
+
+  /* ── wiki page view ── */
+  #page { display: none; }
+  #page.open { display: block; }
+  .page-head { margin-bottom: 8px; }
+  .page-title {
+    font-size: 22px;
+    color: var(--fg);
+    text-transform: capitalize;
+    margin: 0 0 6px;
+    line-height: 1.2;
+  }
+  .page-title .page-kind {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin-left: 10px;
+    vertical-align: middle;
+  }
+  .page-prov {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .page-prov .prov-link { color: var(--accent); cursor: pointer; }
+  .page-prov .prov-link:hover { text-decoration: underline; }
+  .page-body { font-size: 14px; line-height: 1.7; color: var(--fg); }
+  .page-body h1, .page-body h2, .page-body h3,
+  .page-body h4, .page-body h5, .page-body h6 {
+    font-weight: 400;
+    color: var(--fg);
+    line-height: 1.3;
+    margin: 22px 0 8px;
+  }
+  .page-body h1 { font-size: 19px; }
+  .page-body h2 { font-size: 16.5px; }
+  .page-body h3 { font-size: 14.5px; color: var(--muted); }
+  .page-body h4, .page-body h5, .page-body h6 { font-size: 13.5px; color: var(--muted); }
+  .page-body p { margin: 10px 0; }
+  .page-body ul, .page-body ol { margin: 10px 0; padding-left: 22px; }
+  .page-body li { margin: 3px 0; }
+  .page-body code {
+    background: var(--inset);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 12.5px;
+  }
+  .page-body pre {
+    background: var(--inset);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    overflow-x: auto;
+    margin: 12px 0;
+  }
+  .page-body pre code { background: none; border: 0; padding: 0; font-size: 12.5px; }
+  .page-body strong { color: var(--fg); font-weight: 700; }
+  .page-body a { color: var(--fg); }
+  .page-body a.wikilink { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .page-body a.wikilink:hover { text-decoration: underline; }
 </style>
 <div id="app">
   <h1><span class="glyph">✳</span>engram</h1>
@@ -220,6 +303,11 @@
     <input id="q" type="text" placeholder="Search your coding memory..." autocomplete="off" autofocus />
     <div id="cardbar">
       <span class="left" id="stats">—</span>
+      <span id="scope" title="Tab / Shift+Tab to cycle scope">
+        <span data-scope="knowledge">knowledge</span>
+        <span data-scope="history">history</span>
+        <span data-scope="all">all</span>
+      </span>
       <span class="right" id="latency"></span>
     </div>
   </div>
@@ -232,6 +320,7 @@
     <button id="back">← back</button>
     <div id="overlay-meta"></div>
     <div id="turns"></div>
+    <div id="page"></div>
   </div>
 </div>
 <script>
@@ -248,8 +337,42 @@
   const overlayEl = document.getElementById('overlay');
   const overlayMetaEl = document.getElementById('overlay-meta');
   const turnsEl = document.getElementById('turns');
+  const pageEl = document.getElementById('page');
+  const scopeEl = document.getElementById('scope');
   document.getElementById('back').addEventListener('click', closeOverlay);
   moreEl.addEventListener('click', () => reveal(visible + 5));
+
+  // ── tier scope ──
+  // knowledge = synth (wiki+dream, the API default), history = raw, all = every tier.
+  const SCOPE_TIER = { knowledge: 'synth', history: 'raw', all: 'all' };
+  const SCOPES = ['knowledge', 'history', 'all'];
+  const SLUG_RE = /^[a-z0-9-]{1,64}$/; // mirrors isValidSlug (src/wiki/links.ts)
+  let scope = localStorage.getItem('engram.scope');
+  if (!SCOPE_TIER[scope]) scope = 'knowledge';
+
+  function renderScope() {
+    for (const s of scopeEl.querySelectorAll('span')) {
+      s.classList.toggle('on', s.dataset.scope === scope);
+    }
+  }
+  function setScope(next) {
+    if (!SCOPE_TIER[next] || next === scope) return;
+    scope = next;
+    localStorage.setItem('engram.scope', scope);
+    renderScope();
+    // Re-run the current query immediately (skip the debounce); empty box just
+    // moves the highlight.
+    clearTimeout(debounceTimer);
+    if (qEl.value.trim()) search(qEl.value);
+  }
+  function cycleScope(dir) {
+    const i = SCOPES.indexOf(scope);
+    setScope(SCOPES[(i + dir + SCOPES.length) % SCOPES.length]);
+  }
+  scopeEl.addEventListener('click', (e) => {
+    const s = e.target.closest('span[data-scope]');
+    if (s) setScope(s.dataset.scope);
+  });
 
   let debounceTimer = null;
   let inflight = null;
@@ -421,7 +544,7 @@
 
     row.appendChild(body);
     row.appendChild(aside);
-    row.addEventListener('click', () => openTrajectory(r));
+    row.addEventListener('click', () => (isCard ? openWikiPage(r) : openTrajectory(r)));
     row.addEventListener('mouseenter', () => setActive(i));
     return row;
   }
@@ -460,14 +583,77 @@
     });
   }
 
+  function buildRecentRow(item, i) {
+    const row = document.createElement('div');
+    row.className = 'result';
+    const body = document.createElement('div');
+    body.className = 'body';
+    const snip = document.createElement('div');
+    snip.className = 'snippet';
+    snip.textContent = item.label || item.key;
+    body.appendChild(snip);
+    const aside = document.createElement('div');
+    aside.className = 'aside';
+    const age = document.createElement('span');
+    age.className = 'age';
+    age.textContent = relAge(item.timestamp);
+    aside.appendChild(age);
+    row.appendChild(body);
+    row.appendChild(aside);
+    row.addEventListener('click', () => openItem(item));
+    row.addEventListener('mouseenter', () => setActive(i));
+    return row;
+  }
+
+  // Empty-state: recency-ranked recent searches + recently viewed pages/trajectories.
+  async function showRecents() {
+    if (inflight) { inflight.abort(); inflight = null; }
+    clear(resultsEl);
+    rows = []; items = []; activeIndex = -1; wikiN = 0;
+    moreEl.style.display = 'none';
+    statusEl.textContent = '';
+    let list = null;
+    try {
+      const res = await fetch('/api/recents');
+      list = await res.json();
+    } catch { /* recents are cosmetic */ }
+    if (!Array.isArray(list) || list.length === 0) return;
+    const norm = (ts) => (/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts) ? ts.replace(' ', 'T') + 'Z' : ts);
+    // The log keeps non-consecutive repeats (it doubles as the demand signal);
+    // the display is LRU-style — one row per kind+key, newest wins.
+    const seen = new Set();
+    const uniq = list.filter((r) => {
+      const k = r.kind + '\n' + r.key;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    const searches = uniq.filter((r) => r.kind === 'search').slice(0, 8);
+    const views = uniq.filter((r) => r.kind === 'view').slice(0, 8);
+    for (const [heading, group] of [['recent searches', searches], ['recently viewed', views]]) {
+      if (!group.length) continue;
+      const lab = document.createElement('div');
+      lab.className = 'section-label';
+      lab.textContent = heading;
+      resultsEl.appendChild(lab);
+      for (const rec of group) {
+        const item = { _recent: rec.kind, key: rec.key, label: rec.label, timestamp: norm(rec.timestamp) };
+        const i = items.length;
+        const row = buildRecentRow(item, i);
+        resultsEl.appendChild(row);
+        rows.push(row); items.push(item);
+      }
+    }
+    // All recents are visible; keep the reveal machinery inert (no hiding, no
+    // "show more from history" in the empty state).
+    visible = items.length;
+  }
+
   async function search(q) {
     if (inflight) inflight.abort();
     if (!q.trim()) {
-      clear(resultsEl);
-      rows = []; items = []; activeIndex = -1;
-      statusEl.textContent = '';
       latencyEl.textContent = '';
-      moreEl.style.display = 'none';
+      showRecents();
       return;
     }
     const ctrl = new AbortController();
@@ -475,7 +661,7 @@
     statusEl.textContent = 'searching…';
     const t0 = performance.now();
     try {
-      const res = await fetch('/api/search?q=' + encodeURIComponent(q) + '&k=' + FETCH_K, { signal: ctrl.signal });
+      const res = await fetch('/api/search?q=' + encodeURIComponent(q) + '&k=' + FETCH_K + '&tier=' + SCOPE_TIER[scope], { signal: ctrl.signal });
       const list = await res.json();
       if (ctrl.signal.aborted) return;
       inflight = null;
@@ -490,7 +676,175 @@
     }
   }
 
+  // Open dispatch shared by clicks, Enter, and recents rows.
+  function openItem(r) {
+    if (r._recent === 'search') { qEl.value = r.key; search(r.key); return; }
+    if (r._recent === 'view') { openRecentView(r.key); return; }
+    if (r.tier === 'wiki') { openWikiPage(r); return; }
+    openTrajectory(r);
+  }
+
+  function openRecentView(key) {
+    if (key.startsWith('wiki:')) openWikiPage({ slug: key.slice(5), trajectoryId: key, tier: 'wiki' });
+    else if (key.startsWith('traj:')) openTrajectory({ trajectoryId: key.slice(5) });
+  }
+
+  // Overlay hosts either the trajectory turns or the wiki page; exactly one is
+  // shown. back/Escape always returns to results (no view stack).
+  function showTurnsView() { pageEl.classList.remove('open'); turnsEl.style.display = ''; }
+  function showPageView() { turnsEl.style.display = 'none'; pageEl.classList.add('open'); }
+
+  // ── hand-rolled markdown renderer (DOM-only, never innerHTML) ──
+  // Scope: headings, paragraphs, unordered/ordered lists, fenced code, inline
+  // code, bold, [text](url) links (http/https/file only), [[wikilinks]].
+  function renderInline(container, text) {
+    const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\[\[([^\]|]+)(?:\|([^\]]*))?\]\])|(\[([^\]]+)\]\(([^)]+)\))/g;
+    let last = 0, m;
+    const pushText = (s) => { if (s) container.appendChild(document.createTextNode(s)); };
+    while ((m = re.exec(text)) !== null) {
+      pushText(text.slice(last, m.index));
+      last = re.lastIndex;
+      if (m[2] !== undefined) {
+        const b = document.createElement('strong'); b.textContent = m[2]; container.appendChild(b);
+      } else if (m[4] !== undefined) {
+        const c = document.createElement('code'); c.textContent = m[4]; container.appendChild(c);
+      } else if (m[6] !== undefined) {
+        const rawSlug = m[6].trim();
+        const slug = rawSlug.toLowerCase();
+        const label = (m[7] !== undefined && m[7] !== '') ? m[7] : rawSlug;
+        if (SLUG_RE.test(slug)) {
+          const a = document.createElement('a');
+          a.className = 'wikilink'; a.textContent = label;
+          a.addEventListener('click', () => openWikiPage({ slug, trajectoryId: 'wiki:' + slug, tier: 'wiki' }));
+          container.appendChild(a);
+        } else {
+          pushText(label);
+        }
+      } else if (m[9] !== undefined) {
+        const label = m[9], url = m[10];
+        if (/^(https?|file):/i.test(url)) {
+          const a = document.createElement('a');
+          a.textContent = label; a.href = url; a.target = '_blank'; a.rel = 'noopener';
+          container.appendChild(a);
+        } else {
+          pushText(label);
+        }
+      }
+    }
+    pushText(text.slice(last));
+  }
+
+  function renderMarkdown(container, md) {
+    clear(container);
+    const lines = md.replace(/\r\n/g, '\n').split('\n');
+    let i = 0;
+    const flushPara = (buf) => {
+      if (!buf.length) return;
+      const p = document.createElement('p');
+      renderInline(p, buf.join(' '));
+      container.appendChild(p);
+    };
+    let para = [];
+    while (i < lines.length) {
+      const line = lines[i];
+      const fence = line.match(/^\s*(```|~~~)(.*)$/);
+      if (fence) {
+        flushPara(para); para = [];
+        const marker = fence[1];
+        const code = [];
+        i++;
+        while (i < lines.length && !lines[i].trimStart().startsWith(marker)) code.push(lines[i++]);
+        i++; // closing fence
+        const pre = document.createElement('pre');
+        const c = document.createElement('code');
+        c.textContent = code.join('\n');
+        pre.appendChild(c);
+        container.appendChild(pre);
+        continue;
+      }
+      const heading = line.match(/^(#{1,6})\s+(.*)$/);
+      if (heading) {
+        flushPara(para); para = [];
+        const h = document.createElement('h' + heading[1].length);
+        renderInline(h, heading[2].trim());
+        container.appendChild(h);
+        i++;
+        continue;
+      }
+      const ul = line.match(/^\s*[-*]\s+(.*)$/);
+      const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+      if (ul || ol) {
+        flushPara(para); para = [];
+        const listEl = document.createElement(ol ? 'ol' : 'ul');
+        while (i < lines.length) {
+          const um = lines[i].match(/^\s*[-*]\s+(.*)$/);
+          const om = lines[i].match(/^\s*\d+\.\s+(.*)$/);
+          const item = ol ? om : um;
+          if (!item) break;
+          const li = document.createElement('li');
+          renderInline(li, item[1]);
+          listEl.appendChild(li);
+          i++;
+        }
+        container.appendChild(listEl);
+        continue;
+      }
+      if (line.trim() === '') { flushPara(para); para = []; i++; continue; }
+      para.push(line.trim());
+      i++;
+    }
+    flushPara(para);
+  }
+
+  async function openWikiPage(r) {
+    const slug = r.slug;
+    overlayMetaEl.textContent = '';
+    clear(pageEl);
+    showPageView();
+    overlayEl.classList.add('open');
+    overlayEl.scrollTop = 0;
+    let page = null;
+    try {
+      const res = await fetch('/api/wiki/' + encodeURIComponent(slug));
+      if (!res.ok) { openTrajectory({ trajectoryId: r.trajectoryId || 'wiki:' + slug, tier: 'wiki', slug }); return; }
+      page = await res.json();
+    } catch {
+      openTrajectory({ trajectoryId: r.trajectoryId || 'wiki:' + slug, tier: 'wiki', slug });
+      return;
+    }
+    const head = document.createElement('div');
+    head.className = 'page-head';
+    const title = document.createElement('h2');
+    title.className = 'page-title';
+    title.textContent = (page.title || slug).replace(/-/g, ' ');
+    const kind = document.createElement('span');
+    kind.className = 'page-kind';
+    kind.textContent = page.kind || 'page';
+    title.appendChild(kind);
+    head.appendChild(title);
+    pageEl.appendChild(head);
+
+    const prov = document.createElement('div');
+    prov.className = 'page-prov';
+    const n = page.sourceCount || 0;
+    prov.appendChild(document.createTextNode('updated ' + fmtTime(page.updated) + ' · '));
+    const link = document.createElement('span');
+    link.className = 'prov-link';
+    link.textContent = 'compiled from ' + n + ' dream chunk' + (n === 1 ? '' : 's') + ' → view sources';
+    link.addEventListener('click', () =>
+      openTrajectory({ trajectoryId: page.trajectoryId, tier: 'wiki', slug: page.slug, timestamp: page.updated })
+    );
+    prov.appendChild(link);
+    pageEl.appendChild(prov);
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'page-body';
+    renderMarkdown(bodyEl, page.body || '');
+    pageEl.appendChild(bodyEl);
+  }
+
   async function openTrajectory(r) {
+    showTurnsView();
     if (!r.trajectoryId) {
       overlayMetaEl.textContent = 'This chunk has no trajectory id.';
       clear(turnsEl);
@@ -505,12 +859,18 @@
       const res = await fetch('/api/trajectory/' + encodeURIComponent(r.trajectoryId));
       const chunks = await res.json();
       if (!Array.isArray(chunks)) { overlayMetaEl.textContent = 'error loading trajectory'; return; }
+      // Reopened recents carry only the trajectory id; fall back to the fetched
+      // chunks' metadata for repo/branch/timestamp.
+      const c0 = chunks[0] || {};
+      const repo = r.repo ?? c0.repo;
+      const branch = r.branch ?? c0.branch;
+      const ts = r.timestamp ?? c0.timestamp;
       overlayMetaEl.textContent =
         (r.tier === 'wiki'
           ? 'wiki page · ' + (r.slug || '?') + ' · current compiled knowledge · updated ' + fmtTime(r.timestamp)
           : r.tier === 'dream'
-            ? 'dream unit · dated snapshot of ' + fmtTime(r.timestamp) + ' · ' + (r.repo || '(no-repo)')
-            : (r.repo || '(no-repo)') + '@' + (r.branch || 'no-branch') + ' · ' + fmtTime(r.timestamp)) +
+            ? 'dream unit · dated snapshot of ' + fmtTime(ts) + ' · ' + (repo || '(no-repo)')
+            : (repo || '(no-repo)') + '@' + (branch || 'no-branch') + ' · ' + fmtTime(ts)) +
         ' · ' + chunks.length + ' chunk' + (chunks.length === 1 ? '' : 's');
       renderTurns(chunks, r.id);
     } catch {
@@ -549,7 +909,7 @@
   });
   qEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
-      if (activeIndex >= 0 && items[activeIndex]) { openTrajectory(items[activeIndex]); return; }
+      if (activeIndex >= 0 && items[activeIndex]) { openItem(items[activeIndex]); return; }
       clearTimeout(debounceTimer);
       search(qEl.value);
     } else if (e.key === 'ArrowDown') {
@@ -565,8 +925,16 @@
     }
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && overlayEl.classList.contains('open')) closeOverlay();
+    if (e.key === 'Escape' && overlayEl.classList.contains('open')) { closeOverlay(); return; }
+    // Tab cycles scope when the overlay is closed. On this single-input page Tab
+    // has no competing focus role; [ and ] stay usable as query characters.
+    if (e.key === 'Tab' && !overlayEl.classList.contains('open')) {
+      e.preventDefault();
+      cycleScope(e.shiftKey ? -1 : 1);
+    }
   });
 
+  renderScope();
   loadStats();
+  showRecents();
 </script>

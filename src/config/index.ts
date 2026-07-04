@@ -7,7 +7,7 @@ import { RERANK_DEFAULTS } from '../search/rerank.ts';
 
 export const ENGRAM_DIR = join(homedir(), '.engram');
 export const CONFIG_PATH = join(ENGRAM_DIR, 'config.json');
-export const LOCAL_DB_PATH = join(ENGRAM_DIR, 'engram.sqlite');
+export const LOCAL_DB_PATH = process.env.ENGRAM_LOCAL_DB ?? join(ENGRAM_DIR, 'engram.sqlite');
 export const LOG_PATH = join(ENGRAM_DIR, 'engram.log');
 
 const DEFAULT_CONFIG: EngramConfig = {
