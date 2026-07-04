@@ -17,7 +17,7 @@ export interface AgentSpec {
   schedule?: { hour: number };
 }
 
-function repoRoot(): string {
+export function repoRoot(): string {
   return fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '');
 }
 
@@ -25,7 +25,7 @@ function plistPathFor(label: string): string {
   return join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
 }
 
-function indexPath(): string {
+export function indexPath(): string {
   return join(repoRoot(), 'src', 'index.ts');
 }
 
