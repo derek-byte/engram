@@ -286,6 +286,17 @@
 
   function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
 
+  // Strip markdown artifacts for display: [[slug|label]] → label, [[slug]] →
+  // slug, drop heading markers. The source stays markdown; this is render-only.
+  function cleanSnippet(s) {
+    return s
+      .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, '$2')
+      .replace(/\[\[([^\]]+)\]\]/g, '$1')
+      .replace(/#{1,6}\s+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   // Human label for a result's memory tier. Dream/raw are dated episodic
   // snapshots; wiki is current compiled knowledge.
   function tierLabel(r) {
@@ -374,7 +385,7 @@
     }
     const snip = document.createElement('div');
     snip.className = isCard ? 'snippet card-snippet' : 'snippet';
-    snip.textContent = r.snippet;
+    snip.textContent = isCard ? cleanSnippet(r.snippet) : r.snippet;
     body.appendChild(snip);
     if (!isCard) {
       const sub = document.createElement('div');
