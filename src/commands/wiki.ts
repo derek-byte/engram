@@ -102,7 +102,8 @@ async function wikiIngest(opts: WikiOptions): Promise<void> {
     } else {
       console.log(
         `compiled ${result.unitsCompiled} unit(s): ${result.pagesCreated} created, ${result.pagesUpdated} updated, ` +
-          `${result.pagesSkippedGuard} guarded, skipped ${result.unitsSkipped} unchanged, deferred ${result.deferred}, failed ${result.failed}`
+          `${result.pagesSkippedGuard} guard-tripped (${result.pagesRetried} retried, ${result.pagesAddendum} addendum), ` +
+          `skipped ${result.unitsSkipped} unchanged, deferred ${result.deferred}, failed ${result.failed}`
       );
       console.log(`tokens: ${result.promptTokens} prompt, ${result.completionTokens} completion`);
       console.log(`wiki: ${store.dir}`);

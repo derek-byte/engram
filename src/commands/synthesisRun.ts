@@ -61,6 +61,9 @@ export async function synthesisRunCommand(): Promise<void> {
       unitsCompiled: wiki.unitsCompiled,
       pagesCreated: wiki.pagesCreated,
       pagesUpdated: wiki.pagesUpdated,
+      pagesSkippedGuard: wiki.pagesSkippedGuard,
+      pagesRetried: wiki.pagesRetried,
+      pagesAddendum: wiki.pagesAddendum,
       failed: wiki.failed,
     });
 

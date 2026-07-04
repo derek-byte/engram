@@ -66,7 +66,7 @@ export function buildUnitHeader(unit: SynthesisUnit): string {
 }
 
 // YYYY-MM-DD from a (possibly invalid) Date, tolerant of bad timestamps.
-function isoDate(d: Date): string {
+export function isoDate(d: Date): string {
   return Number.isNaN(d.getTime()) ? 'unknown' : d.toISOString().slice(0, 10);
 }
 
@@ -98,9 +98,10 @@ export function buildIngestUser(
   header: string,
   itemsText: string,
   candidatesText: string,
-  inventory: string
+  inventory: string,
+  correction?: string
 ): string {
-  return [
+  const parts = [
     header,
     '',
     'DREAM ITEMS (id in brackets):',
@@ -111,7 +112,30 @@ export function buildIngestUser(
     '',
     'INVENTORY (all existing pages — reuse these slugs):',
     inventory,
-  ].join('\n');
+  ];
+  // Appended LAST so the byte-stable prefix above stays cache-eligible.
+  if (correction) parts.push('', correction);
+  return parts.join('\n');
+}
+
+// Correction block for a shrink-guard retry: per violating slug, restate the
+// char drop and re-supply the FULL existing body so the model re-merges instead
+// of collapsing the page. One block covers every violating slug in the unit.
+export function buildCorrectionText(
+  violations: Array<{ slug: string; oldLen: number; newLen: number; oldBody: string }>
+): string {
+  const blocks = violations.map(
+    (v) =>
+      `Your update shrank ${v.slug} from ${v.oldLen} to ${v.newLen} chars (below the 40% floor). ` +
+      `Here is the FULL existing body again; MERGE the new knowledge into it — return the complete ` +
+      `merged page (action:"update", same slug).\n\n\`\`\`\n${v.oldBody}\n\`\`\``
+  );
+  return [
+    'CORRECTION — your previous response violated the shrink floor:',
+    ...blocks,
+    '',
+    `Return ops ONLY for these slugs: ${violations.map((v) => v.slug).join(', ')}.`,
+  ].join('\n\n');
 }
 
 export type { PageKind };

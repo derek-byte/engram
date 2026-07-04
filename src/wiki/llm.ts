@@ -43,8 +43,17 @@ export function modelParams(model: string): { max_completion_tokens: number; tem
 const KIND_ALIASES: Record<string, PageKind> = { fix: 'gotcha', preference: 'topic' };
 
 // The wiki-ingest LLM seam: one call per synthesis unit returns full page ops.
+// `correction` (optional) is appended to the user message on a shrink-guard
+// retry — the byte-stable system prompt + shared user prefix keep OpenAI prompt
+// caching intact.
 export interface WikiIngestLLM {
-  ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse>;
+  ingest(
+    header: string,
+    itemsText: string,
+    candidatesText: string,
+    inventory: string,
+    correction?: string
+  ): Promise<WikiIngestResponse>;
 }
 
 // The hub-split seam: one call takes an oversized page + inventory, returns a
@@ -62,7 +71,13 @@ export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
     this.model = model;
   }
 
-  async ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse> {
+  async ingest(
+    header: string,
+    itemsText: string,
+    candidatesText: string,
+    inventory: string,
+    correction?: string
+  ): Promise<WikiIngestResponse> {
     const res = await withRetry(() =>
       this.client.chat.completions.create(
         {
@@ -71,7 +86,7 @@ export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: WIKI_SYSTEM_PROMPT },
-            { role: 'user', content: buildIngestUser(header, itemsText, candidatesText, inventory) },
+            { role: 'user', content: buildIngestUser(header, itemsText, candidatesText, inventory, correction) },
           ],
         },
         // Without a timeout the SDK default is 10 minutes — one hung request

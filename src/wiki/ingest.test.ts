@@ -111,20 +111,164 @@ describe('ingestWiki', () => {
     }
   });
 
-  test('shrink guard rejects a collapsing rewrite', async () => {
+  test('shrink guard trip → retry still shrinks → deterministic addendum (knowledge kept)', async () => {
     const dir = join(tmpdir(), `engram-wiki-guard-${crypto.randomUUID()}`);
+    // `script` returns the same tiny op for s2 regardless of correction → retry
+    // still violates → addendum fallback.
     const llm = new FakeWikiLLM(script);
     const { backend, deps } = makeDeps(dir, llm);
     try {
       await backend.upsert([dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector'), dreamChunk('d2', 's1', 'engram', 'gotcha', 'fp skip')]);
       await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
       const bodyBefore = deps.store.readPage('pgvector')!.body;
+      const callsBefore = llm.callCount;
 
       // New unit s2 tries to shrink pgvector below 40%.
       await backend.upsert([dreamChunk('d3', 's2', 'engram', 'decision', 'more pgvector notes')]);
       const res = await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
       expect(res.pagesSkippedGuard).toBe(1);
-      expect(deps.store.readPage('pgvector')!.body).toBe(bodyBefore); // old page kept
+      expect(res.pagesRetried).toBe(0);
+      expect(res.pagesAddendum).toBe(1);
+      // A retry LLM call was made (pass-1 + retry = 2 more calls this run).
+      expect(llm.callCount).toBe(callsBefore + 2);
+      expect(llm.calls.some((c) => c.correction)).toBe(true);
+
+      const body = deps.store.readPage('pgvector')!.body;
+      expect(body).toStartWith(bodyBefore.trimEnd()); // old knowledge preserved verbatim
+      expect(body).toContain('## Addendum (');
+      expect(body).toContain('tiny'); // the would-be-lost new op body appended
+      // Addendum grows the page; it never trips the guard itself.
+      expect(res.pagesSkippedGuard).toBe(res.pagesRetried + res.pagesAddendum);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const FIRST_ATTEMPT = 'tiny [[fingerprint-skip]]';
+
+  // s1 seeds a big pgvector page; s2 shrinks it. The retry behavior is driven by
+  // whether a `correction` was supplied and what body it returns.
+  function retryScript(onCorrection: (slug: string) => WikiPageOp[]) {
+    return (header: string, _i: string, _c: string, _inv: string, correction?: string): { pages: WikiPageOp[] } => {
+      if (header.includes('s2')) {
+        if (correction) return { pages: onCorrection('pgvector') };
+        return { pages: [{ slug: 'pgvector', action: 'update', kind: 'tool', title: 'pgvector', summary: 'x', aliases: [], body: FIRST_ATTEMPT, sources: ['d3'] }] };
+      }
+      return script(header);
+    };
+  }
+
+  async function seedAndShrink(dir: string, llm: FakeWikiLLM) {
+    const { backend, deps } = makeDeps(dir, llm);
+    await backend.upsert([dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector'), dreamChunk('d2', 's1', 'engram', 'gotcha', 'fp skip')]);
+    await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+    const bodyBefore = deps.store.readPage('pgvector')!.body;
+    await backend.upsert([dreamChunk('d3', 's2', 'engram', 'decision', 'more pgvector notes')]);
+    const res = await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+    return { backend, deps, bodyBefore, res };
+  }
+
+  test('shrink retry succeeds: correction yields a proper merged body, written in place', async () => {
+    const dir = join(tmpdir(), `engram-wiki-retry-ok-${crypto.randomUUID()}`);
+    const mergedBody = LONG_BODY + '\nNew merged fact from s2. [[fingerprint-skip]]';
+    const llm = new FakeWikiLLM(
+      retryScript(() => [{ slug: 'pgvector', action: 'update', kind: 'tool', title: 'pgvector', summary: 'x', aliases: [], body: mergedBody, sources: ['d3'] }])
+    );
+    try {
+      const { deps, bodyBefore, res } = await seedAndShrink(dir, llm);
+      expect(res.pagesSkippedGuard).toBe(1);
+      expect(res.pagesRetried).toBe(1);
+      expect(res.pagesAddendum).toBe(0);
+
+      const body = deps.store.readPage('pgvector')!.body;
+      expect(body).toContain('New merged fact from s2');
+      expect(body).not.toContain('## Addendum (');
+
+      // The correction restated the slug, both char counts, and the FULL old body.
+      const correction = llm.calls.find((c) => c.correction)!.correction!;
+      expect(correction).toContain(`shrank pgvector from ${bodyBefore.length} to ${FIRST_ATTEMPT.length}`);
+      expect(correction).toContain('below the 40% floor');
+      expect(correction).toContain('pgvector backs the index'); // full old body re-supplied
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('shrink retry returns no op for the slug → addendum built from the ORIGINAL op body', async () => {
+    const dir = join(tmpdir(), `engram-wiki-retry-noop-${crypto.randomUUID()}`);
+    const llm = new FakeWikiLLM(retryScript(() => [])); // retry yields nothing
+    try {
+      const { deps, bodyBefore, res } = await seedAndShrink(dir, llm);
+      expect(res.pagesRetried).toBe(0);
+      expect(res.pagesAddendum).toBe(1);
+      const body = deps.store.readPage('pgvector')!.body;
+      expect(body).toStartWith(bodyBefore.trimEnd());
+      expect(body).toContain('## Addendum (');
+      expect(body).toContain('tiny'); // ORIGINAL first-attempt body, since retry gave no op
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('two violating slugs in one unit → exactly ONE retry call, independent outcomes', async () => {
+    const dir = join(tmpdir(), `engram-wiki-retry-two-${crypto.randomUUID()}`);
+    const BIG_A = 'alpha detail. [[beta]] links here. '.repeat(20);
+    const BIG_B = 'beta detail. [[alpha]] links here. '.repeat(20);
+    const mergedA = BIG_A + '\nmerged alpha fact. [[beta]]';
+    // s1 creates alpha+beta (both >500). s2 shrinks both; retry rescues alpha only.
+    const llm = new FakeWikiLLM((header, _i, _c, _inv, correction) => {
+      if (header.includes('s1')) {
+        return {
+          pages: [
+            { slug: 'alpha', action: 'create', kind: 'topic', title: 'Alpha', summary: 'a', aliases: [], body: BIG_A, sources: ['a1'] },
+            { slug: 'beta', action: 'create', kind: 'topic', title: 'Beta', summary: 'b', aliases: [], body: BIG_B, sources: ['a2'] },
+          ],
+        };
+      }
+      if (correction) {
+        return { pages: [{ slug: 'alpha', action: 'update', kind: 'topic', title: 'Alpha', summary: 'a', aliases: [], body: mergedA, sources: ['a3'] }] };
+      }
+      return {
+        pages: [
+          { slug: 'alpha', action: 'update', kind: 'topic', title: 'Alpha', summary: 'a', aliases: [], body: 'tiny a [[beta]]', sources: ['a3'] },
+          { slug: 'beta', action: 'update', kind: 'topic', title: 'Beta', summary: 'b', aliases: [], body: 'tiny b [[alpha]]', sources: ['a3'] },
+        ],
+      };
+    });
+    const { backend, deps } = makeDeps(dir, llm);
+    try {
+      await backend.upsert([dreamChunk('a1', 's1', 'engram', 'decision', 'alpha'), dreamChunk('a2', 's1', 'engram', 'gotcha', 'beta')]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+      await backend.upsert([dreamChunk('a3', 's2', 'engram', 'decision', 'both alpha and beta notes')]);
+      const res = await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+
+      expect(res.pagesSkippedGuard).toBe(2);
+      expect(res.pagesRetried).toBe(1); // alpha
+      expect(res.pagesAddendum).toBe(1); // beta
+      expect(llm.calls.filter((c) => c.correction).length).toBe(1); // ONE retry call for both
+
+      expect(deps.store.readPage('alpha')!.body).toContain('merged alpha fact');
+      expect(deps.store.readPage('alpha')!.body).not.toContain('## Addendum (');
+      expect(deps.store.readPage('beta')!.body).toContain('## Addendum (');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('retry op body is autolinked (sibling mention wrapped) before the guard re-check', async () => {
+    const dir = join(tmpdir(), `engram-wiki-retry-autolink-${crypto.randomUUID()}`);
+    // Merged retry body mentions the sibling's TITLE in PLAIN TEXT only — no
+    // [[link]] at all, so a wrapped link in the stored body proves autolink ran
+    // on the retry op. Long enough (>40% of the old body) to clear the guard.
+    const mergedPlain = 'The vector store persists embeddings and relies on the Fingerprint short-circuit. '.repeat(15);
+    const llm = new FakeWikiLLM(
+      retryScript(() => [{ slug: 'pgvector', action: 'update', kind: 'tool', title: 'pgvector', summary: 'x', aliases: [], body: mergedPlain, sources: ['d3'] }])
+    );
+    try {
+      const { deps, res } = await seedAndShrink(dir, llm);
+      expect(res.pagesRetried).toBe(1);
+      // The plain-text sibling mention was wrapped by autolink on the retry op.
+      expect(deps.store.readPage('pgvector')!.body).toContain('[[fingerprint-skip');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
