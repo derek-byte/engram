@@ -293,18 +293,19 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
             );
           } else {
             // Deterministic fallback: append the would-be-lost NEW facts as a dated
-            // addendum so knowledge is never dropped. Appending only grows the body,
-            // so it can never itself trip the guard.
-            const chosen = retryOp ?? op;
+            // addendum so knowledge is never dropped. Always the ORIGINAL pass-1 op —
+            // a still-shrinking retry is a failed merge whose body may have dropped
+            // the new facts, while op.body is guaranteed to carry them. Appending
+            // only grows the body, so it can never itself trip the guard.
             const addendumOp: WikiPageOp = {
-              ...chosen,
+              ...op,
               action: 'update',
-              body: `${existingPage.body.trimEnd()}\n\n## Addendum (${isoDate(unit.lastTimestamp)})\n\n${chosen.body.trim()}`,
+              body: `${existingPage.body.trimEnd()}\n\n## Addendum (${isoDate(unit.lastTimestamp)})\n\n${op.body.trim()}`,
             };
             await writeOp(addendumOp, existingPage);
             pagesAddendum++;
             console.error(
-              `[wiki] shrink addendum: ${op.slug} appended ${chosen.body.trim().length} chars (retry still under floor)`
+              `[wiki] shrink addendum: ${op.slug} appended ${op.body.trim().length} chars (retry ${retryOp ? 'still under floor' : 'gave no op'})`
             );
           }
         }

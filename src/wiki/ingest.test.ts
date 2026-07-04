@@ -194,6 +194,26 @@ describe('ingestWiki', () => {
     }
   });
 
+  test('still-shrinking retry that DROPPED the new facts → addendum from the ORIGINAL op, not the retry', async () => {
+    const dir = join(tmpdir(), `engram-wiki-retry-degenerate-${crypto.randomUUID()}`);
+    // Retry body is still tiny AND omits the pass-1 new fact — the addendum must
+    // fall back to the original op so the unit's contribution survives.
+    const llm = new FakeWikiLLM(
+      retryScript(() => [{ slug: 'pgvector', action: 'update', kind: 'tool', title: 'pgvector', summary: 'x', aliases: [], body: 'degenerate retry', sources: ['d3'] }])
+    );
+    try {
+      const { deps, bodyBefore, res } = await seedAndShrink(dir, llm);
+      expect(res.pagesRetried).toBe(0);
+      expect(res.pagesAddendum).toBe(1);
+      const body = deps.store.readPage('pgvector')!.body;
+      expect(body).toStartWith(bodyBefore.trimEnd());
+      expect(body).toContain('tiny'); // ORIGINAL op body (the new facts)
+      expect(body).not.toContain('degenerate retry'); // failed merge discarded
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('shrink retry returns no op for the slug → addendum built from the ORIGINAL op body', async () => {
     const dir = join(tmpdir(), `engram-wiki-retry-noop-${crypto.randomUUID()}`);
     const llm = new FakeWikiLLM(retryScript(() => [])); // retry yields nothing
