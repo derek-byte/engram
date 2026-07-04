@@ -23,7 +23,7 @@ Global semantic memory for your coding sessions. Watches `~/.claude/projects`, c
   wiki/     compile dream chunks → git-versioned [[wikilinked]] markdown pages → tier='wiki' chunks
         │
         ▼
-  commands/ search · status · backfill · dream · wiki · service · watch-internal
+  commands/ search · context · hooks · status · backfill · dream · wiki · service · watch-internal
 ```
 
 The knowledge pyramid: L0 raw chunks/events → L1 dream chunks → L2 wiki pages → L3 `index.md`. Each layer is synthesized only from the one below, with a fingerprint short-circuit (sha256 of sorted source ids) making every layer an incremental build. Search defaults flip to the compiled tiers (MCP/UI default `synth` = wiki+dream; `--tier raw` for verbatim drill-down); the wiki→dream→raw provenance chain rides `sourceChunkIds` + the trajectory overlay.
@@ -42,6 +42,7 @@ Two design invariants:
 | [`src/search/`](src/search/README.md) | Query orchestration: embed query, delegate to backend |
 | [`src/dream/`](src/dream/README.md) | Dream layer: incremental LLM synthesis over raw chunks, fingerprint short-circuit |
 | [`src/wiki/`](src/wiki/README.md) | Wiki layer: compile dream chunks → git-versioned markdown pages, derived pg index |
+| [`src/context/`](src/context/README.md) | Context-injection layer: compose a repo-scoped session-start block from the pyramid |
 | [`src/commands/`](src/commands/README.md) | CLI entrypoints (commander) |
 | [`src/config/`](src/config/README.md) | `~/.engram` config loading, env overrides |
 | [`src/types/`](src/types/README.md) | Shared domain types |
@@ -101,6 +102,26 @@ Add `--rerank` (production path only) to score with the LLM reranker enabled (ru
 ```bash
 claude mcp add engram -- bun run /absolute/path/to/engram/src/index.ts mcp
 ```
+
+## Context injection — new sessions start already knowing
+
+`engram context` emits a compact markdown block for the current repo — the most relevant wiki pages plus recent decisions/gotchas — so a fresh Claude Code session begins with what you already decided here, not a blank slate.
+
+```bash
+engram context --cwd "$PWD"        # what this repo's next session would see
+engram context --repo engram --budget 800 --json   # scripted, parseable
+```
+
+It's fast (<2s, all local SQL — no LLM, no embedding model load), deterministic (same input → byte-identical output), and **silent-empty**: a repo engram has no knowledge of prints nothing and exits 0, so it never injects noise. Relevance is provenance-first (wiki pages whose sources trace to this repo's sessions), with keyword name-matches appended and repo-scoped decisions/gotchas from the last 30 days. Everything is trimmed to a hard token `--budget` (default ~1500), dropping whole items — never mid-sentence.
+
+**Wire it to session start.** `engram hooks print` emits the exact `settings.json` snippet (schema per the [official hooks docs](https://code.claude.com/docs/en/hooks)) and a how-to:
+
+```bash
+engram hooks print          # snippet + how-to
+engram hooks print --json   # just the snippet, jq-clean
+```
+
+The snippet registers a `SessionStart` hook running `engram context --cwd "$CLAUDE_PROJECT_DIR"`; on exit 0 its stdout is added as session context. Merge it into **`~/.claude/settings.json`** (global, every project) or a project's **`.claude/settings.json`** (that repo only). Knobs: append `--budget 800` to the command to shrink the block; add `|resume|compact` to the matcher to also re-inject on resume/after compaction (usually redundant — they keep their own transcript/summary). `engram hooks print` is print-only; it never edits your settings files.
 
 ## MemPalace (benchmark reference)
 
