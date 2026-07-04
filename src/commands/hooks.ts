@@ -55,8 +55,11 @@ Where to put it
   Global (all projects):   ~/.claude/settings.json
   Per-project (this repo): .claude/settings.json   (checked in or gitignored)
 
-Knobs
-  --budget 800     shrink the injected block (default ~1500 tokens)
+Knobs (in ~/.engram/config.json — no need to touch this hook again)
+  "contextInjection": { "enabled": false }   turn injection off; the hook stays
+                   installed and prints nothing until you flip it back
+  "contextInjection": { "budget": 800 }      shrink the injected block
+                   (default ~1500 tokens; --budget flag overrides per-run)
   matcher          add |resume|compact to re-inject on resume / after compaction
                    (they keep their own transcript/summary, so that's usually
                    redundant — start with startup|clear)

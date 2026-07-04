@@ -5,6 +5,10 @@ import type { EngramConfig } from '../types/index.ts';
 import { PROVIDER_DEFAULTS, type EmbeddingProviderKind } from '../ingest/embed.ts';
 import { RERANK_DEFAULTS } from '../search/rerank.ts';
 
+export const CONTEXT_BUDGET_DEFAULT = 1500;
+export const CONTEXT_BUDGET_MIN = 100;
+export const CONTEXT_BUDGET_MAX = 20000;
+
 export const ENGRAM_DIR = join(homedir(), '.engram');
 export const CONFIG_PATH = join(ENGRAM_DIR, 'config.json');
 export const LOCAL_DB_PATH = process.env.ENGRAM_LOCAL_DB ?? join(ENGRAM_DIR, 'engram.sqlite');
@@ -29,6 +33,7 @@ const DEFAULT_CONFIG: EngramConfig = {
   wikiModel: 'gpt-4o-mini',
   wikiMaxInputChars: 60_000,
   synthesis: { enabled: false, hour: 3 },
+  contextInjection: { enabled: true, budget: CONTEXT_BUDGET_DEFAULT },
 };
 
 export function ensureEngramDir(): void {
@@ -42,6 +47,14 @@ export function loadConfig(): EngramConfig {
   const raw = existsSync(CONFIG_PATH)
     ? JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
     : {};
+  return mergeConfig(raw, process.env);
+}
+
+// Pure merge of a parsed config.json over defaults (exported for tests).
+export function mergeConfig(
+  raw: Partial<EngramConfig> & Record<string, unknown>,
+  env: Record<string, string | undefined> = {}
+): EngramConfig {
   const merged: EngramConfig = { ...DEFAULT_CONFIG, ...raw };
 
   // rerank is a nested block; older config.json files lack it entirely.
@@ -55,14 +68,19 @@ export function loadConfig(): EngramConfig {
   merged.synthesis.hour = Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : DEFAULT_CONFIG.synthesis.hour;
   merged.synthesis.enabled = Boolean(merged.synthesis.enabled);
 
+  // contextInjection is a nested block (older config.json files lack it); clamp budget.
+  merged.contextInjection = { ...DEFAULT_CONFIG.contextInjection, ...(raw.contextInjection ?? {}) };
+  merged.contextInjection.budget = clampContextBudget(merged.contextInjection.budget, CONTEXT_BUDGET_DEFAULT);
+  merged.contextInjection.enabled = Boolean(merged.contextInjection.enabled);
+
   // Env vars (incl. anything Bun auto-loads from .env) override the file.
-  if (process.env.OPENAI_API_KEY) merged.openaiApiKey = process.env.OPENAI_API_KEY;
-  if (process.env.ENGRAM_DATABASE_URL) merged.databaseUrl = process.env.ENGRAM_DATABASE_URL;
-  if (process.env.ENGRAM_EMBEDDING_PROVIDER)
-    merged.embeddingProvider = parseProvider(process.env.ENGRAM_EMBEDDING_PROVIDER);
-  if (process.env.ENGRAM_DREAM_MODEL) merged.dreamModel = process.env.ENGRAM_DREAM_MODEL;
-  if (process.env.ENGRAM_WIKI_DIR) merged.wikiDir = process.env.ENGRAM_WIKI_DIR;
-  if (process.env.ENGRAM_WIKI_MODEL) merged.wikiModel = process.env.ENGRAM_WIKI_MODEL;
+  if (env.OPENAI_API_KEY) merged.openaiApiKey = env.OPENAI_API_KEY;
+  if (env.ENGRAM_DATABASE_URL) merged.databaseUrl = env.ENGRAM_DATABASE_URL;
+  if (env.ENGRAM_EMBEDDING_PROVIDER)
+    merged.embeddingProvider = parseProvider(env.ENGRAM_EMBEDDING_PROVIDER);
+  if (env.ENGRAM_DREAM_MODEL) merged.dreamModel = env.ENGRAM_DREAM_MODEL;
+  if (env.ENGRAM_WIKI_DIR) merged.wikiDir = env.ENGRAM_WIKI_DIR;
+  if (env.ENGRAM_WIKI_MODEL) merged.wikiModel = env.ENGRAM_WIKI_MODEL;
 
   // Model + dim follow the provider unless the file pinned them explicitly.
   // The local provider is fixed (buildProvider ignores pins for it), so pins —
@@ -88,6 +106,13 @@ export function configIsComplete(config: EngramConfig): boolean {
   if (!config.databaseUrl) return false;
   // Local provider needs no API key; openai still runs keyless via local fallback.
   return config.embeddingProvider === 'local' ? true : Boolean(config.openaiApiKey);
+}
+
+// Shared by loadConfig (config.json) and `engram context --budget` (CLI flag).
+export function clampContextBudget(value: unknown, fallback: number): number {
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(CONTEXT_BUDGET_MAX, Math.max(CONTEXT_BUDGET_MIN, n));
 }
 
 function parseProvider(value: string): EmbeddingProviderKind {

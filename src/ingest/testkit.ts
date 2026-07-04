@@ -400,6 +400,7 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     wikiModel: 'fake-wiki-model',
     wikiMaxInputChars: 60_000,
     synthesis: { enabled: false, hour: 3 },
+    contextInjection: { enabled: true, budget: 1500 },
     ...overrides,
   };
 }
