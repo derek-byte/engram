@@ -12,6 +12,7 @@ import { dreamCommand } from './commands/dream.ts';
 import { wikiCommand } from './commands/wiki.ts';
 import { synthesisRunCommand } from './commands/synthesisRun.ts';
 import { contextCommand } from './commands/context.ts';
+import { demandCommand } from './commands/demand.ts';
 import { hooksCommand } from './commands/hooks.ts';
 
 const program = new Command();
@@ -137,6 +138,15 @@ program
   .option('--json', 'always emit one JSON object (empty arrays when nothing relevant)')
   .action(async (opts) => {
     await contextCommand(opts);
+  });
+
+program
+  .command('demand')
+  .description('Show unmet demand — questions your memory could not answer (targets for capture / synthesis)')
+  .option('--days <n>', 'lookback window in days (1–365)', '30')
+  .option('--json', 'emit JSON instead of formatted output')
+  .action(async (opts) => {
+    await demandCommand(opts);
   });
 
 program

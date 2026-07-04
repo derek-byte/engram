@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { OpenAIAskLLM, AskError, runAsk, formatSourceLine, type AskChatClient } from './index.ts';
+import { OpenAIAskLLM, AskError, runAsk, askOutcome, formatSourceLine, type AskChatClient, type AskResult } from './index.ts';
 import { buildAskUser, candidateHeader, extractCitedIndices, CANDIDATE_CHARS } from './prompt.ts';
 import type { Chunk, ChunkMetadata, SearchFilters, SearchResult } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
@@ -98,6 +98,35 @@ describe('formatSourceLine', () => {
   test('wiki uses chunk id tail', () => {
     const line = formatSourceLine({ n: 1, tier: 'wiki', dreamType: 'concept', ref: 'pgvector-hnsw', date: '2026-06-12T00:00:00Z', chunkId: '3f2a1b9c8d', trajectoryId: 'wiki:pgvector-hnsw', cited: true });
     expect(line).toBe('[1] [wiki:concept] pgvector-hnsw · 2026-06-12 · chunk 3f2a1b9c…');
+  });
+});
+
+describe('askOutcome', () => {
+  const src = (n: number, cited: boolean) => ({
+    n,
+    tier: 'wiki' as const,
+    ref: 'r',
+    date: '2026-06-12T00:00:00Z',
+    chunkId: `c${n}`,
+    cited,
+  });
+  const result = (answer: string | null, cited: boolean[]): AskResult => ({
+    answer,
+    sources: cited.map((c, i) => src(i + 1, c)),
+    usage: null,
+    model: 'm',
+  });
+
+  test('answer null → no_candidates', () => {
+    expect(askOutcome(result(null, []))).toBe('no_candidates');
+  });
+
+  test('answer with no cited sources → not_covered', () => {
+    expect(askOutcome(result('the memory does not cover this', [false, false]))).toBe('not_covered');
+  });
+
+  test('answer with at least one cited source → answered', () => {
+    expect(askOutcome(result('we chose X [1]', [true, false]))).toBe('answered');
   });
 });
 

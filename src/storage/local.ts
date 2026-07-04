@@ -20,6 +20,62 @@ export interface RecentRow {
   timestamp: string;
 }
 
+// Similarity floor below which a search "found something" but not something
+// good enough to count as met demand. One place, referenced by the unmet-demand
+// query here and by the demand report/synthesis surfaces that build on it.
+export const UNMET_THRESHOLD = 0.35;
+
+// Retention window for demand_log; rows older than this are pruned on write.
+export const DEMAND_RETENTION_DAYS = 90;
+
+// One logged demand event. `surface`/`kind` are constrained; the outcome fields
+// are ask-only (search rows leave `outcome`/`citedCount` null). `topSessionId`
+// is the targeted-synthesis handle for the best-matching raw material.
+export interface DemandRow {
+  surface: 'ui' | 'cli' | 'mcp';
+  kind: 'search' | 'ask';
+  query: string;
+  tier?: string | null;
+  repo?: string | null;
+  resultCount?: number | null;
+  topSimilarity?: number | null;
+  topTier?: string | null;
+  topSessionId?: string | null;
+  outcome?: 'answered' | 'not_covered' | 'no_candidates' | 'error' | null;
+  citedCount?: number | null;
+}
+
+// One grouped row of the unmet-demand report: a normalized query, how often it
+// went unmet, when it was last seen, and the raw-material session that best
+// matched it (from the group's highest-similarity row) for targeted synthesis.
+export interface UnmetDemandRow {
+  query: string;
+  count: number;
+  latestTs: string;
+  topSessionId: string | null;
+  // Tier of the group's best hit. 'raw' means uncompiled material exists — the
+  // only case demand-targeted synthesis should spend its nightly budget on.
+  topTier: string | null;
+}
+
+// Aggregate counters over the demand window, for the `engram demand` header and
+// the synthesis-run `demand` phase line.
+export interface DemandSummary {
+  days: number;
+  total: number;
+  searches: number;
+  asks: number;
+  unmet: number;
+  unmetQueries: number;
+}
+
+// SQL predicate defining "unmet" demand (plan (c)(1)): an ask that resolved to
+// not_covered/no_candidates, or a search that found nothing / nothing good.
+const UNMET_PREDICATE = `(
+  (kind = 'ask' AND outcome IN ('not_covered', 'no_candidates'))
+  OR (kind = 'search' AND (result_count = 0 OR top_similarity < ${UNMET_THRESHOLD}))
+)`;
+
 export class LocalStore {
   private db: Database;
 
@@ -65,6 +121,23 @@ export class LocalStore {
       );
 
       CREATE INDEX IF NOT EXISTS recents_ts ON recents (timestamp DESC, id DESC);
+
+      CREATE TABLE IF NOT EXISTS demand_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        surface TEXT NOT NULL,           -- 'ui' | 'cli' | 'mcp'
+        kind TEXT NOT NULL,              -- 'search' | 'ask'
+        query TEXT NOT NULL,
+        tier TEXT, repo TEXT,
+        result_count INTEGER,
+        top_similarity REAL,
+        top_tier TEXT,                   -- 'raw' ⇒ covered by history, uncompiled
+        top_session_id TEXT,             -- targeted-synthesis handle
+        outcome TEXT,                    -- ask: 'answered'|'not_covered'|'no_candidates'|'error'; search: NULL
+        cited_count INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS demand_ts ON demand_log (ts);
     `);
   }
 
@@ -96,6 +169,147 @@ export class LocalStore {
     return this.db
       .query<RecentRow, [number]>('SELECT kind, key, label, timestamp FROM recents ORDER BY timestamp DESC, id DESC LIMIT ?')
       .all(limit);
+  }
+
+  // Append a demand event, then prune rows older than the retention window.
+  // Search rows collapse search-as-you-type noise the same way logRecent does:
+  // if the newest search row's query equals — or is a strict prefix of — the
+  // new query, the existing row is rewritten in place instead of appended. Ask
+  // rows always append (one row per runAsk, carrying its outcome).
+  logDemand(row: DemandRow): void {
+    const values: [
+      string,
+      string,
+      string | null,
+      string | null,
+      number | null,
+      number | null,
+      string | null,
+      string | null,
+      string | null,
+      number | null,
+    ] = [
+      row.surface,
+      row.query,
+      row.tier ?? null,
+      row.repo ?? null,
+      row.resultCount ?? null,
+      row.topSimilarity ?? null,
+      row.topTier ?? null,
+      row.topSessionId ?? null,
+      row.outcome ?? null,
+      row.citedCount ?? null,
+    ];
+
+    let collapsed = false;
+    if (row.kind === 'search') {
+      const newest = this.db
+        .query<{ id: number; query: string }, []>(
+          "SELECT id, query FROM demand_log WHERE kind = 'search' ORDER BY ts DESC, id DESC LIMIT 1"
+        )
+        .get();
+      const replace =
+        newest && (newest.query === row.query || (row.query.startsWith(newest.query) && row.query !== newest.query));
+      if (replace) {
+        this.db
+          .query(
+            `UPDATE demand_log SET
+               ts = datetime('now'), surface = ?, query = ?, tier = ?, repo = ?,
+               result_count = ?, top_similarity = ?, top_tier = ?, top_session_id = ?,
+               outcome = ?, cited_count = ?
+             WHERE id = ?`
+          )
+          .run(...values, newest.id);
+        collapsed = true;
+      }
+    }
+
+    if (!collapsed) {
+      const [surface, query, ...rest] = values;
+      this.db
+        .query(
+          `INSERT INTO demand_log
+             (surface, kind, query, tier, repo, result_count, top_similarity, top_tier, top_session_id, outcome, cited_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(surface, row.kind, query, ...rest);
+    }
+
+    this.db.query("DELETE FROM demand_log WHERE ts < datetime('now', ?)").run(`-${DEMAND_RETENTION_DAYS} days`);
+  }
+
+  // Unmet demand over the last `days`, grouped by normalized (lowercased) query.
+  // Each group carries its occurrence count, the most recent ts, and the
+  // top_session_id from the group's highest-similarity row (the best raw
+  // material to synthesize against). Ordered most-demanded first.
+  unmetDemand(days = 30): UnmetDemandRow[] {
+    const rows = this.db
+      .query<
+        { query: string; top_similarity: number | null; top_session_id: string | null; top_tier: string | null; ts: string },
+        [string]
+      >(
+        `SELECT query, top_similarity, top_session_id, top_tier, ts
+           FROM demand_log
+          WHERE ts >= datetime('now', ?) AND ${UNMET_PREDICATE}`
+      )
+      .all(`-${days} days`);
+
+    const groups = new Map<string, UnmetDemandRow & { bestSim: number }>();
+    for (const r of rows) {
+      const key = r.query.toLowerCase();
+      const sim = r.top_similarity ?? -Infinity;
+      const g = groups.get(key);
+      if (!g) {
+        groups.set(key, {
+          query: key,
+          count: 1,
+          latestTs: r.ts,
+          topSessionId: r.top_session_id,
+          topTier: r.top_tier,
+          bestSim: sim,
+        });
+        continue;
+      }
+      g.count++;
+      if (r.ts > g.latestTs) g.latestTs = r.ts;
+      if (sim > g.bestSim) {
+        g.bestSim = sim;
+        g.topSessionId = r.top_session_id;
+        g.topTier = r.top_tier;
+      }
+    }
+
+    return [...groups.values()]
+      .map(({ bestSim: _bestSim, ...g }) => g)
+      .sort((a, b) => b.count - a.count || (a.latestTs < b.latestTs ? 1 : -1));
+  }
+
+  // Aggregate counters over the demand window: totals, split by kind, and the
+  // unmet volume (raw rows + distinct normalized queries).
+  demandSummary(days = 30): DemandSummary {
+    const window = `-${days} days`;
+    const totals = this.db
+      .query<{ total: number; searches: number; asks: number }, [string]>(
+        `SELECT
+           COUNT(*) AS total,
+           COUNT(*) FILTER (WHERE kind = 'search') AS searches,
+           COUNT(*) FILTER (WHERE kind = 'ask') AS asks
+         FROM demand_log WHERE ts >= datetime('now', ?)`
+      )
+      .get(window)!;
+    const unmet = this.db
+      .query<{ unmet: number }, [string]>(
+        `SELECT COUNT(*) AS unmet FROM demand_log WHERE ts >= datetime('now', ?) AND ${UNMET_PREDICATE}`
+      )
+      .get(window)!;
+    return {
+      days,
+      total: totals.total,
+      searches: totals.searches,
+      asks: totals.asks,
+      unmet: unmet.unmet,
+      unmetQueries: this.unmetDemand(days).length,
+    };
   }
 
   getCursor(sessionId: string): number {
