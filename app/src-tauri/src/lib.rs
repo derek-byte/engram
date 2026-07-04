@@ -138,8 +138,12 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building the engram app")
-        .run(|handle, event| {
-            if let RunEvent::Exit = event {
+        .run(|handle, event| match event {
+            // Dock-icon click on an Accessory app arrives as Reopen with no
+            // visible windows — summon the search window like the hotkey would.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => hotkey::show_search_window(handle),
+            RunEvent::Exit => {
                 // Kill the supervised ui child (no orphan on its loopback port).
                 // An in-flight synthesis-run child is deliberately NOT killed — it
                 // self-releases the shared lock; SIGKILL would strand a stale lock.
@@ -149,6 +153,7 @@ pub fn run() {
                 }
                 let _ = handle.global_shortcut().unregister_all();
             }
+            _ => {}
         });
 }
 
