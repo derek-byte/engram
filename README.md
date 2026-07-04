@@ -121,7 +121,9 @@ engram hooks print          # snippet + how-to
 engram hooks print --json   # just the snippet, jq-clean
 ```
 
-The snippet registers a `SessionStart` hook running `engram context --cwd "$CLAUDE_PROJECT_DIR"`; on exit 0 its stdout is added as session context. Merge it into **`~/.claude/settings.json`** (global, every project) or a project's **`.claude/settings.json`** (that repo only). Knobs: append `--budget 800` to the command to shrink the block; add `|resume|compact` to the matcher to also re-inject on resume/after compaction (usually redundant — they keep their own transcript/summary). `engram hooks print` is print-only; it never edits your settings files.
+The snippet registers a `SessionStart` hook running `engram context --cwd "$CLAUDE_PROJECT_DIR"`; on exit 0 its stdout is added as session context. Merge it into **`~/.claude/settings.json`** (global, every project) or a project's **`.claude/settings.json`** (that repo only). Add `|resume|compact` to the matcher to also re-inject on resume/after compaction (usually redundant — they keep their own transcript/summary). `engram hooks print` is print-only; it never edits your settings files.
+
+**Toggle without touching settings.json.** Injection is governed by a `contextInjection` block in `~/.engram/config.json` (same pattern as `synthesis`): `{ "enabled": false }` turns it off — the hook stays installed and prints nothing until you flip it back; `{ "budget": 800 }` sets the default token budget (the `--budget` flag still overrides per-run). Defaults: enabled, ~1500 tokens.
 
 ## MemPalace (benchmark reference)
 

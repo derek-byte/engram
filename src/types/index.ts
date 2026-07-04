@@ -64,6 +64,11 @@ export interface SynthesisConfig {
   hour: number;
 }
 
+export interface ContextInjectionConfig {
+  enabled: boolean;
+  budget: number;
+}
+
 export interface EngramConfig {
   databaseUrl: string;
   openaiApiKey: string;
@@ -83,6 +88,7 @@ export interface EngramConfig {
   wikiModel: string;
   wikiMaxInputChars: number;
   synthesis: SynthesisConfig;
+  contextInjection: ContextInjectionConfig;
 }
 
 export interface RawEvent {

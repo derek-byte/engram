@@ -24,3 +24,7 @@ Config + paths. Everything lives under `~/.engram/`: `config.json`, `engram.sqli
 
 - `wikiDir` (default `~/.engram/wiki`), `wikiModel` (`gpt-4o-mini`), `wikiMaxInputChars` (60k). Env overrides: `ENGRAM_WIKI_DIR` (mandatory for dev/test — never write the real wiki dir) and `ENGRAM_WIKI_MODEL`.
 - `synthesis`: `{ enabled: false, hour: 3 }` — nested-merged like `rerank` (older config files get defaults), `hour` clamped to int 0–23. Off by default. When on, `engram service install` also installs the nightly `com.engram.synthesis` launchd agent (StartCalendarInterval at `hour`) and the watcher runs dream → wiki after each ingest.
+
+## Context injection
+
+`contextInjection`: `{ enabled: true, budget: 1500 }` — governs `engram context` (see `src/context/README.md`). Nested-merged like the blocks above; `budget` clamped to [100, 20000]. `enabled: false` is the kill switch: the SessionStart hook stays installed and prints nothing (silent-empty, exit 0) until flipped back — no settings.json surgery. This is the pattern the desktop app's settings pane builds on: every toggle is a config.json key.

@@ -11,6 +11,8 @@ The injection layer: turns the knowledge pyramid into a compact block a new Clau
 - **Budget** (`estTokens = ⌈chars/4⌉`, the repo's `CHARS_PER_TOKEN`): reserve header + section headers + footer, fill pages up to 40% of the remainder, then memories, then leftover back to pages. Hard caps 6 pages / 10 memories. Items are added or dropped **whole** — never mid-sentence (dream items are 1–3 self-contained sentences; page lines are one-liners). Footer counts reflect what actually rendered.
 - **Silent-empty** is structural, not a score threshold: only provenance matches, verbatim keyword mentions of a *known* repo, and repo-scoped recent dream items produce candidates. Zero candidates → `markdown: ''`, and the CLI prints nothing.
 
+**Config gate:** `contextInjection` in `~/.engram/config.json` (`{ enabled: true, budget: 1500 }`, see [`../config/README.md`](../config/README.md)) — `enabled: false` makes the command print nothing (the hook stays installed); `budget` is the default token budget, overridden per-run by `--budget`.
+
 **Branch is never a hard filter** — dream chunks store `branch=''` and wiki chunks store `repo=''`/`branch=''` (verified in `dream/synthesize.ts`, `wiki/ingest.ts`), so branch only feeds the keyword query tokens and the header.
 
 **Known limits** (precision > recall, deliberately, so silent-empty is trustworthy): ingest stamps `repo = basename(session cwd)`, so a session started in a subdirectory records under the subdir's basename and won't match the git-toplevel basename this command resolves; two projects sharing a folder name also collide. A cross-cutting `topic` page with neither provenance nor a verbatim name mention is omitted — the footer points at `engram search` to dig deeper.

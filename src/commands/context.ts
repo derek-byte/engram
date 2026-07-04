@@ -1,4 +1,4 @@
-import { loadConfig, configIsComplete } from '../config/index.ts';
+import { loadConfig, configIsComplete, clampContextBudget } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { WikiStore } from '../wiki/store.ts';
@@ -14,10 +14,6 @@ export interface ContextOptions {
   json?: boolean;
 }
 
-const DEFAULT_BUDGET = 1500;
-const MIN_BUDGET = 100;
-const MAX_BUDGET = 20000;
-
 // Emit a compact, repo-scoped context block for a new Claude Code session.
 // Contract: text mode is SILENT-EMPTY (prints nothing when there's nothing
 // relevant); --json always prints one parseable object. Any operational failure
@@ -27,6 +23,12 @@ export async function contextCommand(opts: ContextOptions): Promise<void> {
   let backend: PgVectorBackend | null = null;
   try {
     const config = loadConfig();
+    // The kill switch: the SessionStart hook stays installed forever; flipping
+    // contextInjection.enabled in ~/.engram/config.json turns injection off.
+    if (!config.contextInjection.enabled) {
+      console.error('engram context: disabled (contextInjection.enabled=false in ~/.engram/config.json)');
+      return emitEmpty(opts);
+    }
     if (!configIsComplete(config)) {
       console.error('engram context: not configured yet (run engram backfill first)');
       return emitEmpty(opts);
@@ -34,7 +36,7 @@ export async function contextCommand(opts: ContextOptions): Promise<void> {
 
     const { repo, branch } = resolveTarget(opts);
     const owner = opts.owner ?? 'derek';
-    const budgetTokens = parseBudget(opts.budget);
+    const budgetTokens = parseBudget(opts.budget, config.contextInjection.budget);
 
     backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
       vectorWeight: config.vectorWeight,
@@ -83,14 +85,15 @@ function resolveTarget(opts: ContextOptions): { repo: string; branch?: string } 
   return resolveFromCwd(opts.cwd ?? process.cwd());
 }
 
-function parseBudget(raw: string | undefined): number {
-  if (raw === undefined) return DEFAULT_BUDGET;
+// --budget flag > contextInjection.budget from config (already clamped by loadConfig).
+function parseBudget(raw: string | undefined, configBudget: number): number {
+  if (raw === undefined) return configBudget;
   const n = Number(raw);
   if (!Number.isFinite(n)) {
-    console.error(`engram context: invalid --budget ${raw}, using ${DEFAULT_BUDGET}`);
-    return DEFAULT_BUDGET;
+    console.error(`engram context: invalid --budget ${raw}, using ${configBudget}`);
+    return configBudget;
   }
-  const clamped = Math.min(MAX_BUDGET, Math.max(MIN_BUDGET, Math.trunc(n)));
+  const clamped = clampContextBudget(n, configBudget);
   if (clamped !== Math.trunc(n)) {
     console.error(`engram context: --budget ${raw} clamped to ${clamped}`);
   }
