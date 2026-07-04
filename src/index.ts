@@ -10,6 +10,8 @@ import { serviceCommand } from './commands/service.ts';
 import { dreamCommand } from './commands/dream.ts';
 import { wikiCommand } from './commands/wiki.ts';
 import { synthesisRunCommand } from './commands/synthesisRun.ts';
+import { contextCommand } from './commands/context.ts';
+import { hooksCommand } from './commands/hooks.ts';
 
 const program = new Command();
 
@@ -107,6 +109,28 @@ program
   .option('--json', 'emit JSON instead of formatted output')
   .action(async (opts) => {
     await dreamCommand(opts);
+  });
+
+program
+  .command('context')
+  .description('Emit a compact, repo-scoped context block for a new session (SessionStart hook)')
+  .option('--repo <repo>', 'scope to a repo (else resolved from --cwd / process.cwd)')
+  .option('--branch <branch>', 'branch (feeds the header + keyword query; never a hard filter)')
+  .option('--cwd <path>', 'resolve repo/branch from the git checkout at this path')
+  .option('--budget <tokens>', 'hard token budget (default 1500, clamped 100–20000)')
+  .option('--owner <owner>', 'owner to read from', 'derek')
+  .option('--json', 'always emit one JSON object (empty arrays when nothing relevant)')
+  .action(async (opts) => {
+    await contextCommand(opts);
+  });
+
+program
+  .command('hooks')
+  .description('Print Claude Code hook wiring: print')
+  .argument('<action>', 'print')
+  .option('--json', 'emit only the settings.json snippet')
+  .action(async (action, opts) => {
+    await hooksCommand(action, opts);
   });
 
 program

@@ -63,6 +63,28 @@ export interface WikiUnitRow {
   model: string;
 }
 
+// The context layer's storage seam (feeds `engram context`). All three methods
+// are read-only, owner-scoped, and LLM/embedding-free — the command must run in
+// <2s at session start. PgVectorBackend implements this alongside the others.
+export interface ContextStore {
+  // Wiki pages whose source_chunk_ids trace to dream chunks of this repo,
+  // ranked by matched-source count desc, then chunk timestamp desc, then slug asc.
+  wikiPagesForRepo(
+    owner: string,
+    repo: string,
+    limit: number
+  ): Promise<Array<{ slug: string; matchCount: number; lastChunkAt: Date | null; excerpt: string }>>;
+  // Recent dream chunks (decisions/gotchas) for a repo, newest first.
+  recentDreamChunks(owner: string, repo: string, since: Date, types: string[], limit: number): Promise<Chunk[]>;
+  // websearch_to_tsquery keyword search within one tier, ranked by ts_rank_cd desc.
+  keywordSearchChunks(
+    owner: string,
+    tier: string,
+    queryText: string,
+    limit: number
+  ): Promise<Array<{ trajectoryId: string | null; rank: number; content: string }>>;
+}
+
 // The wiki layer's storage seam. PgVectorBackend implements this alongside
 // DreamStore + VectorBackend.
 export interface WikiLedger {

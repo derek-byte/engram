@@ -1,6 +1,6 @@
 import postgres from 'postgres';
 import type { Chunk, RawEvent, ScoringConfig, SearchFilters, SearchResult } from '../types/index.ts';
-import type { DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from './backend.ts';
+import type { ContextStore, DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from './backend.ts';
 
 // Map a SearchFilters tier to the concrete tier list, or null for "no tier
 // filter" ('all'/'both'/undefined). 'synth' = wiki+dream.
@@ -31,7 +31,7 @@ const DEFAULT_SCORING: ScoringConfig = {
 const CANDIDATE_POOL = 100;
 const KEYWORD_POOL = 50;
 
-export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger {
+export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, ContextStore {
   private sql: ReturnType<typeof postgres>;
   private embeddingDim: number;
   private embeddingModel: string;
@@ -636,6 +636,84 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger {
         model = EXCLUDED.model,
         ingested_at = NOW()
     `;
+  }
+
+  // --- ContextStore ---------------------------------------------------------
+
+  async wikiPagesForRepo(
+    owner: string,
+    repo: string,
+    limit: number
+  ): Promise<Array<{ slug: string; matchCount: number; lastChunkAt: Date | null; excerpt: string }>> {
+    const rows = await this.sql<Array<{ slug: string; match_count: string; last_ts: Date | null; excerpt: string | null }>>`
+      SELECT
+        regexp_replace(w.trajectory_id, '^wiki:', '') AS slug,
+        count(DISTINCT d.id) AS match_count,
+        max(w.timestamp) AS last_ts,
+        (array_agg(w.content ORDER BY w.chunk_index ASC NULLS LAST))[1] AS excerpt
+      FROM chunks w
+      JOIN chunks d
+        ON d.tier = 'dream' AND d.owner = w.owner AND d.repo = ${repo} AND d.id = ANY(w.source_chunk_ids)
+      WHERE w.tier = 'wiki' AND w.owner = ${owner}
+      GROUP BY w.trajectory_id
+      ORDER BY match_count DESC, max(w.timestamp) DESC, w.trajectory_id ASC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      slug: r.slug,
+      matchCount: Number(r.match_count),
+      lastChunkAt: r.last_ts,
+      excerpt: r.excerpt ?? '',
+    }));
+  }
+
+  async recentDreamChunks(owner: string, repo: string, since: Date, types: string[], limit: number): Promise<Chunk[]> {
+    const rows = await this.sql<
+      Array<{ id: string; content: string; timestamp: Date; session_id: string; dream_type: string | null; trajectory_id: string | null }>
+    >`
+      SELECT id, content, timestamp, session_id, dream_type, trajectory_id
+      FROM chunks
+      WHERE tier = 'dream' AND owner = ${owner} AND repo = ${repo}
+        AND timestamp >= ${since} AND dream_type = ANY(${types})
+      ORDER BY timestamp DESC, id ASC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: r.id,
+      embedding: [],
+      content: r.content,
+      metadata: {
+        repo,
+        branch: '',
+        timestamp: r.timestamp,
+        filePaths: [],
+        exitCode: null,
+        sessionId: r.session_id,
+        cwd: '',
+        tier: 'dream' as const,
+        owner,
+        dreamType: r.dream_type ?? undefined,
+        trajectoryId: r.trajectory_id ?? undefined,
+      },
+    }));
+  }
+
+  async keywordSearchChunks(
+    owner: string,
+    tier: string,
+    queryText: string,
+    limit: number
+  ): Promise<Array<{ trajectoryId: string | null; rank: number; content: string }>> {
+    const rows = await this.sql<Array<{ trajectory_id: string | null; rank: number; content: string }>>`
+      SELECT trajectory_id, content,
+        ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS rank
+      FROM chunks
+      WHERE tier = ${tier} AND owner = ${owner}
+        AND content_tsv @@ websearch_to_tsquery('english', ${queryText})
+      ORDER BY ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) DESC, trajectory_id ASC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({ trajectoryId: r.trajectory_id, rank: Number(r.rank), content: r.content }));
   }
 
   // Retract every chunk + raw event + dream unit for an owner, atomically. Exact
