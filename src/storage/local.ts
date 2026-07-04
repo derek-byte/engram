@@ -7,6 +7,19 @@ export interface CursorRow {
   processedAt: string;
 }
 
+// Recency-ranked usage log powering the UI's empty-state and, later, the
+// demand-driven-synthesis signal. Kept intentionally general: `kind` is
+// unconstrained, `key` round-trips any reopenable thing ('wiki:<slug>',
+// 'traj:<id>', or a raw query).
+export const RECENTS_CAP = 200;
+
+export interface RecentRow {
+  kind: string;
+  key: string;
+  label: string;
+  timestamp: string;
+}
+
 export class LocalStore {
   private db: Database;
 
@@ -42,7 +55,47 @@ export class LocalStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS recents (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        key TEXT NOT NULL,
+        label TEXT NOT NULL,
+        timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS recents_ts ON recents (timestamp DESC, id DESC);
     `);
+  }
+
+  // Log a usage event. Collapses noise: if the newest row of the same kind has
+  // the same key — or (search only) the newest key is a strict prefix of the
+  // new key, i.e. search-as-you-type refinement — the existing row is updated
+  // in place instead of appending. Then trims to the RECENTS_CAP newest rows.
+  logRecent(kind: string, key: string, label: string): void {
+    const newest = this.db
+      .query<{ id: number; key: string }, [string]>(
+        'SELECT id, key FROM recents WHERE kind = ? ORDER BY timestamp DESC, id DESC LIMIT 1'
+      )
+      .get(kind);
+    const replace =
+      newest && (newest.key === key || (kind === 'search' && key.startsWith(newest.key) && key !== newest.key));
+    if (replace) {
+      this.db
+        .query("UPDATE recents SET key = ?, label = ?, timestamp = datetime('now') WHERE id = ?")
+        .run(key, label, newest!.id);
+    } else {
+      this.db.query('INSERT INTO recents (kind, key, label) VALUES (?, ?, ?)').run(kind, key, label);
+    }
+    this.db
+      .query('DELETE FROM recents WHERE id NOT IN (SELECT id FROM recents ORDER BY timestamp DESC, id DESC LIMIT ?)')
+      .run(RECENTS_CAP);
+  }
+
+  getRecents(limit = 50): RecentRow[] {
+    return this.db
+      .query<RecentRow, [number]>('SELECT kind, key, label, timestamp FROM recents ORDER BY timestamp DESC, id DESC LIMIT ?')
+      .all(limit);
   }
 
   getCursor(sessionId: string): number {
