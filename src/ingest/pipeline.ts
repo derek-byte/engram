@@ -1,14 +1,17 @@
 import { statSync } from 'node:fs';
 import type { Chunk, EngramConfig, RawEvent } from '../types/index.ts';
-import type { VectorBackend } from '../storage/backend.ts';
+import type { VectorBackend, WikiLedger } from '../storage/backend.ts';
 import { LocalStore } from '../storage/local.ts';
+import { DEFAULT_OWNER } from '../config/index.ts';
 import { Embedder } from './embed.ts';
 import { chunkHash, trajectoryHash } from './hash.ts';
 import { chunkMessages, chunkTrajectory } from './chunker.ts';
 import { parseJsonl } from './parser.ts';
 
 export interface PipelineDeps {
-  backend: VectorBackend;
+  // Vector store plus the tier/owner-scoped delete the V2 supersession cleanup
+  // needs (both PgVectorBackend and the test FakeBackend implement WikiLedger).
+  backend: VectorBackend & Pick<WikiLedger, 'deleteChunksByIds'>;
   embedder: Embedder;
   local: LocalStore;
   config: EngramConfig;
@@ -32,8 +35,30 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   }
 
   const sessionId = trajectories[0]!.sessionId;
-  const cursor = deps.local.getCursor(sessionId);
+  const lastIndex = trajectories.length - 1;
+  const state = deps.local.getCursorState(sessionId);
+  // Reprocess from (and including) the last trajectory: content appended to the
+  // final turn changes its hash but never the trajectory COUNT, so a count-based
+  // cursor would slice it away and silently drop the new content (V2). Everything
+  // before the cursor is settled; the last turn re-runs each ingest until a newer
+  // turn supersedes it — unchanged chunks are free (hasSeen skips before embed).
+  const cursor = Math.min(state.chunkOffset, lastIndex);
   const fresh = trajectories.slice(cursor);
+
+  // Supersession: the trajectory that sat at the cursor position last time was
+  // the last turn then. If its content grew in place, its fresh trajectoryHash no
+  // longer matches what we recorded, and its old raw chunks are now orphaned
+  // duplicates — retract them (owner/tier-scoped) BEFORE upserting replacements.
+  // New turns appended after it leave that trajectory's hash intact, so this does
+  // NOT fire for growth-by-new-turn (those chunks stay, the new turn embeds).
+  // Superseded raw_events rows are intentionally left (append-only journal); the
+  // stale seen_hashes entries are harmless (their hashes never recur).
+  if (state.lastTrajectoryId && state.lastChunkIds.length) {
+    const atCursor = trajectoryHash(trajectories[cursor]!);
+    if (atCursor !== state.lastTrajectoryId) {
+      await deps.backend.deleteChunksByIds(state.lastChunkIds, DEFAULT_OWNER, 'raw');
+    }
+  }
 
   const toEmbed: Array<{
     text: string;
@@ -46,10 +71,20 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   const rawEvents: RawEvent[] = [];
   let skipped = 0;
 
+  // The last trajectory's identity + chunk ids, recorded after a successful
+  // ingest so the next run can detect in-place growth of that turn.
+  let lastTrajectoryId = state.lastTrajectoryId;
+  let lastChunkIds = state.lastChunkIds;
+
   for (const t of fresh) {
     const trajectoryId = trajectoryHash(t);
     const texts = chunkTrajectory(t);
     const chunkCount = texts.length;
+    const ids = texts.map((text, i) => chunkHash(trajectoryId, i, text));
+    if (t === trajectories[lastIndex]) {
+      lastTrajectoryId = trajectoryId;
+      lastChunkIds = ids;
+    }
     rawEvents.push({
       source: 'claude-code',
       sessionId: t.sessionId,
@@ -58,7 +93,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
       payload: t,
     });
     texts.forEach((text, chunkIndex) => {
-      const hash = chunkHash(trajectoryId, chunkIndex, text);
+      const hash = ids[chunkIndex]!;
       if (deps.local.hasSeen(hash)) {
         skipped++;
         return;
@@ -94,6 +129,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
         exitCode: b.trajectory.exitCode,
         sessionId: b.trajectory.sessionId,
         cwd: b.trajectory.cwd,
+        owner: DEFAULT_OWNER,
         tier: 'raw',
         trajectoryId: b.trajectoryId,
         chunkIndex: b.chunkIndex,
@@ -107,7 +143,13 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
     embedded += chunks.length;
   }
 
-  deps.local.setCursor(sessionId, trajectories.length);
+  // Advance to the last trajectory's index (not the count) so the final turn is
+  // re-examined next ingest. Record that turn's identity for the supersession
+  // check. Only runs after every batch upserted (a mid-file throw leaves the
+  // cursor untouched — the crash-safety invariant). This can move the cursor
+  // *back* from a legacy count-based value (N → N-1) — that one-time migration is
+  // intended, so no Math.max floor here.
+  deps.local.setCursor(sessionId, lastIndex, lastTrajectoryId ?? undefined, lastChunkIds);
   deps.local.setStat('last_ingest_at', new Date().toISOString());
 
   return {

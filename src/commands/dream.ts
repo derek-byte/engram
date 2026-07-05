@@ -1,7 +1,6 @@
-import { loadConfig, configIsComplete } from '../config/index.ts';
+import { loadConfig, configIsComplete, DEFAULT_OWNER } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { OpenAIDreamLLM } from '../dream/llm.ts';
 import { synthesizeDreams, type UnitPlan } from '../dream/synthesize.ts';
 
@@ -37,10 +36,10 @@ export async function dreamCommand(opts: DreamOptions): Promise<void> {
   const parsedLimit = opts.limit ? Number(opts.limit) : 20;
   const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.floor(parsedLimit)) : 20;
 
-  const sourceOwner = opts.owner ?? 'derek';
+  const sourceOwner = opts.owner ?? DEFAULT_OWNER;
   const dreamOwner = opts.dreamOwner ?? sourceOwner;
 
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
+  const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
   const embedder = new Embedder(buildProvider(config), backend);
   const llm = new OpenAIDreamLLM(config.openaiApiKey, config.dreamModel);

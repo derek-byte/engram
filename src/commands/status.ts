@@ -1,7 +1,6 @@
 import { loadConfig, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { WikiStore } from '../wiki/store.ts';
 
 export async function statusCommand(): Promise<void> {
@@ -29,7 +28,7 @@ export async function statusCommand(): Promise<void> {
   }
 
   if (configIsComplete(config)) {
-    const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
+    const backend = PgVectorBackend.fromConfig(config);
     try {
       await backend.initialize();
       const count = await backend.count();

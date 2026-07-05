@@ -1,8 +1,7 @@
-import { loadConfig, configIsComplete } from '../config/index.ts';
+import { loadConfig, configIsComplete, DEFAULT_OWNER } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore, type UnmetDemandRow } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { OpenAIDreamLLM, type DreamLLM } from '../dream/llm.ts';
 import { OpenAIWikiLLM, type WikiIngestLLM } from '../wiki/llm.ts';
 import { synthesizeDreams, type SynthesizeDeps } from '../dream/synthesize.ts';
@@ -55,11 +54,7 @@ export interface SynthesisRunDeps {
 }
 
 async function defaultCollaborators(config: EngramConfig): Promise<SynthesisCollaborators> {
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
-    vectorWeight: config.vectorWeight,
-    keywordWeight: config.keywordWeight,
-    timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
-  });
+  const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
   return {
     backend,
@@ -105,7 +100,7 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
     return;
   }
 
-  const owner = 'derek';
+  const owner = DEFAULT_OWNER;
   const ownsLocal = !deps.local;
   const local = deps.local ?? new LocalStore();
   const lastRun = local.getStat('last_synthesis_at');

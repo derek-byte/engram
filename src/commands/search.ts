@@ -1,7 +1,6 @@
 import { loadConfig, promptForMissing, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { runSearch } from '../search/index.ts';
 import { buildReranker } from '../search/rerank.ts';
 import type { SearchFilters, SearchResult } from '../types/index.ts';
@@ -39,11 +38,7 @@ export async function searchCommand(query: string, opts: SearchOptions): Promise
     limit: opts.limit ? Number(opts.limit) : 5,
   };
 
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
-    vectorWeight: config.vectorWeight,
-    keywordWeight: config.keywordWeight,
-    timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
-  });
+  const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
   const embedder = new Embedder(buildProvider(config));
 

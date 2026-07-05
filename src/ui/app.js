@@ -1066,7 +1066,7 @@
 
   // ── hand-rolled markdown renderer (DOM-only, never innerHTML) ──
   // Scope: headings, paragraphs, unordered/ordered lists, fenced code, inline
-  // code, bold, [text](url) links (http/https/file only), [[wikilinks]].
+  // code, bold, [text](url) links (http/https only — file: falls to plain text), [[wikilinks]].
   function renderInline(container, text) {
     const re = /(\*\*([^*]+)\*\*)|(`([^`]+)`)|(\[\[([^\]|]+)(?:\|([^\]]*))?\]\])|(\[([^\]]+)\]\(([^)]+)\))/g;
     let last = 0, m;
@@ -1092,7 +1092,7 @@
         }
       } else if (m[9] !== undefined) {
         const label = m[9], url = m[10];
-        if (/^(https?|file):/i.test(url)) {
+        if (/^https?:/i.test(url)) {
           const a = document.createElement('a');
           a.textContent = label; a.href = url; a.target = '_blank'; a.rel = 'noopener';
           container.appendChild(a);

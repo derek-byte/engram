@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { WIKI_SYSTEM_PROMPT, WIKI_SPLIT_SYSTEM_PROMPT, buildUnitHeader, buildCandidatesText, buildCorrectionText, buildIngestUser } from './prompt.ts';
+import { WIKI_SYSTEM_PROMPT, WIKI_SPLIT_SYSTEM_PROMPT, buildUnitHeader, buildCandidatesText, buildCorrectionText, buildIngestUser, buildRetryUser } from './prompt.ts';
 import type { SynthesisUnit } from '../storage/backend.ts';
 import type { WikiPage } from './store.ts';
 
@@ -74,5 +74,47 @@ describe('buildIngestUser', () => {
     expect(withCorrection).toStartWith(base);
     expect(withCorrection).toContain('CORRECTION BLOCK');
     expect(withCorrection.length).toBeGreaterThan(base.length);
+  });
+
+  // PINNED pass-1 bytes: pass 1's system prompt + user prefix is the stable
+  // string OpenAI prompt caching keys on. Any drift here silently busts the
+  // cache (pure cost, no behavior change), so freeze the exact bytes for a fixed
+  // fixture. If this fails, the change to buildIngestUser was NOT intended.
+  test('pass-1 user prompt is byte-frozen for a fixed fixture (prompt-cache guard)', () => {
+    const frozen =
+      'HDR\n' +
+      '\n' +
+      'DREAM ITEMS (id in brackets):\n' +
+      '- [d1] (decision) chose pgvector\n' +
+      '\n' +
+      'RELATED PAGES (full current text — update these in place where relevant):\n' +
+      '(no related pages yet)\n' +
+      '\n' +
+      'INVENTORY (all existing pages — reuse these slugs):\n' +
+      '- pgvector (tool)';
+    expect(
+      buildIngestUser('HDR', '- [d1] (decision) chose pgvector', '(no related pages yet)', '- pgvector (tool)')
+    ).toBe(frozen);
+  });
+});
+
+describe('buildRetryUser', () => {
+  const header = 'HDR';
+  const items = '- [d1] (decision) chose pgvector';
+  const correction = 'CORRECTION — you shrank pgvector. Here is the full body: ...';
+
+  test('carries header + items + correction only — NO candidates/inventory scaffolding', () => {
+    const out = buildRetryUser(header, items, correction);
+    expect(out).toContain(header);
+    expect(out).toContain(items);
+    expect(out).toContain(correction);
+    // The pass-1 payload the retry deliberately drops must be absent.
+    expect(out).not.toContain('RELATED PAGES');
+    expect(out).not.toContain('INVENTORY');
+  });
+
+  test('is strictly smaller than the full pass-1 prompt for the same unit (the token win)', () => {
+    const full = buildIngestUser(header, items, '### [[pgvector]]\nbig candidate body '.repeat(50), '- pgvector (tool)\n- embedder (topic)', correction);
+    expect(buildRetryUser(header, items, correction).length).toBeLessThan(full.length);
   });
 });

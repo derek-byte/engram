@@ -1,9 +1,8 @@
 import { existsSync, statSync } from 'node:fs';
-import { loadConfig, configIsComplete } from '../config/index.ts';
+import { loadConfig, configIsComplete, DEFAULT_OWNER } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { OpenAIWikiLLM } from '../wiki/llm.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { ingestWiki, reindexWiki, type WikiIngestResult, type WikiUnitPlan } from '../wiki/ingest.ts';
@@ -23,11 +22,7 @@ export interface WikiOptions {
 }
 
 function makeBackend(config: ReturnType<typeof loadConfig>): PgVectorBackend {
-  return new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
-    vectorWeight: config.vectorWeight,
-    keywordWeight: config.keywordWeight,
-    timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
-  });
+  return PgVectorBackend.fromConfig(config);
 }
 
 function requireConfigured(config: ReturnType<typeof loadConfig>): void {
@@ -71,7 +66,7 @@ async function wikiIngest(opts: WikiOptions): Promise<void> {
   }
   const parsedLimit = opts.limit ? Number(opts.limit) : 20;
   const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.floor(parsedLimit)) : 20;
-  const sourceOwner = opts.owner ?? 'derek';
+  const sourceOwner = opts.owner ?? DEFAULT_OWNER;
   const wikiOwner = opts.wikiOwner ?? sourceOwner;
 
   // Lock only for a real run — a dry-run neither calls the LLM nor writes.
@@ -130,7 +125,7 @@ function printPlan(result: WikiIngestResult, model: string): void {
 async function wikiReindex(opts: WikiOptions): Promise<void> {
   const config = loadConfig();
   requireConfigured(config);
-  const wikiOwner = opts.wikiOwner ?? opts.owner ?? 'derek';
+  const wikiOwner = opts.wikiOwner ?? opts.owner ?? DEFAULT_OWNER;
   const backend = makeBackend(config);
   await backend.initialize();
   const embedder = new Embedder(buildProvider(config), backend);
@@ -157,7 +152,7 @@ async function wikiSplit(slug: string | undefined, opts: WikiOptions): Promise<v
     process.exit(1);
   }
 
-  const wikiOwner = opts.wikiOwner ?? opts.owner ?? 'derek';
+  const wikiOwner = opts.wikiOwner ?? opts.owner ?? DEFAULT_OWNER;
 
   // Writes pages + pg like ingest → share the synthesis lock (dry-run neither
   // calls the LLM nor writes).
@@ -205,7 +200,7 @@ async function wikiSplit(slug: string | undefined, opts: WikiOptions): Promise<v
 async function wikiLint(opts: WikiOptions): Promise<void> {
   const config = loadConfig();
   const store = new WikiStore(config.wikiDir);
-  const wikiOwner = opts.wikiOwner ?? opts.owner ?? 'derek';
+  const wikiOwner = opts.wikiOwner ?? opts.owner ?? DEFAULT_OWNER;
 
   let backend: PgVectorBackend | undefined;
   let checkProvenance: ((ids: string[]) => Promise<Set<string>>) | undefined;
@@ -247,8 +242,8 @@ function printFindings(findings: Finding[]): void {
 async function wikiStatus(opts: WikiOptions): Promise<void> {
   const config = loadConfig();
   const store = new WikiStore(config.wikiDir);
-  const wikiOwner = opts.wikiOwner ?? opts.owner ?? 'derek';
-  const sourceOwner = opts.owner ?? 'derek';
+  const wikiOwner = opts.wikiOwner ?? opts.owner ?? DEFAULT_OWNER;
+  const sourceOwner = opts.owner ?? DEFAULT_OWNER;
 
   const pages = store.listPages();
   const graph = store.linkGraph(pages);

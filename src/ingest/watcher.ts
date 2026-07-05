@@ -3,7 +3,9 @@ import type { PipelineDeps } from './pipeline.ts';
 import { fileIsStable, ingestFile } from './pipeline.ts';
 
 export interface WatcherHooks {
-  onIngested(sessionId: string, repo: string, embedded: number): void;
+  // `path` is the session .jsonl that was just ingested, so the synthesis queue
+  // can re-check file stability at fire time (belt for the quiescence gate).
+  onIngested(sessionId: string, repo: string, embedded: number, path: string): void;
 }
 
 export class SessionWatcher {
@@ -51,7 +53,12 @@ export class SessionWatcher {
   }
 
   private async process(path: string, idleMs: number): Promise<void> {
-    if (this.inFlight.has(path)) return;
+    // V9b: a change that arrives while this file is mid-ingest must not be
+    // dropped — reschedule it so the newer bytes get picked up after the flight.
+    if (this.inFlight.has(path)) {
+      this.schedule(path, idleMs);
+      return;
+    }
     if (!fileIsStable(path, idleMs)) {
       this.schedule(path, idleMs);
       return;
@@ -67,7 +74,7 @@ export class SessionWatcher {
       }
       if (result.embedded > 0 && this.hooks) {
         try {
-          this.hooks.onIngested(result.sessionId, result.repo, result.embedded);
+          this.hooks.onIngested(result.sessionId, result.repo, result.embedded, path);
         } catch (err) {
           console.error('[synthesis] hook error:', err instanceof Error ? err.message : err);
         }

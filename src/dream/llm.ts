@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { SYSTEM_PROMPT } from './prompt.ts';
-import { modelParams } from '../wiki/llm.ts';
+import { modelParams, withRetry, REQUEST_TIMEOUT_MS } from '../llm/shared.ts';
 
 // 'note' is never requested from the model — it's the coercion bucket for
 // off-enum types the model invents, so the item's text survives with an
@@ -28,26 +28,55 @@ export interface DreamLLM {
   extract(header: string, transcript: string): Promise<DreamExtraction>;
 }
 
+// Structural view of the OpenAI chat client this seam uses — narrowed so tests can
+// inject a fake and assert the request options (timeout/maxRetries) without pulling
+// the full SDK type.
+export interface DreamChatClient {
+  chat: {
+    completions: {
+      create(
+        body: {
+          model: string;
+          messages: Array<{ role: 'system' | 'user'; content: string }>;
+          response_format: { type: 'json_object' };
+          max_completion_tokens: number;
+          temperature?: number;
+        },
+        options?: { timeout?: number; maxRetries?: number }
+      ): Promise<{
+        choices: Array<{ message: { content: string | null } }>;
+        usage?: { prompt_tokens: number; completion_tokens: number } | null;
+      }>;
+    };
+  };
+}
+
 export class OpenAIDreamLLM implements DreamLLM {
-  private client: OpenAI;
+  private client: DreamChatClient;
   private model: string;
 
-  constructor(apiKey: string, model: string) {
-    this.client = new OpenAI({ apiKey });
+  constructor(apiKey: string, model: string, client?: DreamChatClient) {
+    this.client = client ?? (new OpenAI({ apiKey }) as unknown as DreamChatClient);
     this.model = model;
   }
 
   async extract(header: string, transcript: string): Promise<DreamExtraction> {
     const res = await withRetry(() =>
-      this.client.chat.completions.create({
-        model: this.model,
-        ...modelParams(this.model),
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: `${header}\n\nTRANSCRIPT:\n${transcript}` },
-        ],
-      })
+      this.client.chat.completions.create(
+        {
+          model: this.model,
+          ...modelParams(this.model),
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: `${header}\n\nTRANSCRIPT:\n${transcript}` },
+          ],
+        },
+        // Without a timeout the SDK default is 10 minutes; withRetry owns the
+        // retries. Was previously omitted → SDK default timeout × SDK retries ×
+        // withRetry stacked into a pathological worst case.
+        { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 }
+      )
     );
 
     const content = res.choices[0]?.message?.content ?? '';
@@ -87,36 +116,4 @@ export function parseItems(raw: string): DreamItem[] {
     out.push({ type: type as DreamItemType, text: text.trim() });
   }
   return out;
-}
-
-async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryable(err) || i === attempts - 1) break;
-      await new Promise((r) => setTimeout(r, retryDelayMs(err, i)));
-    }
-  }
-  throw lastErr;
-}
-
-// TPM 429s need seconds-scale waits (the budget refills per minute); with
-// concurrent workers a sub-second backoff just re-collides.
-function retryDelayMs(err: unknown, attempt: number): number {
-  const base = Math.min(2 ** attempt * 500, 8000);
-  if (err instanceof OpenAI.APIError && err.status === 429) {
-    return Math.max(base, (attempt + 1) * 5000);
-  }
-  return base;
-}
-
-function isRetryable(err: unknown): boolean {
-  if (err instanceof OpenAI.APIError) {
-    const status = err.status;
-    return status === undefined || status === 408 || status === 429 || status >= 500;
-  }
-  return true;
 }

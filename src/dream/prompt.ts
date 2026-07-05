@@ -27,10 +27,19 @@ export function buildUnitHeader(unit: SynthesisUnit): string {
   return `Session ${unit.sessionId} · repo ${repo} · ${unit.chunkIds.length} chunks`;
 }
 
-// Join chunk contents into one transcript, head-truncating (keeping the start)
-// at maxChars so the LLM sees the opening context; a marker flags truncation.
+// Join chunk contents into one transcript, capping at maxChars. When it fits, the
+// output is byte-identical to the joined text. When it overflows, keep BOTH ends —
+// decisions and outcomes live in the tail as often as the setup lives in the head —
+// with an elision marker between. Total length is exactly maxChars.
 export function buildTranscript(chunks: Chunk[], maxChars: number): string {
   const joined = chunks.map((c) => c.content).join('\n---\n');
   if (joined.length <= maxChars) return joined;
-  return joined.slice(0, maxChars) + '\n[transcript truncated]';
+  const marker = '\n[... transcript elided ...]\n';
+  const budget = maxChars - marker.length;
+  if (budget <= 0) return joined.slice(0, maxChars); // cap tighter than the marker
+  const headLen = Math.ceil(budget / 2);
+  const tailLen = budget - headLen;
+  const head = joined.slice(0, headLen);
+  const tail = tailLen > 0 ? joined.slice(joined.length - tailLen) : '';
+  return head + marker + tail;
 }

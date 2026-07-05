@@ -5,6 +5,7 @@ import { ASK_SYSTEM_PROMPT, buildAskUser, extractCitedIndices } from './prompt.t
 import type { Artifact, SearchFilters, SearchResult } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
+import type { DemandRow } from '../storage/local.ts';
 
 // Interactive: a user is waiting, so one SDK retry is enough — this is NOT the
 // batch-grade 120s/6-attempt loop synthesis uses.
@@ -79,6 +80,33 @@ export function askOutcome(result: AskResult): 'answered' | 'not_covered' | 'no_
   if (result.answer === null) return 'no_candidates';
   if (!result.sources.some((s) => s.cited)) return 'not_covered';
   return 'answered';
+}
+
+// The canonical SUCCESS demand row for a completed ask, shared by every ask
+// surface (CLI, MCP, UI) so the shape stays identical. AskSource carries no
+// similarity/sessionId, so top_similarity/top_session_id are always null; top_tier
+// is the best-ranked candidate's tier. The 'error' outcome row is NOT built here —
+// it belongs to each caller's catch path where there is no AskResult.
+export function demandRowForAsk(
+  surface: DemandRow['surface'],
+  query: string,
+  tier: string | null,
+  repo: string | null,
+  result: AskResult
+): DemandRow {
+  return {
+    surface,
+    kind: 'ask',
+    query,
+    tier,
+    repo,
+    resultCount: result.sources.length,
+    topSimilarity: null,
+    topTier: result.sources[0]?.tier ?? null,
+    topSessionId: null,
+    outcome: askOutcome(result),
+    citedCount: result.sources.filter((s) => s.cited).length,
+  };
 }
 
 export class OpenAIAskLLM {

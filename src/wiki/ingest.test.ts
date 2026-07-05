@@ -284,6 +284,28 @@ describe('ingestWiki', () => {
     }
   });
 
+  test('shrink retry uses the SLIM path: pass-1 carries candidates+inventory, retry drops them', async () => {
+    const dir = join(tmpdir(), `engram-wiki-retry-slim-${crypto.randomUUID()}`);
+    const mergedBody = LONG_BODY + '\nNew merged fact from s2. [[fingerprint-skip]]';
+    const llm = new FakeWikiLLM(
+      retryScript(() => [{ slug: 'pgvector', action: 'update', kind: 'tool', title: 'pgvector', summary: 'x', aliases: [], body: mergedBody, sources: ['d3'] }])
+    );
+    try {
+      await seedAndShrink(dir, llm);
+      const pass1 = llm.calls.find((c) => c.header.includes('s2') && !c.correction)!;
+      const retry = llm.calls.find((c) => c.correction)!;
+      // Pass 1 sends the full candidate + inventory payload.
+      expect(pass1.inventory.length).toBeGreaterThan(0);
+      // The slim retry drops both (only header + items + correction go over the wire).
+      expect(retry.candidatesText).toBe('');
+      expect(retry.inventory).toBe('');
+      expect(retry.header).toBe(pass1.header);
+      expect(retry.itemsText).toBe(pass1.itemsText);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('retry op body is autolinked (sibling mention wrapped) before the guard re-check', async () => {
     const dir = join(tmpdir(), `engram-wiki-retry-autolink-${crypto.randomUUID()}`);
     // Merged retry body mentions the sibling's TITLE in PLAIN TEXT only — no

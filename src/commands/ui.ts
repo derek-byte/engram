@@ -9,6 +9,7 @@ import {
   patchConfigFile,
   ConfigPatchError,
   EDITABLE_CONFIG_KEYS,
+  DEFAULT_OWNER,
 } from '../config/index.ts';
 import {
   servicesStatus,
@@ -30,9 +31,8 @@ import { WikiStore } from '../wiki/store.ts';
 import { isValidSlug } from '../wiki/links.ts';
 import { lintWiki } from '../wiki/lint.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { runSearch } from '../search/index.ts';
-import { runAsk, askOutcome, OpenAIAskLLM, AskError } from '../ask/index.ts';
+import { runAsk, demandRowForAsk, OpenAIAskLLM, AskError } from '../ask/index.ts';
 import type { VectorBackend, WikiEvidenceStore } from '../storage/backend.ts';
 import type { Artifact, EngramConfig, SearchFilters } from '../types/index.ts';
 
@@ -157,6 +157,41 @@ export interface SetupCheck {
 
 function isPlainObj(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// The JSON write-gate shared by every mutating route: require an
+// application/json content-type, parse the body, and require a plain object.
+// Returns the parsed object or a ready-to-return {error,status} the caller maps
+// to Response.json — behavior is byte-identical to the inline copies it replaces.
+type JsonBodyResult =
+  | { ok: true; body: Record<string, unknown> }
+  | { ok: false; error: string; status: number };
+
+async function readJsonBody(req: Request): Promise<JsonBodyResult> {
+  if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
+    return { ok: false, error: 'expected content-type: application/json', status: 400 };
+  }
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return { ok: false, error: 'invalid json', status: 400 };
+  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return { ok: false, error: 'expected a json object', status: 400 };
+  }
+  return { ok: true, body: body as Record<string, unknown> };
+}
+
+// decodeURIComponent throws URIError on a malformed %-escape (e.g. '%ZZ'); a bare
+// call on a path param turns that into an unhandled throw → 500. This returns null
+// instead so the caller can answer a clean 400.
+function safeDecode(s: string): string | null {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
 }
 
 // Is the engram MCP server registered in ~/.claude.json? Read-only. Absent or
@@ -316,19 +351,9 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       if (req.method !== 'PUT') return new Response('method not allowed', { status: 405 });
 
       // Writes must be JSON — a form/navigation POST can't reach this branch.
-      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
-        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
-      }
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: 'invalid json' }, { status: 400 });
-      }
-      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-        return Response.json({ error: 'expected a json object' }, { status: 400 });
-      }
-      const patch = body as Record<string, unknown>;
+      const parsed = await readJsonBody(req);
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: parsed.status });
+      const patch = parsed.body;
       // Reject secrets and read-only keys up front — only editable keys pass.
       const rejected = Object.keys(patch).filter((k) => !(EDITABLE_CONFIG_KEYS as readonly string[]).includes(k));
       if (rejected.length > 0) {
@@ -375,19 +400,9 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       }
       if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
       // Writes are JSON-gated like PUT /api/config so a form/navigation POST can't reach here.
-      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
-        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
-      }
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: 'invalid json' }, { status: 400 });
-      }
-      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-        return Response.json({ error: 'expected a json object' }, { status: 400 });
-      }
-      const action = (body as Record<string, unknown>).action;
+      const parsed = await readJsonBody(req);
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: parsed.status });
+      const action = parsed.body.action;
       try {
         let changed: boolean;
         if (action === 'install') changed = installHook().changed;
@@ -408,19 +423,9 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       // it's a POST behind the same JSON gates as PUT /api/config — a
       // form/navigation POST can't reach the handler body.
       if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
-      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
-        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
-      }
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: 'invalid json' }, { status: 400 });
-      }
-      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-        return Response.json({ error: 'expected a json object' }, { status: 400 });
-      }
-      const b = body as Record<string, unknown>;
+      const parsed = await readJsonBody(req);
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: parsed.status });
+      const b = parsed.body;
       const q = typeof b.q === 'string' ? b.q.trim() : '';
       if (!q) return Response.json({ error: 'q is required' }, { status: 400 });
 
@@ -447,25 +452,12 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       const t0 = Date.now();
       try {
         const result = await runAsk(q, filters, { backend, embedder, llm });
-        const citedCount = result.sources.filter((s) => s.cited).length;
-        const outcome = askOutcome(result);
-        // AskSource carries no similarity/sessionId (src/ask/index.ts:45-54), so
-        // an ask row logs top_tier (from the first source) but leaves
-        // top_similarity / top_session_id null — the targeted-synthesis handle
-        // is sourced from search rows, which do carry both.
-        const top = result.sources[0];
+        // AskSource carries no similarity/sessionId, so an ask row logs top_tier
+        // (from the first source) but leaves top_similarity / top_session_id null
+        // — the targeted-synthesis handle is sourced from search rows, which do
+        // carry both. Row shape is shared with the CLI/MCP ask surfaces.
         try {
-          local.logDemand({
-            surface: 'ui',
-            kind: 'ask',
-            query: q,
-            tier,
-            repo,
-            resultCount: result.sources.length,
-            topTier: top?.tier ?? null,
-            outcome,
-            citedCount,
-          });
+          local.logDemand(demandRowForAsk('ui', q, tier, repo ?? null, result));
         } catch {
           /* demand log is cosmetic */
         }
@@ -521,7 +513,7 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       try {
         const findings = await lintWiki(wiki, {
           checkProvenance: (ids) => backend.existingChunkIds(ids, 'dream'),
-          pendingUnits: () => backend.pendingWikiUnits('derek'),
+          pendingUnits: () => backend.pendingWikiUnits(DEFAULT_OWNER),
         });
         const warns = findings.filter((f) => f.severity === 'warn').length;
         return Response.json({
@@ -546,7 +538,8 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     const restartMatch = url.pathname.match(/^\/api\/services\/([^/]+)\/restart$/);
     if (restartMatch) {
       if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
-      const label = decodeURIComponent(restartMatch[1]!);
+      const label = safeDecode(restartMatch[1]!);
+      if (label === null) return Response.json({ error: 'bad service label' }, { status: 400 });
       // Unknown labels 404 before touching launchctl (labels are never interpolated).
       if (!isKnownServiceLabel(label)) return Response.json({ error: 'unknown service' }, { status: 404 });
       try {
@@ -576,19 +569,9 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     if (url.pathname === '/api/setup/service') {
       if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
       if (process.platform !== 'darwin') return Response.json({ error: 'macOS only' }, { status: 400 });
-      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
-        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
-      }
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: 'invalid json' }, { status: 400 });
-      }
-      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-        return Response.json({ error: 'expected a json object' }, { status: 400 });
-      }
-      const action = (body as Record<string, unknown>).action;
+      const parsed = await readJsonBody(req);
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: parsed.status });
+      const action = parsed.body.action;
       try {
         if (action === 'install') services.install();
         else if (action === 'uninstall') services.uninstall();
@@ -683,12 +666,8 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
 
     const wikiMatch = url.pathname.match(/^\/api\/wiki\/(.+)$/);
     if (wikiMatch) {
-      let slug: string;
-      try {
-        slug = decodeURIComponent(wikiMatch[1]!);
-      } catch {
-        return Response.json({ error: 'bad slug' }, { status: 400 });
-      }
+      const slug = safeDecode(wikiMatch[1]!);
+      if (slug === null) return Response.json({ error: 'bad slug' }, { status: 400 });
       // Slug validation doubles as the path-traversal guard: pagePath is only
       // ever reached with a validated kebab-case slug.
       if (!isValidSlug(slug)) return Response.json({ error: 'bad slug' }, { status: 400 });
@@ -741,12 +720,8 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
 
     const traj = url.pathname.match(/^\/api\/trajectory\/(.+)$/);
     if (traj) {
-      let trajectoryId: string;
-      try {
-        trajectoryId = decodeURIComponent(traj[1]!);
-      } catch {
-        return Response.json({ error: 'bad trajectory id' }, { status: 400 });
-      }
+      const trajectoryId = safeDecode(traj[1]!);
+      if (trajectoryId === null) return Response.json({ error: 'bad trajectory id' }, { status: 400 });
       try {
         const chunks = await backend.getTrajectory(trajectoryId);
         // Log raw/dream trajectory opens as views; wiki drill-downs are excluded
@@ -785,21 +760,12 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     const jobRunMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/run$/);
     if (jobRunMatch) {
       if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
-      const kind = decodeURIComponent(jobRunMatch[1]!);
+      const kind = safeDecode(jobRunMatch[1]!);
+      if (kind === null) return Response.json({ error: 'bad job kind' }, { status: 400 });
       if (!isKnownJobKind(kind)) return Response.json({ error: 'unknown job' }, { status: 404 });
-      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
-        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
-      }
-      let body: unknown;
-      try {
-        body = await req.json();
-      } catch {
-        return Response.json({ error: 'invalid json' }, { status: 400 });
-      }
-      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-        return Response.json({ error: 'expected a json object' }, { status: 400 });
-      }
-      const b = body as Record<string, unknown>;
+      const parsed = await readJsonBody(req);
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: parsed.status });
+      const b = parsed.body;
       const args: string[] = [];
       if (b.fromDemandDays !== undefined) {
         const d = Math.floor(Number(b.fromDemandDays));
@@ -831,7 +797,8 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     // the Analytics view renders without a second round-trip.
     const jobStatusMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
     if (jobStatusMatch) {
-      const kind = decodeURIComponent(jobStatusMatch[1]!);
+      const kind = safeDecode(jobStatusMatch[1]!);
+      if (kind === null) return Response.json({ error: 'bad job kind' }, { status: 400 });
       if (!isKnownJobKind(kind)) return Response.json({ error: 'unknown job' }, { status: 404 });
       try {
         return Response.json({ ...jobs.status(kind), runs: local.getAskevalRuns(10) });
@@ -877,7 +844,7 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
   const css = () => readFileSync(CSS_PATH, 'utf-8');
   const js = () => readFileSync(JS_PATH, 'utf-8');
 
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
+  const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
   // Pass the backend as the embedding cache so repeat queries hit embedding_cache (free).
   const embedder = new Embedder(buildProvider(config), backend);

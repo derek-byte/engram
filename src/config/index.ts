@@ -9,6 +9,10 @@ export const CONTEXT_BUDGET_DEFAULT = 1500;
 export const CONTEXT_BUDGET_MIN = 100;
 export const CONTEXT_BUDGET_MAX = 20000;
 
+// The single owner attributed to captured/synthesized memory. Exported so the
+// scattered 'derek' literals collapse to one constant (lane E sweeps callers).
+export const DEFAULT_OWNER = 'derek';
+
 export const SYNTHESIS_HOUR_MIN = 0;
 export const SYNTHESIS_HOUR_MAX = 23;
 export const SYNTHESIS_HOUR_DEFAULT = 3;
@@ -26,7 +30,14 @@ export const CONFIG_PATH = join(ENGRAM_DIR, 'config.json');
 function resolveConfigPath(): string {
   return process.env.ENGRAM_CONFIG_PATH ?? CONFIG_PATH;
 }
-export const LOCAL_DB_PATH = process.env.ENGRAM_LOCAL_DB ?? join(ENGRAM_DIR, 'engram.sqlite');
+// Resolve the local sqlite path at call time so ENGRAM_LOCAL_DB set after this
+// module is imported (e.g. by a test) still takes effect — LocalStore's default
+// constructor arg calls this per-instance. The frozen const below is kept for
+// back-compat (askeval reads it) but must not be relied on for late overrides.
+export function resolveLocalDbPath(): string {
+  return process.env.ENGRAM_LOCAL_DB ?? join(ENGRAM_DIR, 'engram.sqlite');
+}
+export const LOCAL_DB_PATH = resolveLocalDbPath();
 export const LOG_PATH = join(ENGRAM_DIR, 'engram.log');
 
 const DEFAULT_CONFIG: EngramConfig = {
@@ -245,20 +256,36 @@ function parseProvider(value: string): EmbeddingProviderKind {
   throw new Error(`invalid ENGRAM_EMBEDDING_PROVIDER: ${value} (expected 'openai' or 'local')`);
 }
 
-export async function promptForMissing(config: EngramConfig): Promise<EngramConfig> {
+export async function promptForMissing(
+  config: EngramConfig,
+  readLineFn: () => Promise<string> = readLine
+): Promise<EngramConfig> {
   const next = { ...config };
+  const prompted: Record<string, unknown> = {};
 
   if (next.embeddingProvider === 'openai' && !next.openaiApiKey) {
     process.stdout.write('OpenAI API key (sk-...): ');
-    next.openaiApiKey = (await readLine()).trim();
+    next.openaiApiKey = (await readLineFn()).trim();
+    prompted.openaiApiKey = next.openaiApiKey;
   }
 
   if (!next.databaseUrl) {
     process.stdout.write('Neon connection string (get one free at neon.tech): ');
-    next.databaseUrl = (await readLine()).trim();
+    next.databaseUrl = (await readLineFn()).trim();
+    prompted.databaseUrl = next.databaseUrl;
   }
 
-  saveConfig(next);
+  // Persist ONLY the keys prompted this run as a raw-file patch (same rule as
+  // patchConfigFile) — NOT saveConfig(next), which would bake env secrets
+  // (OPENAI_API_KEY, ENGRAM_DATABASE_URL, already folded into `config`) and
+  // provider-derived defaults into config.json. Return the merged config as before.
+  if (Object.keys(prompted).length > 0) {
+    const raw = readConfigFile();
+    Object.assign(raw, prompted);
+    ensureEngramDir();
+    writeFileSync(resolveConfigPath(), JSON.stringify(raw, null, 2));
+  }
+
   return next;
 }
 

@@ -290,11 +290,12 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
               oldBody: existingPage.body,
             }))
           );
-          const retry = await llm.ingest(
+          // Slim retry: header + items + correction only. The retry accepts ops
+          // ONLY for the violating slugs (whose full bodies are in `correction`),
+          // so pass-1's candidates + inventory would be re-sent for nothing.
+          const retry = await llm.ingestRetry(
             buildUnitHeader(unit),
             buildItemsText(items),
-            buildCandidatesText(candidates, capChars),
-            store.inventory(),
             correction
           );
           if (retry.usage) {

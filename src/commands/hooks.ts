@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { indexPath } from './service.ts';
 
 export interface HooksOptions {
@@ -20,6 +20,10 @@ export interface HookStatus {
   // Installed via a src/index.ts that is NOT the current checkout — a moved/renamed
   // repo left a stale hook that runs the wrong (or missing) engram.
   stalePath: boolean;
+  // Installed, but the interpreter (first token of the matched command) is an
+  // absolute path that no longer exists — typically bun was upgraded and its
+  // versioned path moved. Repairable by re-running `engram hooks install`.
+  staleInterpreter: boolean;
   path: string;
   // Set only when settings.json exists but does not parse as JSON.
   parseError?: boolean;
@@ -30,10 +34,43 @@ export interface HookStatus {
 export class SettingsParseError extends Error {}
 
 // The detection predicate, applied to a single hook command string: it invokes
-// engram's `context` verb through some src/index.ts. `hookStatus` decides
-// current-vs-stale by whether that path is the current checkout's indexPath().
+// engram's `context` verb through THIS engram checkout. Matching is deliberately
+// narrow — the current checkout's indexPath(), or any path under an `engram`
+// checkout dir (…/engram/src/index.ts) so a moved/renamed engram install stays
+// removable — so a foreign `node /other/project/src/index.ts build context` hook
+// is never claimed, counted as installed, or deleted by uninstall. `hookStatus`
+// decides current-vs-stale by whether that path is the current indexPath().
+const ENGRAM_CHECKOUT_INDEX_RE = /\/engram\/src\/index\.ts\b/;
 function isEngramContextCommand(command: string): boolean {
-  return command.includes(' context') && command.includes('src/index.ts');
+  if (!command.includes(' context')) return false;
+  return command.includes(indexPath()) || ENGRAM_CHECKOUT_INDEX_RE.test(command);
+}
+
+// The stable interpreter path baked into the hook command. If Homebrew's `bun`
+// symlink resolves to the same binary as the current process, prefer the symlink
+// so the hook survives a `brew upgrade bun` (the versioned Cellar path moves; the
+// symlink does not). Otherwise use the concrete execPath. Seams are injectable so
+// a test can drive both branches without touching the real filesystem.
+const HOMEBREW_BUN = '/opt/homebrew/bin/bun';
+export function stableBunPath(execPath: string = process.execPath, homebrewBun: string = HOMEBREW_BUN): string {
+  try {
+    if (existsSync(homebrewBun) && realpathSync(homebrewBun) === realpathSync(execPath)) {
+      return homebrewBun;
+    }
+  } catch {
+    // realpathSync throws if a path vanished mid-check — fall back to execPath.
+  }
+  return execPath;
+}
+
+// A matched engram command is `<interpreter> <indexPath> context …`. Its first
+// token is the interpreter unless the command begins directly with the index path
+// (older/hand-written hooks — stalePath covers those). An absolute interpreter
+// that no longer exists ⇒ stale (bun was upgraded).
+function hasStaleInterpreter(command: string): boolean {
+  const first = command.trim().split(/\s+/)[0] ?? '';
+  if (/src\/index\.ts$/.test(first)) return false;
+  return first.startsWith('/') && !existsSync(first);
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -62,12 +99,14 @@ function computeStatus(parsed: unknown, path: string): HookStatus {
   const current = indexPath();
   let installed = false;
   let currentMatch = false;
+  let staleInterpreter = false;
   for (const cmd of collectSessionStartCommands(parsed)) {
     if (!isEngramContextCommand(cmd)) continue;
     installed = true;
     if (cmd.includes(current)) currentMatch = true;
+    if (hasStaleInterpreter(cmd)) staleInterpreter = true;
   }
-  return { installed, stalePath: installed && !currentMatch, path };
+  return { installed, stalePath: installed && !currentMatch, staleInterpreter: installed && staleInterpreter, path };
 }
 
 // Read settings.json. Missing → treat as {} (installers create it). Present but
@@ -101,12 +140,12 @@ function writeBackup(path: string, raw: string): string {
 
 export function hookStatus(settingsPath?: string): HookStatus {
   const path = resolveSettingsPath(settingsPath);
-  if (!existsSync(path)) return { installed: false, stalePath: false, path };
+  if (!existsSync(path)) return { installed: false, stalePath: false, staleInterpreter: false, path };
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf-8'));
   } catch {
-    return { installed: false, stalePath: false, path, parseError: true };
+    return { installed: false, stalePath: false, staleInterpreter: false, path, parseError: true };
   }
   return computeStatus(parsed, path);
 }
@@ -126,12 +165,15 @@ export function installHook(settingsPath?: string): HookMutation {
   const path = resolveSettingsPath(settingsPath);
   const { obj, raw } = readSettings(path);
   const status = computeStatus(obj, path);
-  if (status.installed && !status.stalePath) return { changed: false };
+  // A moved checkout (stalePath) OR an upgraded interpreter (staleInterpreter) is
+  // repaired in place; a healthy current install is a no-op.
+  const repairable = status.stalePath || status.staleInterpreter;
+  if (status.installed && !repairable) return { changed: false };
 
   // Back up only a pre-existing file — nothing to preserve when we create it.
   const backupPath = raw !== null ? writeBackup(path, raw) : undefined;
 
-  if (status.installed && status.stalePath) stripEngramEntries(obj);
+  if (status.installed && repairable) stripEngramEntries(obj);
 
   const hooks = isPlainObject(obj.hooks) ? obj.hooks : (obj.hooks = {});
   const sessionStart = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : (hooks.SessionStart = []);
@@ -188,10 +230,10 @@ function stripEngramEntries(obj: Record<string, unknown>): void {
 // hooks.SessionStart is an array of { matcher, hooks: [{ type, command, timeout }] };
 // on exit 0 the command's plain stdout is added as session context; SessionStart
 // cannot block; the command runs via shell with $CLAUDE_PROJECT_DIR exported.
-export function buildHookSnippet(): {
+export function buildHookSnippet(interpreter: string = stableBunPath()): {
   hooks: { SessionStart: Array<{ matcher: string; hooks: Array<{ type: string; command: string; timeout: number }> }> };
 } {
-  const command = `${process.execPath} ${indexPath()} context --cwd "$CLAUDE_PROJECT_DIR"`;
+  const command = `${interpreter} ${indexPath()} context --cwd "$CLAUDE_PROJECT_DIR"`;
   return {
     hooks: {
       SessionStart: [
@@ -232,6 +274,11 @@ function statusHook(opts: HooksOptions): void {
   }
   if (!st.installed) {
     console.log("  status:  not installed  (run 'engram hooks install')");
+    return;
+  }
+  if (st.staleInterpreter) {
+    console.log('  status:  installed but STALE — bun was upgraded (interpreter path no longer exists)');
+    console.log("           re-run 'engram hooks install' to repair it");
     return;
   }
   if (st.stalePath) {
@@ -308,5 +355,5 @@ Knobs (in ~/.engram/config.json — no need to touch this hook again)
                    redundant — start with startup|clear)
 
 Preview what a session would see:
-  ${process.execPath} ${indexPath()} context --cwd "$PWD"`);
+  ${stableBunPath()} ${indexPath()} context --cwd "$PWD"`);
 }

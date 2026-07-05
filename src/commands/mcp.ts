@@ -2,7 +2,6 @@ import { loadConfig, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { startMcpServer } from '../mcp/server.ts';
 import { buildReranker } from '../search/rerank.ts';
 import { OpenAIAskLLM } from '../ask/index.ts';
@@ -15,7 +14,7 @@ export async function mcpCommand(): Promise<void> {
     process.exit(1);
   }
 
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
+  const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
   const embedder = new Embedder(buildProvider(config), backend);
   const local = new LocalStore();

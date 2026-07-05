@@ -1,6 +1,5 @@
-import { loadConfig, configIsComplete, clampContextBudget } from '../config/index.ts';
+import { loadConfig, configIsComplete, clampContextBudget, DEFAULT_OWNER } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { buildContext } from '../context/compose.ts';
 import { resolveFromCwd } from '../context/resolve.ts';
@@ -36,14 +35,12 @@ export async function contextCommand(opts: ContextOptions): Promise<void> {
     }
 
     const { repo, branch } = resolveTarget(opts);
-    const owner = opts.owner ?? 'derek';
+    const owner = opts.owner ?? DEFAULT_OWNER;
     const budgetTokens = parseBudget(opts.budget, config.contextInjection.budget);
 
-    backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
-      vectorWeight: config.vectorWeight,
-      keywordWeight: config.keywordWeight,
-      timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
-    });
+    // connectTimeoutSec: 2 — the SessionStart hook path must fail fast so a dead
+    // DB never stalls session startup (V1 fix).
+    backend = PgVectorBackend.fromConfig(config, { connectTimeoutSec: 2 });
     // Read-only: skip initialize() (the ~20 DDL round-trips) to stay well under 2s.
 
     let store: WikiStore | null = null;
