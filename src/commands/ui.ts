@@ -40,7 +40,12 @@ const SNIPPET_CHARS = 300;
 const UI_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui');
 const HTML_PATH = join(UI_DIR, 'index.html');
 const CSS_PATH = join(UI_DIR, 'app.css');
-const JS_PATH = join(UI_DIR, 'app.js');
+
+// The UI ships as ES modules (app.js + the modules it imports), served
+// straight out of src/ui with no build step. Only names matching this shape
+// are ever read off disk — [a-z-]+ admits no '.', '/', or '%', so a request
+// path can never traverse out of UI_DIR.
+const JS_NAME_RE = /^[a-z-]+\.js$/;
 
 export interface UiOptions {
   port?: string;
@@ -97,7 +102,10 @@ export interface UiDeps {
   // Same per-request read for the split-out static assets. Optional so route
   // tests can inject fakes; default reads the real files off disk.
   css?: () => string;
-  js?: () => string;
+  // Serve /<name>.js for the entry module and everything it imports. `name` is
+  // pre-validated against JS_NAME_RE before this is called; return null for a
+  // module that doesn't exist (→ 404).
+  js?: (name: string) => string | null;
   // Vector store + the read-only trust queries the wiki lint/evidence routes need.
   backend: VectorBackend & WikiEvidenceStore;
   embedder: Embedder;
@@ -282,7 +290,12 @@ async function buildSetupChecks(
 export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> {
   const { html, backend, embedder, local, wiki, dim, port } = deps;
   const css = deps.css ?? (() => readFileSync(CSS_PATH, 'utf-8'));
-  const js = deps.js ?? (() => readFileSync(JS_PATH, 'utf-8'));
+  const js =
+    deps.js ??
+    ((name: string) => {
+      const path = join(UI_DIR, name); // name matched JS_NAME_RE — no traversal possible
+      return existsSync(path) ? readFileSync(path, 'utf-8') : null;
+    });
   const services = deps.services ?? realServiceOps;
   const jobs = deps.jobs ?? realJobOps;
   const buildAskLLM =
@@ -322,8 +335,14 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       });
     }
 
-    if (url.pathname === '/app.js') {
-      return new Response(js(), {
+    // ES-module JS assets: /app.js plus every module it imports. The name is
+    // validated against JS_NAME_RE before any filesystem read (no dots, no
+    // slashes, no %-escapes ⇒ no traversal); anything else falls through to 404.
+    const jsName = url.pathname.slice(1);
+    if (JS_NAME_RE.test(jsName)) {
+      const body = js(jsName);
+      if (body === null) return new Response('not found', { status: 404 });
+      return new Response(body, {
         headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' },
       });
     }
@@ -842,8 +861,6 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
 
   const port = opts.port ? Number(opts.port) : 7777;
   const html = () => readFileSync(HTML_PATH, 'utf-8');
-  const css = () => readFileSync(CSS_PATH, 'utf-8');
-  const js = () => readFileSync(JS_PATH, 'utf-8');
 
   const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
@@ -860,7 +877,8 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
     // dropped socket rather than the answer. 240s comfortably covers the ask
     // path's own 60s LLM timeout + retry.
     idleTimeout: 240,
-    fetch: buildUiFetch({ html, css, js, backend, embedder, local, wiki, dim: config.embeddingDim, port }),
+    // css/js use buildUiFetch's defaults: per-request reads from src/ui.
+    fetch: buildUiFetch({ html, backend, embedder, local, wiki, dim: config.embeddingDim, port }),
   });
 
   console.log(`engram ui → http://${server.hostname}:${server.port}`);
