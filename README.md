@@ -52,9 +52,29 @@ Two design invariants:
 
 ## Quick start
 
+One command from a fresh clone:
+
+```bash
+make setup
+```
+
+Then open the app:
+
+```bash
+cd app && bun run tauri dev     # menu-bar app (Tauri)
+bun run src/index.ts ui         # …or the local web UI → http://127.0.0.1:7777
+```
+
+`make setup` is idempotent (safe to re-run) and walks eight steps, each of which skips when already satisfied: preflight (bun + Docker daemon reachable), `bun install`, `docker compose up -d` + wait for Postgres, config bootstrap (writes the local pgvector `databaseUrl` into `~/.engram/config.json`; prompts once for an optional OpenAI key when interactive), first `backfill` (only if the index is empty), the `SessionStart` context hook, MCP registration (if the `claude` CLI is present), and the always-on macOS service. If Docker isn't reachable it stops and tells you to start Docker Desktop (and, for a non-default daemon, to check `docker context ls`).
+
+Other Make targets: `make up` (just start Postgres), `make dev` (web UI), `make test`, `make typecheck`.
+
+<details>
+<summary><b>Manual setup</b> (what <code>make setup</code> automates, step by step)</summary>
+
 ```bash
 bun install
-docker compose up -d        # local pgvector (Docker Desktop context)
+docker compose up -d        # local pgvector (Docker Desktop context — see `docker context ls` if the daemon check fails)
 cp .env.example .env        # set OPENAI_API_KEY (or use ENGRAM_EMBEDDING_PROVIDER=local)
 
 bun run src/index.ts backfill
@@ -65,8 +85,11 @@ bun run src/index.ts wiki ingest --repo engram --dry-run   # plan a wiki compile
 bun run src/index.ts wiki lint       # orphans, dangling links, spelling drift, broken provenance
 bun run src/index.ts ui     # local search UI at http://127.0.0.1:7777
 
+bun run src/index.ts hooks install     # SessionStart context injection
 bun run src/index.ts service install   # macOS: always-on watcher + nightly synthesis (see below)
 ```
+
+</details>
 
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
 

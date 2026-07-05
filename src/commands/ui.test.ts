@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildUiFetch, type ServiceOps, type UiDeps } from './ui.ts';
+import { JobConflictError, type JobOps } from './jobs.ts';
 import { OpenAIAskLLM, type AskChatClient } from '../ask/index.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { FakeBackend, FakeCache, FakeProvider, tempStore, type TempStore } from '../ingest/testkit.ts';
@@ -59,7 +60,9 @@ describe('buildUiFetch', () => {
   let wiki: WikiStore;
   let wikiDir: string;
   let configPath: string;
-  let serviceCalls: { restart: string[]; reconcile: number };
+  let serviceCalls: { restart: string[]; reconcile: number; install: number; uninstall: number };
+  let jobCalls: { start: { kind: string; args: string[] }[]; running: boolean };
+  let jobs: JobOps;
   let embedder: Embedder;
   let services: ServiceOps;
   let fetch: (req: Request) => Promise<Response>;
@@ -90,7 +93,7 @@ describe('buildUiFetch', () => {
       )
     );
     // Fake launchd seam — route tests never shell out to the real launchctl.
-    serviceCalls = { restart: [], reconcile: 0 };
+    serviceCalls = { restart: [], reconcile: 0, install: 0, uninstall: 0 };
     services = {
       status: () => ({
         supported: true,
@@ -108,9 +111,31 @@ describe('buildUiFetch', () => {
         serviceCalls.reconcile++;
         return { serviceInstalled: true, action: 'installed' };
       },
+      install: () => {
+        serviceCalls.install++;
+      },
+      uninstall: () => {
+        serviceCalls.uninstall++;
+      },
+    };
+    // Fake job runner — route tests never spawn a child. start throws
+    // JobConflictError once flagged running, exercising the 409 path.
+    jobCalls = { start: [], running: false };
+    jobs = {
+      start: (kind, args) => {
+        if (jobCalls.running) throw new JobConflictError('already running');
+        jobCalls.start.push({ kind, args });
+        jobCalls.running = true;
+      },
+      status: () => ({
+        running: jobCalls.running,
+        startedAt: jobCalls.running ? '2026-07-04T00:00:00.000Z' : null,
+        exitCode: jobCalls.running ? null : 0,
+        lastLines: ['{"phase":"done"}'],
+      }),
     };
     embedder = new Embedder(new FakeProvider({ dim: 4 }), new FakeCache());
-    fetch = buildUiFetch({ html: () => '<html>', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
+    fetch = buildUiFetch({ html: () => '<html>', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services, jobs });
   });
   afterEach(() => {
     t.cleanup();
@@ -139,6 +164,46 @@ describe('buildUiFetch', () => {
   test('rejects foreign Origin (403)', async () => {
     const res = await fetch(req('/api/recents', { origin: 'http://evil.example' }));
     expect(res.status).toBe(403);
+  });
+
+  test('GET / serves the shell that links the split-out assets (no inline code)', async () => {
+    const realHtml = readFileSync(join(import.meta.dir, '..', 'ui', 'index.html'), 'utf-8');
+    const f = buildUiFetch({ html: () => realHtml, backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
+    const res = await f(req('/'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/html; charset=utf-8');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    const body = await res.text();
+    expect(body).toContain('<link rel="stylesheet" href="/app.css">');
+    expect(body).toContain('<script src="/app.js" defer></script>');
+    // The CSS/JS moved out — the shell no longer inlines them.
+    expect(body).not.toContain('<style>');
+    expect(body).not.toContain('@font-face');
+  });
+
+  test('GET /app.css → 200 text/css, no-store', async () => {
+    const f = buildUiFetch({ html: () => '<html>', css: () => 'body{color:red}', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
+    const res = await f(req('/app.css'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/css; charset=utf-8');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.text()).toBe('body{color:red}');
+  });
+
+  test('GET /app.js → 200 text/javascript, no-store', async () => {
+    const f = buildUiFetch({ html: () => '<html>', js: () => 'const x=1;', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
+    const res = await f(req('/app.js'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.text()).toBe('const x=1;');
+  });
+
+  test('unknown static path → 404 (no filesystem interpolation)', async () => {
+    const res = await fetch(req('/app.xyz'));
+    expect(res.status).toBe(404);
+    // A traversal-shaped path is just an unmatched route — never reads the disk.
+    expect((await fetch(req('/../package.json'))).status).toBe(404);
   });
 
   test('GET /api/wiki/:slug returns page + logs a view', async () => {
@@ -583,5 +648,370 @@ describe('buildUiFetch', () => {
     expect(((await (await fetch(req('/api/demand?days=99999'))).json()) as any).days).toBe(365);
     expect(((await (await fetch(req('/api/demand?days=0'))).json()) as any).days).toBe(1);
     expect(((await (await fetch(req('/api/demand'))).json()) as any).days).toBe(30);
+  });
+
+  // --- GET/POST /api/hook (SessionStart hook install/status) ----------------
+  // Redirect the hook reads/writes at a scratch settings.json via the same env
+  // seam hooks.ts uses — the route must NEVER touch the real ~/.claude/settings.json.
+  describe('/api/hook', () => {
+    let hookDir: string;
+    let hookSettings: string;
+
+    beforeEach(() => {
+      hookDir = join(tmpdir(), `engram-hook-ui-${crypto.randomUUID()}`);
+      hookSettings = join(hookDir, 'settings.json');
+      process.env.ENGRAM_CLAUDE_SETTINGS = hookSettings;
+    });
+    afterEach(() => {
+      delete process.env.ENGRAM_CLAUDE_SETTINGS;
+      try { rmSync(hookDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    });
+
+    const postHook = (bodyObj: unknown, headers: Record<string, string> = {}) =>
+      fetch(
+        new Request('http://' + HOST + '/api/hook', {
+          method: 'POST',
+          headers: { host: HOST, 'content-type': 'application/json', ...headers },
+          body: typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj),
+        })
+      );
+
+    test('GET /api/hook returns the status shape (not installed on a fresh path)', async () => {
+      const body: any = await (await fetch(req('/api/hook'))).json();
+      expect(body.installed).toBe(false);
+      expect(body.stalePath).toBe(false);
+      expect(body.path).toBe(hookSettings);
+    });
+
+    test('POST install flips status to installed; uninstall flips it back', async () => {
+      const inst: any = await (await postHook({ action: 'install' })).json();
+      expect(inst.changed).toBe(true);
+      expect(inst.status.installed).toBe(true);
+
+      // Second install is idempotent — changed:false, still installed.
+      const again: any = await (await postHook({ action: 'install' })).json();
+      expect(again.changed).toBe(false);
+      expect(again.status.installed).toBe(true);
+
+      const un: any = await (await postHook({ action: 'uninstall' })).json();
+      expect(un.changed).toBe(true);
+      expect(un.status.installed).toBe(false);
+    });
+
+    test('POST install repairs a stale hook (status flips to current, not a silent no-op)', async () => {
+      mkdirSync(hookDir, { recursive: true });
+      writeFileSync(
+        hookSettings,
+        JSON.stringify({
+          hooks: {
+            SessionStart: [
+              {
+                matcher: 'startup|clear',
+                hooks: [{ type: 'command', command: '/old/moved/repo/src/index.ts context --cwd "$CLAUDE_PROJECT_DIR"' }],
+              },
+            ],
+          },
+        })
+      );
+      const before: any = await (await fetch(req('/api/hook'))).json();
+      expect(before.stalePath).toBe(true);
+
+      const inst: any = await (await postHook({ action: 'install' })).json();
+      expect(inst.changed).toBe(true);
+      expect(inst.status.installed).toBe(true);
+      expect(inst.status.stalePath).toBe(false);
+    });
+
+    test('POST unknown action → 400', async () => {
+      const res = await postHook({ action: 'frobnicate' });
+      expect(res.status).toBe(400);
+    });
+
+    test('POST on a malformed settings.json → 500 surfacing the refusal message', async () => {
+      mkdirSync(hookDir, { recursive: true });
+      writeFileSync(hookSettings, '{ not json ]');
+      const res = await postHook({ action: 'install' });
+      expect(res.status).toBe(500);
+      expect(((await res.json()) as any).error).toContain('malformed');
+      // The file was never rewritten.
+      expect(readFileSync(hookSettings, 'utf-8')).toBe('{ not json ]');
+    });
+
+    test('POST /api/hook with a foreign Origin is rejected (403)', async () => {
+      const res = await postHook({ action: 'install' }, { origin: 'http://evil.example' });
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // --- /api/jobs + /api/analytics -------------------------------------------
+  describe('/api/jobs + /api/analytics', () => {
+    const postJob = (kind: string, bodyObj: unknown, headers: Record<string, string> = {}) =>
+      fetch(
+        new Request('http://' + HOST + '/api/jobs/' + kind + '/run', {
+          method: 'POST',
+          headers: { host: HOST, 'content-type': 'application/json', ...headers },
+          body: typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj),
+        })
+      );
+
+    test('POST /api/jobs/askeval/run → 202 started, args translated + clamped', async () => {
+      const res = await postJob('askeval', { fromDemandDays: 9999, limit: 999, judgeModel: '  gpt-judge  ' });
+      expect(res.status).toBe(202);
+      expect(((await res.json()) as any).started).toBe(true);
+      expect(jobCalls.start.length).toBe(1);
+      expect(jobCalls.start[0]!.kind).toBe('askeval');
+      // days clamps to 365, limit clamps to 50, judgeModel trimmed.
+      expect(jobCalls.start[0]!.args).toEqual([
+        '--from-demand', '365',
+        '--limit', '50',
+        '--judge-model', 'gpt-judge',
+      ]);
+    });
+
+    test('POST /api/jobs/askeval/run with no body args passes an empty arg list', async () => {
+      const res = await postJob('askeval', {});
+      expect(res.status).toBe(202);
+      expect(jobCalls.start[0]!.args).toEqual([]);
+    });
+
+    test('POST /api/jobs/askeval/run clamps low ends (days≥1, limit≥1)', async () => {
+      await postJob('askeval', { fromDemandDays: 0, limit: -5 });
+      expect(jobCalls.start[0]!.args).toEqual(['--from-demand', '1', '--limit', '1']);
+    });
+
+    test('POST /api/jobs/askeval/run → 409 when one is already running', async () => {
+      expect((await postJob('askeval', {})).status).toBe(202);
+      const second = await postJob('askeval', {});
+      expect(second.status).toBe(409);
+      expect(((await second.json()) as any).error).toBe('already running');
+      expect(jobCalls.start.length).toBe(1); // the refused start never ran
+    });
+
+    test('POST /api/jobs/:kind/run → 404 for an unknown kind (never started)', async () => {
+      const res = await postJob('backfill', {});
+      expect(res.status).toBe(404);
+      expect(jobCalls.start.length).toBe(0);
+    });
+
+    test('POST /api/jobs/askeval/run rejects bad body (400)', async () => {
+      expect((await postJob('askeval', 'not json')).status).toBe(400);
+      expect((await postJob('askeval', {}, { 'content-type': 'text/plain' })).status).toBe(400);
+      expect((await postJob('askeval', { judgeModel: '   ' })).status).toBe(400);
+      expect((await postJob('askeval', { limit: 'abc' })).status).toBe(400);
+      expect(jobCalls.start.length).toBe(0);
+    });
+
+    test('POST /api/jobs/askeval/run with a foreign Origin is rejected (403), no start', async () => {
+      const res = await postJob('askeval', {}, { origin: 'http://evil.example' });
+      expect(res.status).toBe(403);
+      expect(jobCalls.start.length).toBe(0);
+    });
+
+    test('GET /api/jobs/askeval returns status + run history', async () => {
+      const id = t.store.startAskevalRun();
+      t.store.finishAskevalRun(id, 'done', { total: 3, supported: 2 }, [{ label: 'q1' }]);
+      const body: any = await (await fetch(req('/api/jobs/askeval'))).json();
+      expect(body.running).toBe(false);
+      expect(Array.isArray(body.lastLines)).toBe(true);
+      expect(Array.isArray(body.runs)).toBe(true);
+      expect(body.runs.length).toBe(1);
+      expect(body.runs[0].status).toBe('done');
+      expect(body.runs[0].summary).toEqual({ total: 3, supported: 2 });
+    });
+
+    test('GET /api/jobs/askeval reflects a running job', async () => {
+      await postJob('askeval', {}); // flips fake running true
+      const body: any = await (await fetch(req('/api/jobs/askeval'))).json();
+      expect(body.running).toBe(true);
+      expect(body.startedAt).not.toBeNull();
+    });
+
+    test('GET /api/jobs/:kind → 404 for an unknown kind', async () => {
+      expect((await fetch(req('/api/jobs/backfill'))).status).toBe(404);
+    });
+
+    test('GET /api/analytics returns the shape the view renders', async () => {
+      t.store.addSnapshot('demand', { unmet: 4, searches: 20 });
+      t.store.addSnapshot('lint', { warns: 1, infos: 3 });
+      t.store.logContextInjection('engram', 2, 1, 800);
+      const id = t.store.startAskevalRun();
+      t.store.finishAskevalRun(id, 'done', { total: 5 });
+
+      const body: any = await (await fetch(req('/api/analytics'))).json();
+      expect(Array.isArray(body.demandTrend)).toBe(true);
+      expect(body.demandTrend[0].payload).toEqual({ unmet: 4, searches: 20 });
+      expect(Array.isArray(body.lintTrend)).toBe(true);
+      expect(body.lintTrend[0].payload).toEqual({ warns: 1, infos: 3 });
+      // context = injection stats + config gate + hook status.
+      expect(body.context.count).toBe(1);
+      expect(body.context.last7d).toBe(1);
+      expect(body.context.configEnabled).toBe(true); // seeded config has it enabled
+      expect(typeof body.context.hook.installed).toBe('boolean');
+      expect(body.askevalRuns.length).toBe(1);
+      expect(body.askevalRuns[0].summary).toEqual({ total: 5 });
+    });
+  });
+
+  // --- GET /api/setup + POST /api/setup/service (setup checklist) ------------
+  // The hook + mcp checks read files, so redirect both at scratch paths via the
+  // env seams (ENGRAM_CLAUDE_SETTINGS for the hook, ENGRAM_CLAUDE_JSON for mcp)
+  // — the routes must NEVER touch the developer's real ~/.claude files.
+  describe('/api/setup', () => {
+    let dir: string;
+    let hookSettings: string;
+    let claudeJson: string;
+
+    beforeEach(() => {
+      dir = join(tmpdir(), `engram-setup-${crypto.randomUUID()}`);
+      mkdirSync(dir, { recursive: true });
+      hookSettings = join(dir, 'settings.json');
+      claudeJson = join(dir, '.claude.json');
+      process.env.ENGRAM_CLAUDE_SETTINGS = hookSettings; // absent by default → hook not installed
+      process.env.ENGRAM_CLAUDE_JSON = claudeJson; // absent by default → mcp unknown
+    });
+    afterEach(() => {
+      delete process.env.ENGRAM_CLAUDE_SETTINGS;
+      delete process.env.ENGRAM_CLAUDE_JSON;
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    });
+
+    const getSetup = (f = fetch) => f(req('/api/setup')).then((r) => r.json() as Promise<any>);
+    const byId = (checks: any[]) => Object.fromEntries(checks.map((c) => [c.id, c]));
+
+    test('GET /api/setup returns the five checks with fix routing', async () => {
+      const body = await getSetup();
+      expect(body.checks.map((c: any) => c.id)).toEqual(['postgres', 'index', 'hook', 'mcp', 'service']);
+      const c = byId(body.checks);
+      // Empty FakeBackend: pg reachable (count resolves 0), index empty.
+      expect(c.postgres.ok).toBe(true);
+      expect(c.postgres.fix).toBeNull();
+      expect(c.index.ok).toBe(false);
+      expect(c.index.detail).toBe('0 chunks');
+      expect(c.index.fix).toBe('make-setup');
+      // Absent seams → hook not installed, mcp unknown.
+      expect(c.hook.ok).toBe(false);
+      expect(c.hook.fix).toBe('in-app');
+      expect(c.mcp.ok).toBe(false);
+      expect(c.mcp.detail).toBe('unknown — run make setup');
+      expect(c.mcp.fix).toBe('make-setup');
+      // Fake services: installed + supported → ok, no fix.
+      expect(c.service.ok).toBe(true);
+      expect(c.service.fix).toBeNull();
+    });
+
+    test('index check ok + "N chunks" once the backend has content', async () => {
+      await backend.upsert([chunk('c1', 'raw'), chunk('c2', 'dream')]);
+      const c = byId((await getSetup()).checks);
+      expect(c.postgres.ok).toBe(true);
+      expect(c.index.ok).toBe(true);
+      expect(c.index.detail).toBe('2 chunks');
+      expect(c.index.fix).toBeNull();
+    });
+
+    test('postgres check flips ok:false (with make-setup) when the backend count throws', async () => {
+      const down = buildUiFetch({
+        html: () => '<html>',
+        backend: { count: async () => { throw new Error('ECONNREFUSED'); } } as unknown as UiDeps['backend'],
+        embedder, local: t.store, wiki, dim: 4, port: PORT, services,
+      });
+      const c = byId((await getSetup(down)).checks);
+      expect(c.postgres.ok).toBe(false);
+      expect(c.postgres.detail).toContain('ECONNREFUSED');
+      expect(c.postgres.fix).toBe('make-setup');
+      // A dead pg leaves the index count unknowable → also false.
+      expect(c.index.ok).toBe(false);
+      expect(c.index.detail).toContain('unreachable');
+    });
+
+    test('hook check reflects the settings seam (not installed vs malformed)', async () => {
+      let c = byId((await getSetup()).checks);
+      expect(c.hook.ok).toBe(false);
+      expect(c.hook.detail).toBe('not installed');
+
+      writeFileSync(hookSettings, '{ not json ]');
+      c = byId((await getSetup()).checks);
+      expect(c.hook.ok).toBe(false);
+      expect(c.hook.detail).toContain('malformed');
+    });
+
+    test('mcp check: present → ok, malformed → unknown', async () => {
+      writeFileSync(claudeJson, JSON.stringify({ mcpServers: { engram: { command: 'bun' } } }));
+      let c = byId((await getSetup()).checks);
+      expect(c.mcp.ok).toBe(true);
+      expect(c.mcp.detail).toContain('registered');
+
+      // Parseable but no engram entry → not registered (still make-setup).
+      writeFileSync(claudeJson, JSON.stringify({ mcpServers: { other: {} } }));
+      c = byId((await getSetup()).checks);
+      expect(c.mcp.ok).toBe(false);
+      expect(c.mcp.detail).toContain('not registered');
+
+      writeFileSync(claudeJson, '{ broken');
+      c = byId((await getSetup()).checks);
+      expect(c.mcp.ok).toBe(false);
+      expect(c.mcp.detail).toBe('unknown — run make setup');
+    });
+
+    test('service check flips ok:false when not installed', async () => {
+      const notInstalled: ServiceOps = {
+        ...services,
+        status: () => ({ supported: true, serviceInstalled: false, agents: [] }),
+      };
+      const f = buildUiFetch({ html: () => '<html>', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services: notInstalled });
+      const c = byId((await getSetup(f)).checks);
+      expect(c.service.ok).toBe(false);
+      expect(c.service.detail).toBe('not installed');
+      expect(c.service.fix).toBe('in-app');
+    });
+
+    const postSvc = (bodyObj: unknown, headers: Record<string, string> = {}) =>
+      fetch(
+        new Request('http://' + HOST + '/api/setup/service', {
+          method: 'POST',
+          headers: { host: HOST, 'content-type': 'application/json', ...headers },
+          body: typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj),
+        })
+      );
+
+    test('POST /api/setup/service install calls the seam and returns status', async () => {
+      const res = await postSvc({ action: 'install' });
+      expect(res.status).toBe(200);
+      const body: any = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.status.serviceInstalled).toBe(true); // echoes services.status()
+      expect(serviceCalls.install).toBe(1);
+      expect(serviceCalls.uninstall).toBe(0);
+    });
+
+    test('POST /api/setup/service uninstall calls the seam', async () => {
+      const res = await postSvc({ action: 'uninstall' });
+      expect(res.status).toBe(200);
+      expect(serviceCalls.uninstall).toBe(1);
+      expect(serviceCalls.install).toBe(0);
+    });
+
+    test('POST /api/setup/service unknown action → 400, no seam call', async () => {
+      const res = await postSvc({ action: 'frobnicate' });
+      expect(res.status).toBe(400);
+      expect(serviceCalls.install).toBe(0);
+      expect(serviceCalls.uninstall).toBe(0);
+    });
+
+    test('POST /api/setup/service rejects bad body / content-type (400)', async () => {
+      expect((await postSvc('not json')).status).toBe(400);
+      expect((await postSvc({ action: 'install' }, { 'content-type': 'text/plain' })).status).toBe(400);
+      expect(serviceCalls.install).toBe(0);
+    });
+
+    test('POST /api/setup/service with a foreign Origin is rejected (403), no seam call', async () => {
+      const res = await postSvc({ action: 'install' }, { origin: 'http://evil.example' });
+      expect(res.status).toBe(403);
+      expect(serviceCalls.install).toBe(0);
+    });
+
+    test('GET /api/setup with a foreign Origin is rejected (403)', async () => {
+      const res = await fetch(req('/api/setup', { origin: 'http://evil.example' }));
+      expect(res.status).toBe(403);
+    });
   });
 });

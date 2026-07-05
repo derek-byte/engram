@@ -4,6 +4,7 @@ import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { buildContext } from '../context/compose.ts';
 import { resolveFromCwd } from '../context/resolve.ts';
+import { LocalStore } from '../storage/local.ts';
 
 export interface ContextOptions {
   repo?: string;
@@ -53,6 +54,21 @@ export async function contextCommand(opts: ContextOptions): Promise<void> {
     }
 
     const result = await buildContext({ repo, branch, owner, budgetTokens }, { backend, store });
+
+    // Log every successful fire (including empty ones: empty-fires tell the
+    // Analytics card how often injection runs but finds nothing). Airtight
+    // try/catch: logging must never break silent-empty, the exit-0 guarantee,
+    // or add meaningful latency.
+    try {
+      const local = new LocalStore();
+      try {
+        local.logContextInjection(result.repo, result.pages.length, result.memories.length, result.estTokens);
+      } finally {
+        local.close();
+      }
+    } catch {
+      /* best effort — never affect the context output */
+    }
 
     if (opts.json) {
       console.log(

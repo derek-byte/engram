@@ -69,6 +69,41 @@ export interface DemandSummary {
   unmetQueries: number;
 }
 
+// Trend/history retention caps. Snapshots keep the last SNAPSHOTS_CAP rows per
+// kind (matches the analytics sparkline window); askeval_runs is unbounded-ish
+// but trimmed to the newest ASKEVAL_CAP on insert so the table never grows
+// without bound.
+export const SNAPSHOTS_CAP = 120;
+export const ASKEVAL_CAP = 50;
+
+// One trend snapshot: a timestamped JSON payload tagged by kind ('demand' |
+// 'lint'). Payload is parsed on read.
+export interface SnapshotRow {
+  id: number;
+  ts: string;
+  kind: string;
+  payload: Record<string, unknown>;
+}
+
+// One askeval run record. summary/reports are JSON blobs, parsed on read (null
+// while a run is still 'running' or if none was written).
+export interface AskevalRunRow {
+  id: number;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  summary: unknown;
+  reports: unknown;
+}
+
+// Context-injection activity over a window: total fires, last fire, and the
+// last-7-day count (for the Analytics card's "how often does injection fire").
+export interface ContextStats {
+  count: number;
+  lastTs: string | null;
+  last7d: number;
+}
+
 // SQL predicate defining "unmet" demand (plan (c)(1)): an ask that resolved to
 // not_covered/no_candidates, or a search that found nothing / nothing good.
 const UNMET_PREDICATE = `(
@@ -138,6 +173,29 @@ export class LocalStore {
       );
 
       CREATE INDEX IF NOT EXISTS demand_ts ON demand_log (ts);
+
+      CREATE TABLE IF NOT EXISTS snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        kind TEXT NOT NULL,        -- 'demand' | 'lint'
+        payload TEXT NOT NULL      -- JSON
+      );
+
+      CREATE INDEX IF NOT EXISTS snapshots_kind_ts ON snapshots (kind, ts);
+
+      CREATE TABLE IF NOT EXISTS askeval_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT NOT NULL, finished_at TEXT,
+        status TEXT NOT NULL,      -- 'running'|'done'|'error'
+        summary TEXT, reports TEXT -- JSON blobs
+      );
+
+      CREATE TABLE IF NOT EXISTS context_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL DEFAULT (datetime('now')),
+        repo TEXT NOT NULL,
+        pages INTEGER NOT NULL, memories INTEGER NOT NULL, est_tokens INTEGER NOT NULL
+      );
     `);
   }
 
@@ -352,6 +410,101 @@ export class LocalStore {
   getStat(key: string): string | null {
     const row = this.db.query<{ value: string }, [string]>('SELECT value FROM stats WHERE key = ?').get(key);
     return row?.value ?? null;
+  }
+
+  // --- Trend snapshots -------------------------------------------------------
+
+  // Append a trend snapshot, then trim to the SNAPSHOTS_CAP newest rows of the
+  // same kind (each kind keeps its own window, RECENTS_CAP-style).
+  addSnapshot(kind: string, payload: object): void {
+    this.db.query('INSERT INTO snapshots (kind, payload) VALUES (?, ?)').run(kind, JSON.stringify(payload));
+    this.db
+      .query(
+        `DELETE FROM snapshots WHERE kind = ? AND id NOT IN (
+           SELECT id FROM snapshots WHERE kind = ? ORDER BY ts DESC, id DESC LIMIT ?
+         )`
+      )
+      .run(kind, kind, SNAPSHOTS_CAP);
+  }
+
+  // Newest first, with payloads parsed back to objects.
+  getSnapshots(kind: string, limit = SNAPSHOTS_CAP): SnapshotRow[] {
+    return this.db
+      .query<{ id: number; ts: string; kind: string; payload: string }, [string, number]>(
+        'SELECT id, ts, kind, payload FROM snapshots WHERE kind = ? ORDER BY ts DESC, id DESC LIMIT ?'
+      )
+      .all(kind, limit)
+      .map((r) => ({ id: r.id, ts: r.ts, kind: r.kind, payload: JSON.parse(r.payload) as Record<string, unknown> }));
+  }
+
+  // --- Askeval runs ----------------------------------------------------------
+
+  // Open a 'running' run; returns its id. Trims to the ASKEVAL_CAP newest runs.
+  startAskevalRun(): number {
+    const res = this.db.query("INSERT INTO askeval_runs (started_at, status) VALUES (datetime('now'), 'running')").run();
+    this.db
+      .query(
+        `DELETE FROM askeval_runs WHERE id NOT IN (
+           SELECT id FROM askeval_runs ORDER BY started_at DESC, id DESC LIMIT ?
+         )`
+      )
+      .run(ASKEVAL_CAP);
+    return Number(res.lastInsertRowid);
+  }
+
+  // Close out a run. summary/reports are stored as JSON blobs (null if omitted).
+  finishAskevalRun(id: number, status: string, summary?: unknown, reports?: unknown): void {
+    this.db
+      .query("UPDATE askeval_runs SET finished_at = datetime('now'), status = ?, summary = ?, reports = ? WHERE id = ?")
+      .run(
+        status,
+        summary === undefined ? null : JSON.stringify(summary),
+        reports === undefined ? null : JSON.stringify(reports),
+        id
+      );
+  }
+
+  // Newest first, with summary/reports parsed back to objects (null when unset).
+  getAskevalRuns(limit = 20): AskevalRunRow[] {
+    return this.db
+      .query<
+        { id: number; started_at: string; finished_at: string | null; status: string; summary: string | null; reports: string | null },
+        [number]
+      >(
+        'SELECT id, started_at, finished_at, status, summary, reports FROM askeval_runs ORDER BY started_at DESC, id DESC LIMIT ?'
+      )
+      .all(limit)
+      .map((r) => ({
+        id: r.id,
+        startedAt: r.started_at,
+        finishedAt: r.finished_at,
+        status: r.status,
+        summary: r.summary === null ? null : JSON.parse(r.summary),
+        reports: r.reports === null ? null : JSON.parse(r.reports),
+      }));
+  }
+
+  // --- Context-injection log -------------------------------------------------
+
+  // Record one context-injection fire (including empty fires: repo,0,0,0).
+  logContextInjection(repo: string, pages: number, memories: number, estTokens: number): void {
+    this.db
+      .query('INSERT INTO context_log (repo, pages, memories, est_tokens) VALUES (?, ?, ?, ?)')
+      .run(repo, pages, memories, estTokens);
+  }
+
+  // Injection activity over the last `days`: total fires + last fire ts, plus a
+  // last-7-day count for the recent-activity readout.
+  contextStats(days = 30): ContextStats {
+    const row = this.db
+      .query<{ count: number; lastTs: string | null }, [string]>(
+        "SELECT COUNT(*) AS count, MAX(ts) AS lastTs FROM context_log WHERE ts >= datetime('now', ?)"
+      )
+      .get(`-${days} days`)!;
+    const last7d = this.db
+      .query<{ c: number }, []>("SELECT COUNT(*) AS c FROM context_log WHERE ts >= datetime('now', '-7 days')")
+      .get()!.c;
+    return { count: row.count, lastTs: row.lastTs, last7d };
   }
 
   close(): void {
