@@ -681,6 +681,22 @@ describe('buildUiFetch', () => {
     expect(typeof rows[0].top_similarity).toBe('number');
   });
 
+  test('/api/search failure logs outcome error — never reads as a genuine zero-hit', async () => {
+    const throwing = new FakeBackend();
+    throwing.search = async () => {
+      throw new Error('pg exploded');
+    };
+    const f = buildUiFetch({ html: () => '<html>', backend: throwing, embedder, local: t.store, wiki, dim: 4, port: PORT, services, jobs });
+    const res = await f(req('/api/search?q=broken-query&tier=raw'));
+    expect(res.status).toBe(500);
+    const rows = demandRows();
+    expect(rows.length).toBe(1);
+    expect(rows[0].kind).toBe('search');
+    expect(rows[0].query).toBe('broken-query');
+    expect(rows[0].outcome).toBe('error');
+    expect(rows[0].result_count).toBe(0);
+  });
+
   test('GET /api/demand returns {days, summary, unmet[]} and clamps days', async () => {
     await backend.upsert([chunk('w1', 'wiki', { trajectoryId: 'wiki:engram' })]);
     await fetch(req('/api/search?q=unmet-thing&tier=raw')); // zero hit → unmet

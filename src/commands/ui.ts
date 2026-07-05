@@ -31,7 +31,7 @@ import { WikiStore } from '../wiki/store.ts';
 import { isValidSlug } from '../wiki/links.ts';
 import { lintWiki } from '../wiki/lint.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { runSearch } from '../search/index.ts';
+import { runSearch, demandRowForSearch, demandRowForSearchError } from '../search/index.ts';
 import { runAsk, demandRowForAsk, OpenAIAskLLM, AskError } from '../ask/index.ts';
 import type { VectorBackend, WikiEvidenceStore } from '../storage/backend.ts';
 import type { Artifact, EngramConfig, SearchFilters } from '../types/index.ts';
@@ -630,20 +630,9 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
           }
           // Demand signal (roadmap #6): log EVERY settled query >=3 chars incl.
           // zero-hit — a zero-hit search is the strongest unmet-demand signal
-          // and was previously dropped. top_* come from the best hit when
-          // present; a zero-hit row leaves them null.
+          // and was previously dropped. Canonical row shared with CLI/MCP.
           try {
-            const top = results[0];
-            local.logDemand({
-              surface: 'ui',
-              kind: 'search',
-              query: q,
-              tier,
-              resultCount: results.length,
-              topSimilarity: top?.similarity ?? null,
-              topTier: top?.chunk.metadata.tier ?? null,
-              topSessionId: top?.chunk.metadata.sessionId ?? null,
-            });
+            local.logDemand(demandRowForSearch('ui', q, tier, null, results));
           } catch {
             /* demand log is cosmetic */
           }
@@ -672,10 +661,11 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
         );
       } catch (err) {
         console.error('search failed:', err instanceof Error ? err.message : err);
-        // A failed search is still a settled demand signal — nothing was found.
+        // A failed search is still a settled demand signal — but carries
+        // outcome: 'error' so it never reads as a genuine zero-hit.
         if (q.length >= 3) {
           try {
-            local.logDemand({ surface: 'ui', kind: 'search', query: q, tier, resultCount: 0 });
+            local.logDemand(demandRowForSearchError('ui', q, tier, null));
           } catch {
             /* demand log is cosmetic */
           }

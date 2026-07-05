@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { runSearch } from '../search/index.ts';
+import { runSearch, demandRowForSearch } from '../search/index.ts';
 import { runAsk, OpenAIAskLLM, AskError, demandRowForAsk, formatSourceLine } from '../ask/index.ts';
 import type { OpenAIReranker } from '../search/rerank.ts';
 import type { VectorBackend } from '../storage/backend.ts';
@@ -81,21 +81,10 @@ export function buildToolHandlers(deps: McpDeps): McpToolHandlers {
         embedder: deps.embedder,
         reranker: useRerank ? deps.reranker : undefined,
       });
-      // Demand signal (roadmap #6), mirroring the UI search row: surface 'mcp',
-      // top_* from the best hit. Swallow-all — telemetry must never break search.
+      // Demand signal (roadmap #6), canonical row shared with CLI/UI.
+      // Swallow-all — telemetry must never break search.
       try {
-        const top = results[0];
-        deps.logDemand?.({
-          surface: 'mcp',
-          kind: 'search',
-          query,
-          tier: filters.tier ?? null,
-          repo: repo ?? null,
-          resultCount: results.length,
-          topSimilarity: top?.similarity ?? null,
-          topTier: top?.chunk.metadata.tier ?? null,
-          topSessionId: top?.chunk.metadata.sessionId ?? null,
-        });
+        deps.logDemand?.(demandRowForSearch('mcp', query, filters.tier ?? null, repo ?? null, results));
       } catch {
         /* demand log is telemetry */
       }

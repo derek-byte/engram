@@ -1,7 +1,8 @@
-import { loadConfig, promptForMissing, configIsComplete } from '../config/index.ts';
+import { loadConfig, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
+import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { runSearch } from '../search/index.ts';
+import { runSearch, demandRowForSearch, demandRowForSearchError } from '../search/index.ts';
 import { buildReranker } from '../search/rerank.ts';
 import type { SearchFilters, SearchResult } from '../types/index.ts';
 
@@ -24,7 +25,7 @@ export function parseTier(value: string | undefined): SearchFilters['tier'] {
 }
 
 export async function searchCommand(query: string, opts: SearchOptions): Promise<void> {
-  let config = loadConfig();
+  const config = loadConfig();
   if (!configIsComplete(config)) {
     console.error("engram isn't configured yet. Run 'engram backfill' first.");
     process.exit(1);
@@ -41,19 +42,38 @@ export async function searchCommand(query: string, opts: SearchOptions): Promise
   const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
   const embedder = new Embedder(buildProvider(config));
+  const local = new LocalStore();
 
   const rerankOn = opts.rerank ?? config.rerank.enabled;
   const reranker = rerankOn ? buildReranker(config) : undefined;
 
+  const tier = filters.tier ?? null;
   try {
     const results = await runSearch(query, filters, { backend, embedder, reranker });
+    // Demand signal (roadmap #6): CLI was a blind surface — every settled query
+    // logs, incl. zero-hit (the strongest unmet-demand signal). Swallow-all;
+    // telemetry must never break search.
+    try {
+      if (results.length > 0) local.logRecent('search', query, query);
+      local.logDemand(demandRowForSearch('cli', query, tier, opts.repo ?? null, results));
+    } catch {
+      /* demand log is telemetry */
+    }
     if (opts.json) {
       console.log(JSON.stringify(results, null, 2));
     } else {
       printResults(results);
     }
+  } catch (err) {
+    try {
+      local.logDemand(demandRowForSearchError('cli', query, tier, opts.repo ?? null));
+    } catch {
+      /* demand log is telemetry */
+    }
+    throw err;
   } finally {
     await backend.close();
+    local.close();
   }
 }
 
