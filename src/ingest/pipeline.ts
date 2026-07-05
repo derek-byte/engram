@@ -90,6 +90,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
         branch: b.trajectory.branch,
         timestamp: b.trajectory.timestamp,
         filePaths: b.trajectory.filePaths,
+        artifacts: b.trajectory.artifacts,
         exitCode: b.trajectory.exitCode,
         sessionId: b.trajectory.sessionId,
         cwd: b.trajectory.cwd,

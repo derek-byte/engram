@@ -85,6 +85,39 @@ export interface ContextStore {
   ): Promise<Array<{ trajectoryId: string | null; rank: number; content: string }>>;
 }
 
+// A (session, repo) whose dream layer holds knowledge no wiki compile has
+// absorbed yet, and which the nightly loop has left un-healed for `ageHours`.
+// Surfaced by wiki lint's `pending-unit` rule. ageHours is the age of the
+// dream_units.synthesized_at stamp at check time.
+export interface PendingUnit {
+  sessionId: string;
+  repo: string;
+  ageHours: number;
+}
+
+// Evidence roll-up over a wiki page's dream sources: distinct sessions and the
+// timestamp span. Feeds the page-overlay evidence header ("N sessions · … →").
+export interface WikiPageEvidence {
+  sessionCount: number;
+  firstSeen: Date | null;
+  lastSeen: Date | null;
+}
+
+// Read-only trust/evidence queries over the pg store, used by wiki lint (the
+// backend-dependent rules) and the UI page overlay. Kept separate from the
+// vector/dream/wiki seams so those contracts stay minimal. PgVectorBackend
+// implements this alongside the others.
+export interface WikiEvidenceStore {
+  // Subset of the given ids that exist as chunks of the given tier — the
+  // broken-provenance check (sources must be real dream chunks).
+  existingChunkIds(ids: string[], tier: string): Promise<Set<string>>;
+  // (session, repo) units whose current dream knowledge differs from what the
+  // wiki ledger absorbed AND whose dream stamp is older than staleHours.
+  pendingWikiUnits(owner: string, staleHours?: number): Promise<PendingUnit[]>;
+  // Distinct sessions + first/last timestamp over the given source chunk ids.
+  wikiPageEvidence(sourceIds: string[]): Promise<WikiPageEvidence>;
+}
+
 // The wiki layer's storage seam. PgVectorBackend implements this alongside
 // DreamStore + VectorBackend.
 export interface WikiLedger {

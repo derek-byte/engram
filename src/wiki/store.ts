@@ -3,6 +3,7 @@ import { join, resolve, isAbsolute } from 'node:path';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { contentSha256 } from '../ingest/hash.ts';
+import type { Artifact } from '../types/index.ts';
 import { buildLinkGraph, isValidSlug, parseWikilinks, type LinkGraph } from './links.ts';
 
 export const PAGE_KINDS = ['project', 'decision', 'gotcha', 'tool', 'person', 'topic'] as const;
@@ -19,6 +20,7 @@ export interface WikiPage {
   aliases: string[];
   sources: string[]; // dream-chunk ids (provenance, monotonically merged)
   trajectories: string[]; // dream trajectory ids ('dream:<unit fp>')
+  artifacts?: Artifact[]; // DERIVED (like fingerprint): union over the source dream chunks' artifacts. Optional so pre-wave-10 literals stay valid; parsePage always populates it ([]).
   fingerprint: string; // sha256 of sorted sources
   created: string;
   updated: string;
@@ -26,6 +28,9 @@ export interface WikiPage {
 }
 
 // sha256 of a page's sorted source ids — the per-page compile fingerprint.
+// SACRED: artifacts must NEVER enter this input (they are derived from the same
+// sources, so folding them in would be redundant and would churn the fingerprint
+// whenever a source chunk's artifacts change without its id set changing).
 export function pageFingerprint(sources: string[]): string {
   return contentSha256([...sources].sort().join('\n'));
 }
@@ -38,6 +43,7 @@ const FRONTMATTER_KEYS = [
   'aliases',
   'sources',
   'trajectories',
+  'artifacts',
   'fingerprint',
   'created',
   'updated',
@@ -66,6 +72,7 @@ summary: one line used by index.md and the LLM inventory
 aliases: [fingerprint-skip]
 sources: [<dream chunk id>, ...]        # provenance, only ever grows via ingest
 trajectories: [dream:<unit fp>, ...]    # raw drill-down overlay
+artifacts: [{"kind":"file","ref":"src/x.rs","tool":"Write"}, ...]  # DERIVED union over source chunks
 fingerprint: <sha256 of sorted sources>
 created: <ISO>
 updated: <ISO>
@@ -76,6 +83,7 @@ updated: <ISO>
 - Every page links the entities it mentions as \`[[slug]]\` or \`[[slug|label]]\`. Value is in the edges.
 - Reuse existing slugs — never mint a near-duplicate. Lint surfaces orphans, dangling links, and spelling drift.
 - Provenance (\`sources\`, \`trajectories\`) is append-only. The pg index (\`tier='wiki'\`) is derived and rebuildable via \`engram wiki reindex\`.
+- \`artifacts\` is DERIVED, not append-only: recomputed each ingest as the union of the artifacts on the page's CURRENT \`sources\` dream chunks (JSON objects, most-recent-first, capped at 30). A source dropping an artifact drops it here next ingest. The page BODY never carries an artifacts section.
 `;
 
 // Filesystem-backed wiki store. Files are the source of truth; pg is derived.
@@ -218,6 +226,7 @@ export function parsePage(slug: string, raw: string): WikiPage {
     aliases: strArray(fm.aliases),
     sources: strArray(fm.sources),
     trajectories: strArray(fm.trajectories),
+    artifacts: artifactArray(fm.artifacts),
     fingerprint: str(fm.fingerprint),
     created: str(fm.created),
     updated: str(fm.updated),
@@ -242,6 +251,9 @@ export function serializePage(page: WikiPage): string {
       case 'trajectories':
         lines.push(`trajectories: ${yamlList([...page.trajectories].sort())}`);
         break;
+      case 'artifacts':
+        lines.push(`artifacts: ${yamlArtifacts(page.artifacts ?? [])}`);
+        break;
       default:
         lines.push(`${key}: ${yamlScalar(String(page[key] ?? ''))}`);
     }
@@ -257,6 +269,27 @@ function yamlScalar(s: string): string {
 function yamlList(items: string[]): string {
   if (items.length === 0) return '[]';
   return `[${items.map(yamlScalar).join(', ')}]`;
+}
+
+// Artifacts serialize as a JSON array of {kind, ref, tool} objects. JSON is valid
+// YAML flow, so this round-trips cleanly through Bun.YAML.parse and re-serializes
+// byte-identically (fixed key order, JSON string escaping). Empty ⇒ [].
+function yamlArtifacts(items: Artifact[]): string {
+  if (items.length === 0) return '[]';
+  return JSON.stringify(items.map((a) => ({ kind: a.kind, ref: a.ref, tool: a.tool })));
+}
+
+function artifactArray(v: unknown): Artifact[] {
+  if (!Array.isArray(v)) return [];
+  const out: Artifact[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    if ((o.kind === 'file' || o.kind === 'pr' || o.kind === 'url') && typeof o.ref === 'string' && typeof o.tool === 'string') {
+      out.push({ kind: o.kind, ref: o.ref, tool: o.tool });
+    }
+  }
+  return out;
 }
 
 function str(v: unknown): string {

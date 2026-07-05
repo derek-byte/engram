@@ -1,4 +1,4 @@
-import type { Chunk, EngramConfig } from '../types/index.ts';
+import type { Artifact, Chunk, EngramConfig } from '../types/index.ts';
 import type { DreamStore, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
 import type { WikiIngestLLM, WikiPageOp } from './llm.ts';
@@ -15,6 +15,7 @@ const SHRINK_FLOOR = 0.4; // reject an update whose body drops below 40% of old�
 const SHRINK_MIN_OLD = 500; // …when the old body was more than 500 chars.
 const CANDIDATES_PER_ITEM = 5;
 const MAX_CANDIDATE_PAGES = 8;
+const ARTIFACTS_CAP = 30; // most-recent-first cap on a page's derived artifacts frontmatter.
 
 export interface WikiIngestParams {
   sourceOwner: string; // owner whose dream chunks are compiled
@@ -176,6 +177,46 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
       const pagesForUnit: string[] = [];
       const itemIds = new Set(items.map((it) => it.id));
 
+      // Artifact derivation index: chunk id → {artifacts, timestamp}. Seeded with
+      // THIS unit's dream chunks (already in scope, carry artifacts + timestamp);
+      // a page's prior sources come from other units' trajectories, fetched lazily
+      // via getTrajectory (cached across this unit's writeOps).
+      const artifactIndex = new Map<string, { artifacts: Artifact[]; ts: number }>();
+      for (const c of dreamChunks) {
+        artifactIndex.set(c.id, { artifacts: c.metadata.artifacts ?? [], ts: c.metadata.timestamp?.getTime() ?? 0 });
+      }
+      const fetchedTrajectories = new Set<string>();
+
+      // DERIVED (not append-only): the union of artifacts on the page's CURRENT
+      // sources, newest-first by source-chunk timestamp, de-duplicated, capped.
+      const derivePageArtifacts = async (sources: string[], trajectories: string[]): Promise<Artifact[]> => {
+        for (const t of trajectories) {
+          if (fetchedTrajectories.has(t) || t === trajectoryId) continue; // current unit already seeded
+          fetchedTrajectories.add(t);
+          for (const c of await backend.getTrajectory(t)) {
+            if (!artifactIndex.has(c.id)) {
+              artifactIndex.set(c.id, { artifacts: c.metadata.artifacts ?? [], ts: c.metadata.timestamp?.getTime() ?? 0 });
+            }
+          }
+        }
+        const ordered = sources
+          .map((id) => artifactIndex.get(id))
+          .filter((rec): rec is { artifacts: Artifact[]; ts: number } => rec !== undefined)
+          .sort((a, b) => b.ts - a.ts); // stable sort keeps source order on ts ties
+        const seen = new Set<string>();
+        const out: Artifact[] = [];
+        for (const rec of ordered) {
+          for (const a of rec.artifacts) {
+            const key = `${a.kind}\n${a.tool}\n${a.ref}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(a);
+            if (out.length >= ARTIFACTS_CAP) return out;
+          }
+        }
+        return out;
+      };
+
       // Deterministic auto-linking (runs BEFORE the shrink guard — it only adds
       // characters, so the guard becomes marginally more permissive, never
       // stricter). Targets = current inventory OVERLAID with this batch's ops, so
@@ -206,6 +247,7 @@ export async function ingestWiki(params: WikiIngestParams, deps: WikiIngestDeps)
           aliases: mergeUnique(existingPage?.aliases ?? [], op.aliases),
           sources,
           trajectories,
+          artifacts: await derivePageArtifacts(sources, trajectories),
           fingerprint: pageFingerprint(sources),
           created: existingPage?.created || now,
           updated: now,

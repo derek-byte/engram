@@ -392,6 +392,36 @@
   }
   .ask-src:hover { color: var(--fg); }
   .ask-src .ask-src-n { color: var(--accent); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  /* A source row with artifacts wraps so its chips sit on their own line below. */
+  .ask-src.has-arts { flex-wrap: wrap; white-space: normal; overflow: visible; }
+
+  /* ── artifact chips ── */
+  /* A durable output a trajectory produced (file / URL / PR). url/pr → a real
+     external link; file → a copy-to-clipboard chip (NEVER a file:// href). */
+  .artifact-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 16px; }
+  .artifact-chip {
+    display: inline-flex; align-items: center; max-width: 100%;
+    appearance: none;
+    font: 11px/1.3 var(--mono);
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 9px;
+    text-decoration: none;
+    cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: background-color 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+  }
+  .artifact-chip:hover { background: var(--surface-hi); color: var(--fg); border-color: var(--border-hi); }
+  a.artifact-chip.artifact-link { color: var(--accent); }
+  a.artifact-chip.artifact-link:hover { color: var(--accent); text-decoration: underline; }
+  .artifact-chip.artifact-missing { text-decoration: line-through; color: var(--dim); }
+  .artifact-chip.artifact-copied { color: var(--accent); border-color: var(--accent); }
+  .artifact-more { color: var(--dim); font-size: 10.5px; align-self: center; }
+  /* Mini variant inside the ask cited-sources footer. */
+  .artifact-strip.mini { gap: 4px; margin: 4px 0 0; width: 100%; }
+  .artifact-strip.mini .artifact-chip { font-size: 10px; padding: 1px 6px; }
 
   /* ── sliding selection pill ── */
   /* ONE absolutely-positioned pill per discrete selection control (sidebar nav,
@@ -440,6 +470,38 @@
     text-transform: capitalize;
   }
   .empty-msg { color: var(--muted); font-size: 13px; padding: 8px 12px; }
+
+  /* ── wiki lint chip + findings list (health surface in the Wiki header) ── */
+  .lint-hidden { display: none; }
+  .lint-chip {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1px 9px;
+    margin-left: 12px;
+    vertical-align: middle;
+    cursor: pointer;
+  }
+  .lint-chip:hover { color: var(--fg); }
+  .lint-list {
+    max-width: 760px;
+    margin: 12px 0 0;
+    max-height: 220px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+  }
+  .lint-row {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+  .lint-row.lint-clickable { cursor: pointer; }
+  .lint-row.lint-clickable:hover { color: var(--fg); }
+  .lint-rule { color: var(--accent); margin-right: 8px; }
 
   /* ── settings nav view (content filled elsewhere) ── */
   #settings-header { flex: none; padding: 28px 32px 12px; }
@@ -577,21 +639,35 @@
   .svc-dot.on { background: var(--accent); }
 
   /* ── overlay ── */
+  /* Fixed header + separate scroll region: content scrolls INSIDE #overlay-body,
+     never behind the back/meta header (or the Tauri traffic-light strip). */
   #overlay {
     position: fixed; inset: 0; background: var(--bg); display: none;
-    overflow-y: auto; overscroll-behavior: contain; padding: 32px 24px 32px;
-    z-index: 10;
+    flex-direction: column; z-index: 10;
   }
-  #overlay.open { display: block; }
+  #overlay.open { display: flex; }
+  #overlay-head {
+    flex: none; display: flex; align-items: center; gap: 14px;
+    padding: 14px 24px 12px; background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .tauri #overlay-head { padding-top: 44px; } /* clear the macOS traffic lights */
+  #overlay-body {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    padding: 20px 24px 32px;
+  }
   #overlay-inner { max-width: 680px; margin: 0 auto; }
   #back {
     background: var(--surface); color: var(--muted); border: 1px solid var(--border);
-    border-radius: 8px; padding: 7px 13px; font: 12px/1 var(--mono); cursor: pointer; margin-bottom: 20px;
+    border-radius: 8px; padding: 7px 13px; font: 12px/1 var(--mono); cursor: pointer;
     box-shadow: var(--shadow);
     transition: background-color 0.1s ease, color 0.1s ease;
   }
   #back:hover { background: var(--surface-hi); color: var(--fg); }
-  #overlay-meta { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+  #overlay-meta {
+    color: var(--muted); font-size: 12px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .turn {
     border-left: 2px solid transparent;
     padding: 12px 16px; margin: 6px 0; white-space: pre-wrap; word-break: break-word;
@@ -636,6 +712,7 @@
   }
   .page-prov .prov-link { color: var(--accent); cursor: pointer; }
   .page-prov .prov-link:hover { text-decoration: underline; }
+  .page-evidence { margin-top: 4px; color: var(--muted); font-size: 11.5px; }
   .page-body { font-size: 14px; line-height: 1.7; color: var(--fg); }
   .page-body h1, .page-body h2, .page-body h3,
   .page-body h4, .page-body h5, .page-body h6 {
@@ -720,7 +797,10 @@
   </div>
 
   <div id="wiki-view" class="view">
-    <div id="wiki-header"><h1>Wiki</h1></div>
+    <div id="wiki-header">
+      <h1>Wiki<span id="wiki-lint-chip" class="lint-chip lint-hidden"></span></h1>
+      <div id="wiki-lint-list" class="lint-list lint-hidden"></div>
+    </div>
     <div id="wiki-list"></div>
   </div>
 
@@ -731,11 +811,15 @@
 </div>
 
 <div id="overlay">
-  <div id="overlay-inner">
+  <div id="overlay-head">
     <button id="back">← back</button>
     <div id="overlay-meta"></div>
-    <div id="turns"></div>
-    <div id="page"></div>
+  </div>
+  <div id="overlay-body">
+    <div id="overlay-inner">
+      <div id="turns"></div>
+      <div id="page"></div>
+    </div>
   </div>
 </div>
 <script>
@@ -757,6 +841,7 @@
   const answerEl = document.getElementById('answer');
   const resultsPaneEl = document.getElementById('results-pane');
   const overlayEl = document.getElementById('overlay');
+  const overlayBodyEl = document.getElementById('overlay-body'); // the overlay's scroll container
   const overlayMetaEl = document.getElementById('overlay-meta');
   const turnsEl = document.getElementById('turns');
   const pageEl = document.getElementById('page');
@@ -970,6 +1055,13 @@
     if (!ts) return '';
     const d = new Date(ts);
     return isNaN(d) ? '' : d.toLocaleString();
+  }
+
+  // Date-only (no clock) for evidence spans like "Jan 3 → Feb 1".
+  function fmtDay(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return isNaN(d) ? '' : d.toLocaleDateString();
   }
 
   // Compact relative age like "9d", "3h", "5m".
@@ -1276,6 +1368,7 @@
   // network error renders an empty message rather than crashing.
   async function loadWiki() {
     clear(wikiListEl);
+    loadLint(); // lazy, fire-and-forget: the list renders regardless of lint
     let pages = null;
     try {
       const res = await fetch('/api/wiki');
@@ -1319,6 +1412,46 @@
     p.className = 'empty-msg';
     p.textContent = msg;
     wikiListEl.appendChild(p);
+  }
+
+  // Wiki health: fetch lint on demand and surface a warnings chip that toggles
+  // a findings list. Feature-detected — a 404/error (older build, no backend)
+  // leaves the chip hidden, never crashing the wiki view.
+  async function loadLint() {
+    const chip = document.getElementById('wiki-lint-chip');
+    const listEl = document.getElementById('wiki-lint-list');
+    chip.classList.add('lint-hidden');
+    listEl.classList.add('lint-hidden');
+    clear(listEl);
+    let data = null;
+    try {
+      const res = await fetch('/api/lint');
+      if (!res.ok) return;
+      data = await res.json();
+    } catch { return; }
+    const warns = data && data.counts ? (data.counts.warns || 0) : 0;
+    if (!warns) return;
+    chip.textContent = warns + ' warning' + (warns === 1 ? '' : 's');
+    chip.classList.remove('lint-hidden');
+    const findings = (data && Array.isArray(data.findings) ? data.findings : []).filter((f) => f.level === 'warn');
+    for (const f of findings) {
+      const row = document.createElement('div');
+      row.className = 'lint-row';
+      const rule = document.createElement('span');
+      rule.className = 'lint-rule';
+      rule.textContent = f.rule || '';
+      row.appendChild(rule);
+      const meta = document.createElement('span');
+      meta.textContent = (f.page ? f.page + ' · ' : '') + (f.detail || '');
+      row.appendChild(meta);
+      if (f.page) {
+        const slug = f.page;
+        row.classList.add('lint-clickable');
+        row.addEventListener('click', () => openWikiPage({ slug, trajectoryId: 'wiki:' + slug, tier: 'wiki' }));
+      }
+      listEl.appendChild(row);
+    }
+    chip.onclick = () => listEl.classList.toggle('lint-hidden');
   }
 
   async function search(q) {
@@ -1448,6 +1581,95 @@
     card.appendChild(el);
   }
 
+  // ── artifact chips (DOM-only, never innerHTML, never a file:// href) ──
+  // A durable output a trajectory produced. url/pr with an http(s) ref render as
+  // a real external anchor; file (and any non-http ref) renders as a chip that
+  // copies the path to the clipboard.
+  function artifactChipLabel(a) {
+    if (a.kind === 'pr') {
+      const m = /\/pull\/(\d+)/.exec(a.ref || '');
+      return m ? 'PR #' + m[1] : 'PR';
+    }
+    if (a.kind === 'url') {
+      try {
+        const u = new URL(a.ref);
+        let p = u.pathname || '';
+        if (p.length > 24) p = p.slice(0, 23) + '…';
+        return u.hostname + (p === '/' ? '' : p);
+      } catch { return a.ref; }
+    }
+    const parts = String(a.ref || '').split('/').filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : String(a.ref || '?');
+  }
+
+  function copyArtifact(chip, text, label) {
+    const restore = () => { chip.textContent = label; chip.classList.remove('artifact-copied'); };
+    const ok = () => { chip.textContent = 'copied'; chip.classList.add('artifact-copied'); setTimeout(restore, 1100); };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(ok, restore);
+    } catch { /* clipboard unavailable — chip stays inert */ }
+  }
+
+  function makeArtifactChip(a) {
+    const label = artifactChipLabel(a);
+    const isHttp = /^https?:/i.test(a.ref || '');
+    if ((a.kind === 'url' || a.kind === 'pr') && isHttp) {
+      const link = document.createElement('a');
+      link.className = 'artifact-chip artifact-link';
+      link.textContent = label;
+      link.href = a.ref;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.title = a.ref;
+      // A chip inside a clickable source/turn row must not trigger that row.
+      link.addEventListener('click', (e) => e.stopPropagation());
+      return link;
+    }
+    // file (or a non-http url/pr) → copy-to-clipboard, NEVER href="file://…".
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'artifact-chip artifact-copy';
+    chip.textContent = label;
+    chip.title = a.ref;
+    // exists is only sent by /api/wiki; search/ask/trajectory omit it → unknown,
+    // which is NOT rendered as missing (unknown ≠ deleted).
+    if (a.kind === 'file' && a.exists === false) {
+      chip.classList.add('artifact-missing');
+      chip.title = a.ref + ' · moved or deleted';
+    }
+    chip.addEventListener('click', (e) => { e.stopPropagation(); copyArtifact(chip, a.ref, label); });
+    return chip;
+  }
+
+  function dedupeArtifacts(artifacts) {
+    const seen = new Set();
+    const out = [];
+    for (const a of (artifacts || [])) {
+      if (!a || typeof a.ref !== 'string' || seen.has(a.ref)) continue;
+      seen.add(a.ref);
+      out.push(a);
+    }
+    return out;
+  }
+
+  // Build an artifact strip (dedup by ref, cap the rendered count, append a muted
+  // "+N more" when capped). Returns the strip element, or null when there's none.
+  function buildArtifactStrip(artifacts, cap, mini) {
+    const list = dedupeArtifacts(artifacts);
+    if (!list.length) return null;
+    const strip = document.createElement('div');
+    strip.className = mini ? 'artifact-strip mini' : 'artifact-strip';
+    const shown = cap && list.length > cap ? list.slice(0, cap) : list;
+    for (const a of shown) strip.appendChild(makeArtifactChip(a));
+    if (cap && list.length > cap) {
+      const more = document.createElement('span');
+      more.className = 'artifact-more';
+      more.textContent = '+' + (list.length - cap) + ' more';
+      strip.appendChild(more);
+    }
+    return strip;
+  }
+
   // Citation click-through: wiki → the compiled page; dream/raw → the trajectory
   // overlay with the source chunk highlighted (matchId = chunkId).
   function openAskSource(s) {
@@ -1505,6 +1727,11 @@
       rest.textContent = askSrcBadge(s) + ' · ' + (s.ref || '?') + ' · ' + String(s.date || '').slice(0, 10);
       row.appendChild(rest);
       row.addEventListener('click', () => openAskSource(s));
+      // Source-level artifacts (no exists flag → never struck-through) as a small
+      // strip that wraps under the line; chip clicks don't trigger the row.
+      const strip = buildArtifactStrip(s.artifacts, 8, true);
+      if (strip) row.classList.add('has-arts');
+      if (strip) row.appendChild(strip);
       foot.appendChild(row);
     }
     card.appendChild(foot);
@@ -1765,7 +1992,7 @@
     clear(pageEl);
     showPageView();
     overlayEl.classList.add('open');
-    overlayEl.scrollTop = 0;
+    overlayBodyEl.scrollTop = 0;
     let page = null;
     try {
       const res = await fetch('/api/wiki/' + encodeURIComponent(slug));
@@ -1801,7 +2028,24 @@
       openTrajectory({ trajectoryId: page.trajectoryId, tier: 'wiki', slug: page.slug, timestamp: page.updated })
     );
     prov.appendChild(link);
+    // Evidence header: distinct sessions + source count + first→last span, so the
+    // page's grounding is legible at a glance. A muted second line under the prov.
+    const ev = document.createElement('div');
+    ev.className = 'page-evidence';
+    const sc = page.sessionCount || 0;
+    let evText = sc + ' session' + (sc === 1 ? '' : 's') + ' · ' + n + ' source item' + (n === 1 ? '' : 's');
+    const fd = fmtDay(page.firstSeen);
+    const ld = fmtDay(page.lastSeen);
+    if (fd && ld) evText += ' · ' + fd + ' → ' + ld;
+    ev.textContent = evText;
+    prov.appendChild(ev);
     pageEl.appendChild(prov);
+
+    // Artifact strip: this page's durable outputs, under the meta region and at
+    // the top of the scrolling body (not the fixed header, so many chips don't
+    // eat the viewport). /api/wiki carries `exists`, so missing files strike out.
+    const strip = buildArtifactStrip(page.artifacts, 12, false);
+    if (strip) pageEl.appendChild(strip);
 
     const bodyEl = document.createElement('div');
     bodyEl.className = 'page-body';
@@ -1820,7 +2064,7 @@
     overlayMetaEl.textContent = 'loading…';
     clear(turnsEl);
     overlayEl.classList.add('open');
-    overlayEl.scrollTop = 0;
+    overlayBodyEl.scrollTop = 0;
     try {
       const res = await fetch('/api/trajectory/' + encodeURIComponent(r.trajectoryId));
       const chunks = await res.json();
@@ -1839,6 +2083,13 @@
             : (repo || '(no-repo)') + '@' + (branch || 'no-branch') + ' · ' + fmtTime(ts)) +
         ' · ' + chunks.length + ' chunk' + (chunks.length === 1 ? '' : 's');
       renderTurns(chunks, r.id);
+      // Union of the trajectory's chunks' artifacts (dedup by ref, cap 12) at the
+      // top of the scrolling body, near the meta. No exists flag from this route,
+      // so file chips render plainly (unknown ≠ missing).
+      const union = [];
+      for (const c of chunks) if (Array.isArray(c.artifacts)) union.push(...c.artifacts);
+      const strip = buildArtifactStrip(union, 12, false);
+      if (strip) turnsEl.insertBefore(strip, turnsEl.firstChild);
     } catch {
       overlayMetaEl.textContent = 'error loading trajectory';
     }
@@ -2106,6 +2357,21 @@
     });
     synHour.control.appendChild(hourSel);
     synCard.appendChild(synHour.row);
+    const synTargeted = makeRow('Targeted sessions / night', 'Max demand-targeted re-dreams per run (0–20, 0 disables).');
+    const targetedInput = document.createElement('input');
+    targetedInput.type = 'number';
+    targetedInput.className = 'set-input num';
+    targetedInput.min = '0'; targetedInput.max = '20'; targetedInput.step = '1';
+    targetedInput.value = syn.targetedSessionsPerNight != null ? String(syn.targetedSessionsPerNight) : '';
+    targetedInput.addEventListener('change', () => {
+      let v = parseInt(targetedInput.value, 10);
+      if (isNaN(v)) { renderConfigCards(); return; }
+      v = Math.max(0, Math.min(20, v));
+      if (v === syn.targetedSessionsPerNight) { renderConfigCards(); return; }
+      putConfig({ synthesis: { targetedSessionsPerNight: v } });
+    });
+    synTargeted.control.appendChild(targetedInput);
+    synCard.appendChild(synTargeted.row);
     settingsCfgEl.appendChild(synCard);
 
     // Embedding

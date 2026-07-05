@@ -13,6 +13,10 @@ export const SYNTHESIS_HOUR_MIN = 0;
 export const SYNTHESIS_HOUR_MAX = 23;
 export const SYNTHESIS_HOUR_DEFAULT = 3;
 
+export const TARGETED_SESSIONS_MIN = 0;
+export const TARGETED_SESSIONS_MAX = 20;
+export const TARGETED_SESSIONS_DEFAULT = 5;
+
 export const ENGRAM_DIR = join(homedir(), '.engram');
 export const CONFIG_PATH = join(ENGRAM_DIR, 'config.json');
 
@@ -43,7 +47,7 @@ const DEFAULT_CONFIG: EngramConfig = {
   wikiDir: join(ENGRAM_DIR, 'wiki'),
   wikiModel: 'gpt-4o-mini',
   wikiMaxInputChars: 60_000,
-  synthesis: { enabled: false, hour: SYNTHESIS_HOUR_DEFAULT },
+  synthesis: { enabled: false, hour: SYNTHESIS_HOUR_DEFAULT, targetedSessionsPerNight: TARGETED_SESSIONS_DEFAULT },
   contextInjection: { enabled: true, budget: CONTEXT_BUDGET_DEFAULT },
 };
 
@@ -75,6 +79,10 @@ export function mergeConfig(
   // synthesis is a nested block too (older config.json files lack it); clamp hour to 0–23.
   merged.synthesis = { ...DEFAULT_CONFIG.synthesis, ...(raw.synthesis ?? {}) };
   merged.synthesis.hour = clampHour(merged.synthesis.hour, DEFAULT_CONFIG.synthesis.hour);
+  merged.synthesis.targetedSessionsPerNight = clampTargetedSessions(
+    merged.synthesis.targetedSessionsPerNight,
+    DEFAULT_CONFIG.synthesis.targetedSessionsPerNight
+  );
   merged.synthesis.enabled = Boolean(merged.synthesis.enabled);
 
   // contextInjection is a nested block (older config.json files lack it); clamp budget.
@@ -181,6 +189,8 @@ export function patchConfigFile(patch: Record<string, unknown>): Record<string, 
         const cur = (raw.synthesis ?? {}) as Record<string, unknown>;
         if ('enabled' in v) cur.enabled = Boolean(v.enabled);
         if ('hour' in v) cur.hour = clampHour(v.hour, SYNTHESIS_HOUR_DEFAULT);
+        if ('targetedSessionsPerNight' in v)
+          cur.targetedSessionsPerNight = clampTargetedSessions(v.targetedSessionsPerNight, TARGETED_SESSIONS_DEFAULT);
         raw.synthesis = cur;
         break;
       }
@@ -217,6 +227,17 @@ export function clampContextBudget(value: unknown, fallback: number): number {
 export function clampHour(value: unknown, fallback: number): number {
   const n = Math.trunc(Number(value));
   return Number.isFinite(n) && n >= SYNTHESIS_HOUR_MIN && n <= SYNTHESIS_HOUR_MAX ? n : fallback;
+}
+
+// Shared by loadConfig and patchConfigFile — the per-night targeted-synthesis cap.
+// Non-numeric/null falls back to the default (mirrors clampHour — Number(null)
+// is 0, which would silently disable targeting); an in-range number is clamped
+// to 0–20 (0 explicitly disables the targeted pass) rather than rejected.
+export function clampTargetedSessions(value: unknown, fallback: number): number {
+  if (value === null || value === undefined || typeof value === 'boolean') return fallback;
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(TARGETED_SESSIONS_MAX, Math.max(TARGETED_SESSIONS_MIN, n));
 }
 
 function parseProvider(value: string): EmbeddingProviderKind {

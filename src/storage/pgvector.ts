@@ -1,6 +1,7 @@
 import postgres from 'postgres';
-import type { Chunk, RawEvent, ScoringConfig, SearchFilters, SearchResult } from '../types/index.ts';
-import type { ContextStore, DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from './backend.ts';
+import type { Artifact, Chunk, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
+import type { ContextStore, DreamStore, DreamUnitRow, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
+import { pendingUnitsFrom } from '../wiki/lint.ts';
 
 // Map a SearchFilters tier to the concrete tier list, or null for "no tier
 // filter" ('all'/'both'/undefined). 'synth' = wiki+dream.
@@ -31,7 +32,7 @@ const DEFAULT_SCORING: ScoringConfig = {
 const CANDIDATE_POOL = 100;
 const KEYWORD_POOL = 50;
 
-export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, ContextStore {
+export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, WikiEvidenceStore, ContextStore {
   private sql: ReturnType<typeof postgres>;
   private embeddingDim: number;
   private embeddingModel: string;
@@ -98,6 +99,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
         trajectory_id TEXT,
         chunk_index INTEGER,
         chunk_count INTEGER,
+        artifacts JSONB,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
@@ -120,6 +122,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS trajectory_id TEXT;`);
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_index INTEGER;`);
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS chunk_count INTEGER;`);
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS artifacts JSONB;`);
 
     await this.sql.unsafe(`
       ALTER TABLE chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector
@@ -219,6 +222,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
         trajectory_id: c.metadata.trajectoryId ?? null,
         chunk_index: c.metadata.chunkIndex ?? null,
         chunk_count: c.metadata.chunkCount ?? null,
+        artifacts: c.metadata.artifacts && c.metadata.artifacts.length > 0 ? c.metadata.artifacts : null,
       };
     });
 
@@ -229,13 +233,14 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
           owner, chunker_version, embedding_model,
           repo, branch, timestamp, file_paths, exit_code,
           session_id, cwd, tier, dream_type, source_chunk_ids,
-          trajectory_id, chunk_index, chunk_count
+          trajectory_id, chunk_index, chunk_count, artifacts
         ) VALUES (
           ${r.id}, ${r.embedding}::vector, ${r.content}, ${r.model_id}, ${r.embedding_dim},
           ${r.owner}, ${r.chunker_version}, ${r.embedding_model},
           ${r.repo}, ${r.branch}, ${r.timestamp}, ${r.file_paths as string[]}, ${r.exit_code},
           ${r.session_id}, ${r.cwd}, ${r.tier}, ${r.dream_type}, ${r.source_chunk_ids as string[] | null},
-          ${r.trajectory_id}, ${r.chunk_index}, ${r.chunk_count}
+          ${r.trajectory_id}, ${r.chunk_index}, ${r.chunk_count},
+          ${r.artifacts === null ? null : this.sql.json(r.artifacts as unknown as postgres.JSONValue)}
         )
         ON CONFLICT (id) DO NOTHING
       `;
@@ -293,6 +298,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
       trajectory_id: string | null;
       chunk_index: number | null;
       chunk_count: number | null;
+      artifacts: Artifact[] | null;
       similarity: number;
       keyword_rank: number;
       combined: number;
@@ -345,7 +351,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
         SELECT
           c.id, c.content, c.repo, c.branch, c.timestamp, c.file_paths,
           c.exit_code, c.session_id, c.cwd, c.tier, c.dream_type, c.source_chunk_ids,
-          c.trajectory_id, c.chunk_index, c.chunk_count,
+          c.trajectory_id, c.chunk_index, c.chunk_count, c.artifacts,
           (1 - (c.embedding <=> ${vec}::vector)) AS similarity,
           ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
         FROM chunks c
@@ -354,7 +360,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
       SELECT
         id, content, repo, branch, timestamp, file_paths,
         exit_code, session_id, cwd, tier, dream_type, source_chunk_ids,
-        trajectory_id, chunk_index, chunk_count,
+        trajectory_id, chunk_index, chunk_count, artifacts,
         similarity, keyword_rank,
         (${vectorWeight}::float * similarity + ${keywordWeight}::float * keyword_rank)
           * CASE
@@ -404,6 +410,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
           trajectoryId: r.trajectory_id ?? undefined,
           chunkIndex: r.chunk_index ?? undefined,
           chunkCount: r.chunk_count ?? undefined,
+          artifacts: r.artifacts ?? undefined,
         },
       },
     }));
@@ -427,12 +434,13 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
         trajectory_id: string | null;
         chunk_index: number | null;
         chunk_count: number | null;
+        artifacts: Artifact[] | null;
       }>
     >`
       SELECT
         id, content, repo, branch, timestamp, file_paths,
         exit_code, session_id, cwd, tier, dream_type, source_chunk_ids,
-        trajectory_id, chunk_index, chunk_count
+        trajectory_id, chunk_index, chunk_count, artifacts
       FROM chunks
       WHERE trajectory_id = ${trajectoryId}
       ORDER BY chunk_index ASC NULLS LAST
@@ -456,6 +464,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
         trajectoryId: r.trajectory_id ?? undefined,
         chunkIndex: r.chunk_index ?? undefined,
         chunkCount: r.chunk_count ?? undefined,
+        artifacts: r.artifacts ?? undefined,
       },
     }));
   }
@@ -463,6 +472,29 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
   async count(): Promise<number> {
     const [row] = await this.sql<Array<{ count: string }>>`SELECT COUNT(*)::text AS count FROM chunks`;
     return Number(row.count);
+  }
+
+  // --- Artifacts backfill sweep ---------------------------------------------
+  // content_sha256 == trajectoryId (pipeline stamps it), and the payload is the
+  // full Trajectory. Used by `engram backfill --artifacts` to re-derive artifacts
+  // for chunks already ingested (upsert is ON CONFLICT DO NOTHING, so a re-run
+  // would no-op them).
+
+  async rawTrajectoriesForArtifacts(source: string): Promise<Array<{ trajectoryId: string; payload: Trajectory }>> {
+    const rows = await this.sql<Array<{ content_sha256: string; payload: Trajectory }>>`
+      SELECT content_sha256, payload FROM raw_events WHERE source = ${source}
+    `;
+    return rows.map((r) => ({ trajectoryId: r.content_sha256, payload: r.payload }));
+  }
+
+  // Attach artifacts to a trajectory's raw chunks. Never touches embeddings/content.
+  async setChunkArtifacts(trajectoryId: string, artifacts: Artifact[]): Promise<number> {
+    const res = await this.sql`
+      UPDATE chunks
+      SET artifacts = ${this.sql.json(artifacts as unknown as postgres.JSONValue)}
+      WHERE trajectory_id = ${trajectoryId} AND tier = 'raw'
+    `;
+    return res.count;
   }
 
   // --- DreamStore -----------------------------------------------------------
@@ -506,8 +538,10 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
   }
 
   async getUnitChunks(owner: string, sessionId: string, repo: string, tier: 'raw' | 'dream' = 'raw'): Promise<Chunk[]> {
-    const rows = await this.sql<Array<{ id: string; content: string; timestamp: Date; dream_type: string | null }>>`
-      SELECT id, content, timestamp, dream_type
+    const rows = await this.sql<
+      Array<{ id: string; content: string; timestamp: Date; dream_type: string | null; artifacts: Artifact[] | null }>
+    >`
+      SELECT id, content, timestamp, dream_type, artifacts
       FROM chunks
       WHERE tier = ${tier} AND owner = ${owner} AND session_id = ${sessionId}
         AND COALESCE(repo, '') = ${repo}
@@ -527,6 +561,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
         cwd: '',
         tier,
         dreamType: r.dream_type ?? undefined,
+        artifacts: r.artifacts ?? undefined,
       },
     }));
   }
@@ -604,6 +639,52 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
     return new Set(rows.map((r) => r.id));
   }
 
+  // --- WikiEvidenceStore -----------------------------------------------------
+
+  // Units where the wiki ledger hasn't absorbed the current dream knowledge and
+  // the dream stamp is older than staleHours. The 48h prefilter runs in SQL; the
+  // fingerprint decision is delegated to the same pure rule wiki lint tests, so
+  // "up to date" here means EXACTLY what ingestWiki's short-circuit means.
+  //   NOTE: dream_units.fingerprint is sha256(sorted RAW ids) and
+  //   wiki_units.fingerprint is sha256(sorted DREAM ids) — different id domains,
+  //   never equal even when in sync. The comparable dream signal is
+  //   sha256(sorted dream_units.dream_chunk_ids), which is what ingest hashes.
+  async pendingWikiUnits(owner: string, staleHours = 48): Promise<PendingUnit[]> {
+    const cutoff = new Date(Date.now() - staleHours * 3_600_000);
+    const rows = await this.sql<
+      Array<{ session_id: string; repo: string; dream_chunk_ids: string[]; wiki_fingerprint: string | null; synthesized_at: Date }>
+    >`
+      SELECT d.session_id, d.repo, d.dream_chunk_ids,
+             w.fingerprint AS wiki_fingerprint, d.synthesized_at
+      FROM dream_units d
+      LEFT JOIN wiki_units w
+        ON w.owner = d.owner AND w.session_id = d.session_id AND w.repo = d.repo
+      WHERE d.owner = ${owner} AND d.synthesized_at < ${cutoff}
+    `;
+    return pendingUnitsFrom(
+      rows.map((r) => ({
+        sessionId: r.session_id,
+        repo: r.repo,
+        dreamChunkIds: r.dream_chunk_ids,
+        wikiFingerprint: r.wiki_fingerprint,
+        synthesizedAt: r.synthesized_at,
+      })),
+      new Date(),
+      staleHours
+    );
+  }
+
+  // Distinct sessions + first/last timestamp over a page's dream source chunks.
+  async wikiPageEvidence(sourceIds: string[]): Promise<WikiPageEvidence> {
+    if (sourceIds.length === 0) return { sessionCount: 0, firstSeen: null, lastSeen: null };
+    const [row] = await this.sql<Array<{ sessions: string; first: Date | null; last: Date | null }>>`
+      SELECT COUNT(DISTINCT session_id)::text AS sessions,
+             MIN(timestamp) AS first, MAX(timestamp) AS last
+      FROM chunks WHERE id = ANY(${sourceIds as string[]})
+    `;
+    return { sessionCount: Number(row?.sessions ?? 0), firstSeen: row?.first ?? null, lastSeen: row?.last ?? null };
+  }
+
   async getWikiUnits(owner: string): Promise<WikiUnitRow[]> {
     const rows = await this.sql<
       Array<{ owner: string; session_id: string; repo: string; fingerprint: string; source_chunk_ids: string[]; pages: string[]; model: string | null }>
@@ -669,9 +750,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
 
   async recentDreamChunks(owner: string, repo: string, since: Date, types: string[], limit: number): Promise<Chunk[]> {
     const rows = await this.sql<
-      Array<{ id: string; content: string; timestamp: Date; session_id: string; dream_type: string | null; trajectory_id: string | null }>
+      Array<{ id: string; content: string; timestamp: Date; session_id: string; dream_type: string | null; trajectory_id: string | null; artifacts: Artifact[] | null }>
     >`
-      SELECT id, content, timestamp, session_id, dream_type, trajectory_id
+      SELECT id, content, timestamp, session_id, dream_type, trajectory_id, artifacts
       FROM chunks
       WHERE tier = 'dream' AND owner = ${owner} AND repo = ${repo}
         AND timestamp >= ${since} AND dream_type = ANY(${types})
@@ -694,6 +775,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, C
         owner,
         dreamType: r.dream_type ?? undefined,
         trajectoryId: r.trajectory_id ?? undefined,
+        artifacts: r.artifacts ?? undefined,
       },
     }));
   }

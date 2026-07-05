@@ -209,16 +209,17 @@ async function wikiLint(opts: WikiOptions): Promise<void> {
 
   let backend: PgVectorBackend | undefined;
   let checkProvenance: ((ids: string[]) => Promise<Set<string>>) | undefined;
+  let pendingUnits: (() => ReturnType<PgVectorBackend['pendingWikiUnits']>) | undefined;
   if (configIsComplete(config)) {
     backend = makeBackend(config);
     await backend.initialize();
     const b = backend;
     checkProvenance = (ids: string[]) => b.existingChunkIds(ids, 'dream');
+    pendingUnits = () => b.pendingWikiUnits(wikiOwner);
   }
-  void wikiOwner;
 
   try {
-    const findings = await lintWiki(store, { checkProvenance });
+    const findings = await lintWiki(store, { checkProvenance, pendingUnits });
     if (opts.json) {
       console.log(JSON.stringify(findings, null, 2));
     } else {

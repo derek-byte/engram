@@ -7,6 +7,7 @@ import { OpenAIDreamLLM, type DreamLLM } from '../dream/llm.ts';
 import { OpenAIWikiLLM, type WikiIngestLLM } from '../wiki/llm.ts';
 import { synthesizeDreams, type SynthesizeDeps } from '../dream/synthesize.ts';
 import { ingestWiki, type WikiBackend } from '../wiki/ingest.ts';
+import { lintWiki } from '../wiki/lint.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { acquireSynthesisLock, type Lock } from './synthesisLock.ts';
 import type { EngramConfig } from '../types/index.ts';
@@ -29,7 +30,9 @@ function log(phase: string, data: Record<string, unknown>): void {
 // (SynthesisRunDeps.collaborators) so tests can swap the whole set — DB backend,
 // embedder, and the two LLMs — for fakes without an OpenAI key or a live pg.
 export interface SynthesisCollaborators {
-  backend: SynthesizeDeps['backend'] & WikiBackend & Pick<PgVectorBackend, 'initialize' | 'close'>;
+  backend: SynthesizeDeps['backend'] &
+    WikiBackend &
+    Pick<PgVectorBackend, 'initialize' | 'close' | 'existingChunkIds' | 'pendingWikiUnits'>;
   embedder: Embedder;
   dreamLLM: DreamLLM;
   wikiLLM: WikiIngestLLM;
@@ -47,6 +50,7 @@ export interface SynthesisRunDeps {
   collaborators?: (config: EngramConfig) => Promise<SynthesisCollaborators>;
   synthesize?: typeof synthesizeDreams;
   ingest?: typeof ingestWiki;
+  lint?: typeof lintWiki;
   log?: (phase: string, data: Record<string, unknown>) => void;
 }
 
@@ -76,9 +80,9 @@ async function defaultCollaborators(config: EngramConfig): Promise<SynthesisColl
 export function selectTargetedSessions(unmet: UnmetDemandRow[], cap = MAX_TARGETED_SESSIONS): string[] {
   const seen = new Set<string>();
   for (const row of unmet) {
+    if (seen.size >= cap) break;
     const id = row.topSessionId;
     if (row.topTier === 'raw' && id && !seen.has(id)) seen.add(id);
-    if (seen.size >= cap) break;
   }
   return [...seen];
 }
@@ -109,6 +113,7 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
 
   const synthesize = deps.synthesize ?? synthesizeDreams;
   const ingest = deps.ingest ?? ingestWiki;
+  const lint = deps.lint ?? lintWiki;
   const buildCollaborators = deps.collaborators ?? defaultCollaborators;
 
   let collab: SynthesisCollaborators | undefined;
@@ -128,7 +133,7 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
     // scoped re-dream; fingerprints make an already-compiled session a free skip,
     // so a second night over the same demand no-ops.
     const summary = local.demandSummary(DEMAND_DAYS);
-    const targeted = selectTargetedSessions(local.unmetDemand(DEMAND_DAYS));
+    const targeted = selectTargetedSessions(local.unmetDemand(DEMAND_DAYS), config.synthesis.targetedSessionsPerNight);
     let targetedSynthesized = 0;
     let targetedDreamChunks = 0;
     for (const sessionId of targeted) {
@@ -164,6 +169,21 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
       pagesAddendum: wiki.pagesAddendum,
       failed: wiki.failed,
     });
+
+    // Lint the freshly-compiled wiki: one health line. A lint failure is
+    // informational, never fatal — it must not fail the nightly run.
+    try {
+      const findings = await lint(wikiStore, {
+        checkProvenance: (ids) => backend.existingChunkIds(ids, 'dream'),
+        pendingUnits: () => backend.pendingWikiUnits(owner),
+      });
+      const warns = findings.filter((f) => f.severity === 'warn').length;
+      const rules: Record<string, number> = {};
+      for (const f of findings) rules[f.rule] = (rules[f.rule] ?? 0) + 1;
+      lg('lint', { warns, infos: findings.length - warns, rules });
+    } catch (err) {
+      lg('lint', { error: err instanceof Error ? err.message : String(err) });
+    }
 
     // Stamp only after all phases complete (overlap is free — fingerprints skip).
     const now = new Date().toISOString();

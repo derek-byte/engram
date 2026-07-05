@@ -99,6 +99,27 @@ describe('formatSourceLine', () => {
     const line = formatSourceLine({ n: 1, tier: 'wiki', dreamType: 'concept', ref: 'pgvector-hnsw', date: '2026-06-12T00:00:00Z', chunkId: '3f2a1b9c8d', trajectoryId: 'wiki:pgvector-hnsw', cited: true });
     expect(line).toBe('[1] [wiki:concept] pgvector-hnsw · 2026-06-12 · chunk 3f2a1b9c…');
   });
+
+  test('appends artifact count only when >0 (singular/plural)', () => {
+    const base = { n: 1, tier: 'raw' as const, ref: 'engram@main', date: '2026-06-12T00:00:00Z', chunkId: 'abc12345', cited: true };
+    // none → no suffix (empty array and undefined both)
+    expect(formatSourceLine(base)).toBe('[1] [raw] engram@main · 2026-06-12 · chunk abc12345');
+    expect(formatSourceLine({ ...base, artifacts: [] })).toBe('[1] [raw] engram@main · 2026-06-12 · chunk abc12345');
+    // one → singular
+    expect(formatSourceLine({ ...base, artifacts: [{ kind: 'file', ref: 'src/x.ts', tool: 'Write' }] })).toBe(
+      '[1] [raw] engram@main · 2026-06-12 · chunk abc12345 · 1 artifact'
+    );
+    // many → plural
+    expect(
+      formatSourceLine({
+        ...base,
+        artifacts: [
+          { kind: 'file', ref: 'src/x.ts', tool: 'Write' },
+          { kind: 'pr', ref: 'https://github.com/a/b/pull/7', tool: 'Bash' },
+        ],
+      })
+    ).toBe('[1] [raw] engram@main · 2026-06-12 · chunk abc12345 · 2 artifacts');
+  });
 });
 
 describe('askOutcome', () => {

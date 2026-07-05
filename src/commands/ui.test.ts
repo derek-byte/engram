@@ -155,6 +155,30 @@ describe('buildUiFetch', () => {
     expect(recents.some((r) => r.kind === 'view' && r.key === 'wiki:engram')).toBe(true);
   });
 
+  test('GET /api/wiki/:slug returns artifacts with exists (file existence checked; url/pr always true)', async () => {
+    const existing = join(tmpdir(), `engram-artifact-${crypto.randomUUID()}.txt`);
+    writeFileSync(existing, 'x');
+    const missing = join(tmpdir(), `engram-artifact-missing-${crypto.randomUUID()}.txt`);
+    wiki.writePage(
+      page({
+        artifacts: [
+          { kind: 'file', ref: existing, tool: 'Write' },
+          { kind: 'file', ref: missing, tool: 'Write' },
+          { kind: 'url', ref: 'https://example.com/x', tool: 'Bash' },
+          { kind: 'pr', ref: 'https://github.com/a/b/pull/9', tool: 'Bash' },
+        ],
+      })
+    );
+    const body: any = await (await fetch(req('/api/wiki/engram'))).json();
+    const byRef: Record<string, any> = Object.fromEntries(body.artifacts.map((a: any) => [a.ref, a]));
+    expect(byRef[existing].kind).toBe('file');
+    expect(byRef[existing].exists).toBe(true);
+    expect(byRef[missing].exists).toBe(false); // moved/deleted → struck-through in the UI
+    expect(byRef['https://example.com/x'].exists).toBe(true); // url is remote → always true
+    expect(byRef['https://github.com/a/b/pull/9'].exists).toBe(true);
+    try { rmSync(existing, { force: true }); } catch { /* best effort */ }
+  });
+
   test('GET /api/wiki/:slug 404 for unknown slug (no view logged)', async () => {
     const res = await fetch(req('/api/wiki/nope'));
     expect(res.status).toBe(404);
@@ -297,8 +321,20 @@ describe('buildUiFetch', () => {
     const body: any = await (await putConfig({ synthesis: { enabled: true, hour: 5 } })).json();
     expect(serviceCalls.reconcile).toBe(1);
     expect(body.synthesisReconcile).toEqual({ serviceInstalled: true, action: 'installed' });
-    expect(body.synthesis).toEqual({ enabled: true, hour: 5 });
+    // publicConfig returns the merged config, so the default cap surfaces alongside the patched fields.
+    expect(body.synthesis).toEqual({ enabled: true, hour: 5, targetedSessionsPerNight: 5 });
+    // The file itself only gains the keys that were patched — the cap was not in this body.
     expect(JSON.parse(readFileSync(configPath, 'utf-8')).synthesis).toEqual({ enabled: true, hour: 5 });
+  });
+
+  test('PUT /api/config clamps the targeted-sessions cap to the max and persists it', async () => {
+    const body: any = await (await putConfig({ synthesis: { targetedSessionsPerNight: 99 } })).json();
+    expect(body.synthesis.targetedSessionsPerNight).toBe(20);
+    // Siblings from the on-disk block are preserved, not overwritten.
+    expect(body.synthesis.enabled).toBe(false);
+    expect(body.synthesis.hour).toBe(3);
+    const persisted = JSON.parse(readFileSync(configPath, 'utf-8')).synthesis;
+    expect(persisted).toEqual({ enabled: false, hour: 3, targetedSessionsPerNight: 20 });
   });
 
   test('PUT without a synthesis key does not reconcile', async () => {
@@ -322,6 +358,35 @@ describe('buildUiFetch', () => {
     const ok = await post('com.engram.watcher');
     expect(ok.status).toBe(200);
     expect(serviceCalls.restart).toEqual(['com.engram.watcher']);
+  });
+
+  test('GET /api/wiki/:slug carries evidence fields from the source chunks', async () => {
+    await backend.upsert([
+      chunk('c1', 'dream', { sessionId: 's1', timestamp: new Date('2026-01-01T00:00:00Z') }),
+      chunk('c2', 'dream', { sessionId: 's1', timestamp: new Date('2026-02-01T00:00:00Z') }),
+      chunk('c3', 'dream', { sessionId: 's2', timestamp: new Date('2026-03-01T00:00:00Z') }),
+    ]);
+    wiki.writePage(page({ sources: ['c1', 'c2', 'c3'] }));
+    const body: any = await (await fetch(req('/api/wiki/engram'))).json();
+    expect(body.sourceCount).toBe(3);
+    expect(body.sessionCount).toBe(2); // s1, s2
+    expect(new Date(body.firstSeen).toISOString()).toBe('2026-01-01T00:00:00.000Z');
+    expect(new Date(body.lastSeen).toISOString()).toBe('2026-03-01T00:00:00.000Z');
+  });
+
+  test('GET /api/lint returns {findings:[{rule,level,page,detail}], counts} — dead-artifact from a missing file', async () => {
+    const missing = join(tmpdir(), `engram-ui-lint-missing-${crypto.randomUUID()}.txt`);
+    wiki.writePage(page({ artifacts: [{ kind: 'file', ref: missing, tool: 'Write' }] }));
+    const body: any = await (await fetch(req('/api/lint'))).json();
+    expect(Array.isArray(body.findings)).toBe(true);
+    expect(typeof body.counts.warns).toBe('number');
+    expect(typeof body.counts.infos).toBe('number');
+    const dead = body.findings.find((f: any) => f.rule === 'dead-artifact');
+    expect(dead).toBeDefined();
+    expect(dead.level).toBe('warn'); // severity is surfaced as `level`
+    expect(dead.page).toBe('engram');
+    expect(dead.detail).toContain(missing);
+    try { rmSync(missing, { force: true }); } catch { /* never created */ }
   });
 
   test('GET /api/wiki lists pages without bodies', async () => {
@@ -390,6 +455,24 @@ describe('buildUiFetch', () => {
     expect(rows[0].top_similarity).toBeNull();
     // A recent 'ask' row is logged pre-call.
     expect(t.store.getRecents().some((r) => r.kind === 'ask' && r.key === 'how do we handle X')).toBe(true);
+  });
+
+  test('POST /api/ask sources carry their chunk artifacts (serialized wholesale)', async () => {
+    await backend.upsert([
+      chunk('d1', 'dream', {
+        dreamType: 'gotcha',
+        artifacts: [
+          { kind: 'file', ref: 'src/a.ts', tool: 'Write' },
+          { kind: 'url', ref: 'https://x.dev/p', tool: 'Bash' },
+        ],
+      }),
+    ]);
+    const f = askFetch(fakeLLM('grounded [1].'));
+    const body: any = await (await postAsk({ q: 'artifacts?' }, f)).json();
+    expect(body.sources[0].artifacts).toEqual([
+      { kind: 'file', ref: 'src/a.ts', tool: 'Write' },
+      { kind: 'url', ref: 'https://x.dev/p', tool: 'Bash' },
+    ]);
   });
 
   test('POST /api/ask with no OpenAI key → 503 no_api_key', async () => {

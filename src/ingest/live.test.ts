@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
-import type { RawEvent } from '../types/index.ts';
+import type { Artifact, Chunk, RawEvent } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from './chunker.ts';
 import { LOCAL_DIM } from './embed.ts';
@@ -65,6 +65,58 @@ describe('live pgvector inject → search → retract', () => {
     } finally {
       await backend.deleteByOwnerPrefix('test:').catch(() => {});
       await raw.end();
+      await backend.close();
+    }
+  });
+});
+
+describe('live pgvector artifacts column round-trips through row mappings', () => {
+  test.skipIf(!LIVE)('upsert → getTrajectory / getUnitChunks return the artifacts', async () => {
+    const backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION);
+    const OWNER_A = 'test:artifacts';
+    const artifacts: Artifact[] = [
+      { kind: 'file', ref: '/src/x.ts', tool: 'Write' },
+      { kind: 'pr', ref: 'https://github.com/acme/engram/pull/1', tool: 'Bash' },
+    ];
+    const chunk: Chunk = {
+      id: `test-artifact-${crypto.randomUUID()}`,
+      embedding: new Array(LOCAL_DIM).fill(0.01),
+      content: 'artifact round-trip probe',
+      metadata: {
+        repo: 'engram',
+        branch: 'main',
+        timestamp: new Date('2026-01-01T00:00:00.000Z'),
+        filePaths: ['/src/x.ts'],
+        exitCode: null,
+        sessionId: 's-artifacts',
+        cwd: '/tmp/engram',
+        tier: 'raw',
+        owner: OWNER_A,
+        trajectoryId: 'traj-artifacts',
+        chunkIndex: 0,
+        chunkCount: 1,
+        artifacts,
+      },
+    };
+    try {
+      await backend.initialize();
+      await backend.deleteByOwnerPrefix('test:');
+      await backend.upsert([chunk]);
+
+      const byTraj = await backend.getTrajectory('traj-artifacts');
+      expect(byTraj[0]!.metadata.artifacts).toEqual(artifacts);
+
+      const byUnit = await backend.getUnitChunks(OWNER_A, 's-artifacts', 'engram', 'raw');
+      expect(byUnit[0]!.metadata.artifacts).toEqual(artifacts);
+
+      // setChunkArtifacts (the backfill sweep primitive) overwrites in place.
+      const replacement: Artifact[] = [{ kind: 'url', ref: 'https://example.com', tool: 'Bash' }];
+      const updated = await backend.setChunkArtifacts('traj-artifacts', replacement);
+      expect(updated).toBe(1);
+      const after = await backend.getTrajectory('traj-artifacts');
+      expect(after[0]!.metadata.artifacts).toEqual(replacement);
+    } finally {
+      await backend.deleteByOwnerPrefix('test:').catch(() => {});
       await backend.close();
     }
   });

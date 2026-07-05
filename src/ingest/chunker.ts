@@ -1,4 +1,5 @@
-import type { ToolCall, Trajectory } from '../types/index.ts';
+import type { Artifact, ToolCall, Trajectory } from '../types/index.ts';
+import { dedupeArtifacts, extractArtifacts } from './artifacts.ts';
 import { repoFromCwd, type ContentBlock, type RawMessage } from './parser.ts';
 
 export const CHUNKER_VERSION = 'v1';
@@ -15,6 +16,7 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
     assistantBlocks: string[];
     toolCalls: ToolCall[];
     filePaths: Set<string>;
+    artifacts: Artifact[];
     pendingToolUses: Map<string, ToolCall>;
   } | null = null;
 
@@ -39,6 +41,7 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
       assistantBlocks: current.assistantBlocks,
       toolCalls: current.toolCalls,
       filePaths: [...current.filePaths],
+      artifacts: dedupeArtifacts(current.artifacts),
       exitCode: null,
     });
     current = null;
@@ -52,6 +55,7 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
         assistantBlocks: [],
         toolCalls: [],
         filePaths: new Set(),
+        artifacts: [],
         pendingToolUses: new Map(),
       };
       continue;
@@ -68,6 +72,8 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
           current.pendingToolUses.set(block.id, tc);
           current.toolCalls.push(tc);
           collectFilePaths(block.input, current.filePaths);
+          // File artifacts come from the tool INPUT (writer tools only).
+          for (const a of extractArtifacts(block.name, block.input, undefined)) current.artifacts.push(a);
         }
       }
     } else if (m.type === 'user') {
@@ -75,6 +81,8 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
         if (block.type === 'tool_result') {
           const tc = current.pendingToolUses.get(block.toolUseId);
           if (tc) {
+            // URL artifacts come from the FULL output, before truncation below.
+            for (const a of extractArtifacts(tc.name, undefined, block.content)) current.artifacts.push(a);
             tc.output = truncate(block.content, 2000);
             tc.isError = block.isError;
           }

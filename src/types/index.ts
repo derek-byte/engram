@@ -1,3 +1,11 @@
+// A durable output a trajectory produced (a written file, a PR, a URL). Extracted
+// deterministically from tool inputs/outputs — see ingest/artifacts.ts.
+export interface Artifact {
+  kind: 'file' | 'pr' | 'url';
+  ref: string;
+  tool: string;
+}
+
 export interface ChunkMetadata {
   repo: string;
   branch: string;
@@ -14,6 +22,7 @@ export interface ChunkMetadata {
   embeddingModel?: string;
   dreamType?: string;
   sourceChunkIds?: string[];
+  artifacts?: Artifact[];
 }
 
 export interface Chunk {
@@ -62,6 +71,7 @@ export interface RerankConfig {
 export interface SynthesisConfig {
   enabled: boolean;
   hour: number;
+  targetedSessionsPerNight: number;
 }
 
 export interface ContextInjectionConfig {
@@ -110,6 +120,7 @@ export interface Trajectory {
   assistantBlocks: string[];
   toolCalls: ToolCall[];
   filePaths: string[];
+  artifacts: Artifact[];
   exitCode: number | null;
 }
 

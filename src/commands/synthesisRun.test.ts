@@ -12,6 +12,7 @@ import { loadConfig } from '../config/index.ts';
 import { LocalStore, type DemandRow, type UnmetDemandRow } from '../storage/local.ts';
 import type { SynthesizeParams, SynthesizeResult } from '../dream/synthesize.ts';
 import type { WikiIngestResult } from '../wiki/ingest.ts';
+import type { Finding } from '../wiki/lint.ts';
 import type { EngramConfig } from '../types/index.ts';
 
 function synthResult(over: Partial<SynthesizeResult> = {}): SynthesizeResult {
@@ -129,6 +130,9 @@ describe('synthesisRunCommand', () => {
       events.push('ingest');
       return wikiResult();
     },
+    // Default lint fake: the fake collaborators carry a bare wikiStore, so the
+    // real lintWiki can't run against it. Individual tests override this.
+    lint: async () => [],
     log: (phase, data) => logs.push({ phase, data }),
     ...over,
   });
@@ -172,8 +176,8 @@ describe('synthesisRunCommand', () => {
     expect(synthCalls[0]!).toMatchObject({ sourceOwner: 'derek', dreamOwner: 'derek', limit: 1000, dryRun: false });
     expect(ingestCount).toBe(1);
 
-    // Phase stream unchanged apart from the new demand line, in order.
-    expect(logs.map((l) => l.phase)).toEqual(['dream', 'demand', 'wiki', 'done']);
+    // Phase stream, in order — lint runs after wiki, before done.
+    expect(logs.map((l) => l.phase)).toEqual(['dream', 'demand', 'wiki', 'lint', 'done']);
     expect(phase('demand')!.data).toMatchObject({
       days: 30,
       total: 0,
@@ -261,6 +265,32 @@ describe('synthesisRunCommand', () => {
     expect(lockReleased).toBe(0);
   });
 
+  test('a config cap of 0 disables the targeted pass entirely', async () => {
+    for (let i = 0; i < 3; i++) store.logDemand(weakSearch('capped query ' + i, 'sess-' + i));
+    config.synthesis.targetedSessionsPerNight = 0;
+
+    await synthesisRunCommand(baseDeps());
+
+    const targeted = synthCalls.filter((c) => c.sessionId !== undefined);
+    expect(targeted).toHaveLength(0);
+    expect(phase('demand')!.data).toMatchObject({ targetedSessions: 0 });
+    // The main dream pass and wiki ingest still run.
+    expect(synthCalls).toHaveLength(1);
+    expect(ingestCount).toBe(1);
+  });
+
+  test('a config cap of 2 limits three eligible sessions to two targeted passes', async () => {
+    for (let i = 0; i < 3; i++) store.logDemand(weakSearch('eligible query ' + i, 'sess-' + i));
+    config.synthesis.targetedSessionsPerNight = 2;
+
+    await synthesisRunCommand(baseDeps());
+
+    const targeted = synthCalls.filter((c) => c.sessionId !== undefined).map((c) => c.sessionId!);
+    expect(targeted).toHaveLength(2);
+    expect(new Set(targeted).size).toBe(2);
+    expect(phase('demand')!.data).toMatchObject({ targetedSessions: 2 });
+  });
+
   test('a since window is derived from the last-synthesis stamp for the main pass', async () => {
     store.setStat('last_synthesis_at', '2026-01-10T00:00:00.000Z');
 
@@ -269,5 +299,33 @@ describe('synthesisRunCommand', () => {
     const main = synthCalls.find((c) => c.sessionId === undefined)!;
     // 24h overlap subtracted from the stamp.
     expect(main.since?.toISOString()).toBe('2026-01-09T00:00:00.000Z');
+  });
+
+  test('emits a lint phase line after wiki and before done, rolling up rule counts', async () => {
+    const findings: Finding[] = [
+      { severity: 'warn', rule: 'orphan', page: 'a', detail: 'x' },
+      { severity: 'warn', rule: 'orphan', page: 'b', detail: 'y' },
+      { severity: 'warn', rule: 'pending-unit', page: '', detail: 'z' },
+      { severity: 'info', rule: 'stub', page: 'c', detail: 'short' },
+    ];
+    await synthesisRunCommand(baseDeps({ lint: async () => findings }));
+
+    expect(logs.map((l) => l.phase)).toEqual(['dream', 'demand', 'wiki', 'lint', 'done']);
+    expect(phase('lint')!.data).toMatchObject({ warns: 3, infos: 1, rules: { orphan: 2, 'pending-unit': 1, stub: 1 } });
+  });
+
+  test('a lint throw is logged as a lint error and does not fail the run', async () => {
+    await synthesisRunCommand(
+      baseDeps({
+        lint: async () => {
+          throw new Error('lint boom');
+        },
+      })
+    );
+
+    expect(phase('lint')!.data).toMatchObject({ error: 'lint boom' });
+    // The run still completes: wiki + done phases present, stamps written.
+    expect(logs.some((l) => l.phase === 'done')).toBe(true);
+    expect(store.getStat('last_synthesis_at')).not.toBeNull();
   });
 });
