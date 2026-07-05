@@ -2,11 +2,25 @@ import { describe, expect, test } from 'bun:test';
 import {
   CHARS_PER_TOKEN,
   HARD_CAP_TOKENS,
+  chunkMessages,
   chunkText,
   chunkTrajectory,
   overlapTail,
 } from './chunker.ts';
+import type { RawMessage } from './parser.ts';
 import { genTrajectory, rng } from './testkit.ts';
+
+function msg(partial: Partial<RawMessage> & Pick<RawMessage, 'type' | 'content'>): RawMessage {
+  return {
+    uuid: crypto.randomUUID(),
+    parentUuid: null,
+    timestamp: new Date(1_700_000_000_000),
+    sessionId: 's',
+    cwd: '/tmp/engram',
+    branch: 'main',
+    ...partial,
+  };
+}
 
 const MAX_CHUNK_CHARS = HARD_CAP_TOKENS * CHARS_PER_TOKEN;
 
@@ -62,10 +76,64 @@ describe('chunkTrajectory invariants (property-style)', () => {
       assistantBlocks: [],
       toolCalls: [],
       filePaths: [],
+      artifacts: [],
       exitCode: null,
     });
     expect(chunks).toHaveLength(1);
     expect(chunks[0]).toBe('USER: hello world');
+  });
+});
+
+describe('chunkMessages artifact extraction', () => {
+  test('acceptance: Write + Read + Bash(pr URL + localhost) → [file, pr] on the trajectory', () => {
+    const messages: RawMessage[] = [
+      msg({ type: 'user', content: [{ type: 'text', text: 'ship the change' }] }),
+      msg({
+        type: 'assistant',
+        content: [
+          { type: 'tool_use', id: 't1', name: 'Write', input: { file_path: '/src/x.ts' } },
+          { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/src/y.ts' } },
+          { type: 'tool_use', id: 't3', name: 'Bash', input: { command: 'gh pr create' } },
+        ],
+      }),
+      msg({
+        type: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseId: 't3',
+            content: 'https://github.com/acme/engram/pull/12\npreview http://localhost:3000/x',
+          },
+        ],
+      }),
+    ];
+
+    const [traj] = chunkMessages(messages);
+    expect(traj!.artifacts).toEqual([
+      { kind: 'file', ref: '/src/x.ts', tool: 'Write' },
+      { kind: 'pr', ref: 'https://github.com/acme/engram/pull/12', tool: 'Bash' },
+    ]);
+    // The parallel filePaths field stays tool-name-blind (untouched behaviour).
+    expect(new Set(traj!.filePaths)).toEqual(new Set(['/src/x.ts', '/src/y.ts']));
+  });
+
+  test('URLs are extracted from the FULL output, before the 2000-char truncation', () => {
+    const url = 'https://github.com/acme/engram/pull/777';
+    // Push the URL past the 2000-char truncation boundary in the output.
+    const output = 'x'.repeat(2100) + ' ' + url;
+    const messages: RawMessage[] = [
+      msg({ type: 'user', content: [{ type: 'text', text: 'run it' }] }),
+      msg({
+        type: 'assistant',
+        content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'gh pr view' } }],
+      }),
+      msg({ type: 'user', content: [{ type: 'tool_result', toolUseId: 't1', content: output }] }),
+    ];
+
+    const [traj] = chunkMessages(messages);
+    expect(traj!.artifacts).toEqual([{ kind: 'pr', ref: url, tool: 'Bash' }]);
+    // The stored tool output is truncated, proving extraction ran on the full content.
+    expect(traj!.toolCalls[0]!.output).toContain('[truncated');
   });
 });
 

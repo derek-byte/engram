@@ -1,0 +1,20 @@
+{"id": "chunking-decision", "question": "What did engram decide about chunking, and why was the original approach a problem?", "repo": "engram"}
+{"id": "mempalace-not-engine", "question": "Why was MemPalace not adopted as engram's retrieval engine after all?", "repo": "engram"}
+{"id": "default-embedding-provider", "question": "What is engram's default embedding provider, and what did choosing it cost in retrieval quality?", "repo": "engram"}
+{"id": "wiki-contradictions", "question": "How does the engram wiki handle decisions that change or contradict earlier ones over time?", "repo": "engram"}
+{"id": "context-silent-empty", "question": "What is the silent-empty contract of engram context, and why does it run without an LLM?", "repo": "engram"}
+{"id": "ask-no-fallback", "question": "Why does engram ask refuse to fall back to plain search when there is no OpenAI API key?", "repo": "engram"}
+{"id": "wiki-model-choice", "question": "Which model was chosen for wiki synthesis, and why was gpt-4o-mini insufficient?", "repo": "engram"}
+{"id": "embedding-cache", "question": "How does engram avoid embedding the same content twice?", "repo": "engram"}
+{"id": "store-of-record", "question": "What is engram's store of record, and why are the indexes considered disposable?", "repo": "engram"}
+{"id": "fingerprint-shortcircuit", "question": "How does the fingerprint short-circuit make dream and wiki synthesis incremental?", "repo": "engram"}
+{"id": "longmemeval-scores", "question": "What LongMemEval scores did engram achieve, and how do they compare to MemPalace?", "repo": "engram"}
+{"id": "gpt5-model-params", "question": "Why do gpt-5.x models need different completion parameters than older chat models in engram?", "repo": "engram"}
+{"id": "knowledge-pyramid", "question": "What are the layers of engram's knowledge pyramid, from raw capture up to the index?", "repo": "engram"}
+{"id": "demand-driven-synthesis", "question": "How is demand-driven synthesis targeted, and what approaches were rejected by design?", "repo": "engram"}
+{"id": "reranker-off-default", "question": "What does the LLM reranker add to retrieval, and why is it off by default?", "repo": "engram"}
+{"id": "wiki-serial-dream-concurrent", "question": "Why is wiki ingest run serially while dream synthesis runs concurrently?", "repo": "engram"}
+{"id": "defensible-wedge", "question": "What is engram's defensible wedge versus general-purpose memory tools?", "repo": "engram"}
+{"id": "auto-linking-orphans", "question": "How does engram's deterministic auto-linking pass prevent orphan and link-less wiki pages?", "repo": "engram"}
+{"id": "watcher-privacy-scope", "question": "What privacy and filesystem scope does the engram watcher enforce?", "repo": "engram"}
+{"id": "first-compile-structure-fail", "question": "Why did engram's first real wiki compile fail on structure even though the content was accurate?", "repo": "engram"}

@@ -61,8 +61,9 @@ program
 program
   .command('backfill')
   .description('Scan ~/.claude/projects and index any new sessions')
-  .action(async () => {
-    await backfillCommand();
+  .option('--artifacts', 'Re-derive artifact metadata for already-indexed chunks (no re-embedding)')
+  .action(async (opts) => {
+    await backfillCommand(opts);
   });
 
 program

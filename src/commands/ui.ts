@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -21,12 +21,13 @@ import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { isValidSlug } from '../wiki/links.ts';
+import { lintWiki } from '../wiki/lint.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { runSearch } from '../search/index.ts';
 import { runAsk, askOutcome, OpenAIAskLLM, AskError } from '../ask/index.ts';
-import type { VectorBackend } from '../storage/backend.ts';
-import type { EngramConfig, SearchFilters } from '../types/index.ts';
+import type { VectorBackend, WikiEvidenceStore } from '../storage/backend.ts';
+import type { Artifact, EngramConfig, SearchFilters } from '../types/index.ts';
 
 const SNIPPET_CHARS = 300;
 const HTML_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'index.html');
@@ -38,6 +39,13 @@ export interface UiOptions {
 function snippet(s: string): string {
   const cleaned = s.replace(/\s+/g, ' ').trim();
   return cleaned.length <= SNIPPET_CHARS ? cleaned : cleaned.slice(0, SNIPPET_CHARS) + '…';
+}
+
+// Annotate a page's derived artifacts with an `exists` flag for the UI. Only
+// meaningful for kind 'file' — a cheap local existsSync so file chips can render
+// moved/deleted paths struck-through. url/pr are remote, so exists is left true.
+function withExists(artifacts: Artifact[] | undefined): Array<Artifact & { exists: boolean }> {
+  return (artifacts ?? []).map((a) => ({ ...a, exists: a.kind === 'file' ? existsSync(a.ref) : true }));
 }
 
 // launchd operations are injected so route tests exercise the config/services
@@ -58,7 +66,8 @@ export const realServiceOps: ServiceOps = {
 export interface UiDeps {
   // Called per GET / so edits to index.html show on refresh — no server restart.
   html: () => string;
-  backend: VectorBackend;
+  // Vector store + the read-only trust queries the wiki lint/evidence routes need.
+  backend: VectorBackend & WikiEvidenceStore;
   embedder: Embedder;
   local: LocalStore;
   wiki: WikiStore;
@@ -308,6 +317,25 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       }
     }
 
+    // Wiki lint, on demand. Backend is in scope, so provenance + pending-unit
+    // rules run too. Shape: {findings:[{rule, level, page, detail}], counts}.
+    if (url.pathname === '/api/lint') {
+      try {
+        const findings = await lintWiki(wiki, {
+          checkProvenance: (ids) => backend.existingChunkIds(ids, 'dream'),
+          pendingUnits: () => backend.pendingWikiUnits('derek'),
+        });
+        const warns = findings.filter((f) => f.severity === 'warn').length;
+        return Response.json({
+          findings: findings.map((f) => ({ rule: f.rule, level: f.severity, page: f.page, detail: f.detail })),
+          counts: { warns, infos: findings.length - warns },
+        });
+      } catch (err) {
+        console.error('lint failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'lint failed' }, { status: 500 });
+      }
+    }
+
     if (url.pathname === '/api/services') {
       try {
         return Response.json(services.status());
@@ -394,6 +422,7 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
               sources: m.sourceChunkIds ?? [],
               trajectoryId: m.trajectoryId ?? null,
               chunkIndex: m.chunkIndex ?? null,
+              artifacts: m.artifacts ?? [],
               snippet: snippet(r.chunk.content),
             };
           })
@@ -436,6 +465,14 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       } catch {
         /* recents are cosmetic */
       }
+      // Evidence roll-up over the page's dream sources. Non-fatal: a pg hiccup
+      // leaves the header off rather than failing the page.
+      let evidence = { sessionCount: 0, firstSeen: null as Date | null, lastSeen: null as Date | null };
+      try {
+        evidence = await backend.wikiPageEvidence(page.sources);
+      } catch (err) {
+        console.error('wiki evidence failed:', err instanceof Error ? err.message : err);
+      }
       return Response.json({
         slug: page.slug,
         title: page.title,
@@ -444,7 +481,11 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
         updated: page.updated,
         created: page.created,
         sourceCount: page.sources.length,
+        sessionCount: evidence.sessionCount,
+        firstSeen: evidence.firstSeen,
+        lastSeen: evidence.lastSeen,
         trajectoryId: 'wiki:' + slug,
+        artifacts: withExists(page.artifacts),
         body: page.body,
       });
     }
@@ -488,6 +529,7 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
             branch: c.metadata.branch,
             timestamp: c.metadata.timestamp,
             sessionId: c.metadata.sessionId,
+            artifacts: c.metadata.artifacts ?? [],
           }))
         );
       } catch (err) {

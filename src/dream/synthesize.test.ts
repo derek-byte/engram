@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Chunk } from '../types/index.ts';
+import type { Artifact, Chunk } from '../types/index.ts';
 import { FakeBackend, FakeDreamLLM, FakeProvider, testConfig } from '../ingest/testkit.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { fingerprintOf, synthesizeDreams, type SynthesizeDeps } from './synthesize.ts';
@@ -8,7 +8,14 @@ import { parseItems } from './llm.ts';
 const SRC = 'test:src';
 const DREAM = 'test:dream';
 
-function rawChunk(id: string, sessionId: string, repo: string, content: string, ts = 1_700_000_000_000): Chunk {
+function rawChunk(
+  id: string,
+  sessionId: string,
+  repo: string,
+  content: string,
+  ts = 1_700_000_000_000,
+  artifacts?: Artifact[]
+): Chunk {
   return {
     id,
     embedding: [],
@@ -23,6 +30,7 @@ function rawChunk(id: string, sessionId: string, repo: string, content: string, 
       cwd: '',
       tier: 'raw',
       owner: SRC,
+      ...(artifacts ? { artifacts } : {}),
     },
   };
 }
@@ -171,6 +179,66 @@ describe('synthesizeDreams', () => {
     expect(res.synthesized).toBe(0);
     // Fingerprint not recorded → retried next run.
     expect(await backend.getDreamUnits(DREAM)).toHaveLength(0);
+  });
+});
+
+describe('artifact propagation', () => {
+  const HOTKEY: Artifact = { kind: 'file', ref: 'src/desktop/hotkey.rs', tool: 'Write' };
+  const PR: Artifact = { kind: 'pr', ref: 'https://github.com/org/repo/pull/42', tool: 'gh' };
+
+  function dreamsByContent(backend: FakeBackend): Map<string, Chunk> {
+    const m = new Map<string, Chunk>();
+    for (const c of backend.chunks.values()) if (c.metadata.tier === 'dream') m.set(c.content, c);
+    return m;
+  }
+
+  test('attaches a file artifact only to the dream item naming its basename', async () => {
+    const llm = new FakeDreamLLM(() => [
+      { type: 'decision', text: 'Refactored the hotkey.rs handler for global shortcuts' },
+      { type: 'note', text: 'General cleanup, nothing file-specific here' },
+    ]);
+    const { backend, deps } = makeDeps(llm);
+    await seed(backend, [rawChunk('c1', 's1', 'engram', 'work on shortcuts', 1_700_000_000_000, [HOTKEY])]);
+
+    await run(backend, deps);
+    const dreams = dreamsByContent(backend);
+
+    const hit = dreams.get('Refactored the hotkey.rs handler for global shortcuts')!;
+    expect(hit.metadata.artifacts).toEqual([HOTKEY]);
+
+    const miss = dreams.get('General cleanup, nothing file-specific here')!;
+    expect(miss.metadata.artifacts ?? []).toEqual([]);
+  });
+
+  test('attaches a PR artifact by verbatim URL match', async () => {
+    const llm = new FakeDreamLLM(() => [
+      { type: 'decision', text: `Shipped it in https://github.com/org/repo/pull/42 after review` },
+      { type: 'note', text: 'Unrelated aside about pull requests in general' },
+    ]);
+    const { backend, deps } = makeDeps(llm);
+    await seed(backend, [rawChunk('c1', 's1', 'engram', 'merged the pr', 1_700_000_000_000, [PR])]);
+
+    await run(backend, deps);
+    const dreams = dreamsByContent(backend);
+
+    expect(dreams.get('Shipped it in https://github.com/org/repo/pull/42 after review')!.metadata.artifacts).toEqual([PR]);
+    expect(dreams.get('Unrelated aside about pull requests in general')!.metadata.artifacts ?? []).toEqual([]);
+  });
+
+  test('SACRED: the unit fingerprint is identical with and without artifacts present', async () => {
+    const items = () => [{ type: 'decision' as const, text: 'chose pgvector for hotkey.rs' }];
+
+    const withArt = makeDeps(new FakeDreamLLM(items));
+    await seed(withArt.backend, [rawChunk('c1', 's1', 'engram', 'body', 1_700_000_000_000, [HOTKEY])]);
+    await run(withArt.backend, withArt.deps);
+
+    const without = makeDeps(new FakeDreamLLM(items));
+    await seed(without.backend, [rawChunk('c1', 's1', 'engram', 'body', 1_700_000_000_000)]);
+    await run(without.backend, without.deps);
+
+    const fpWith = (await withArt.backend.getDreamUnits(DREAM))[0]!.fingerprint;
+    const fpWithout = (await without.backend.getDreamUnits(DREAM))[0]!.fingerprint;
+    expect(fpWith).toBe(fpWithout);
   });
 });
 

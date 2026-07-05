@@ -2,17 +2,25 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Chunk } from '../types/index.ts';
+import type { Artifact, Chunk } from '../types/index.ts';
 import { FakeBackend, FakeProvider, FakeWikiLLM, testConfig } from '../ingest/testkit.ts';
 import { Embedder } from '../ingest/embed.ts';
-import { WikiStore } from './store.ts';
+import { WikiStore, pageFingerprint } from './store.ts';
 import { ingestWiki, reindexWiki, pageToChunkTexts, type WikiIngestDeps } from './ingest.ts';
 import type { WikiPageOp } from './llm.ts';
 
 const SRC = 'test:wiki-dream';
 const WIKI = 'test:wiki';
 
-function dreamChunk(id: string, sessionId: string, repo: string, kind: string, content: string, ts = 1_700_000_000_000): Chunk {
+function dreamChunk(
+  id: string,
+  sessionId: string,
+  repo: string,
+  kind: string,
+  content: string,
+  ts = 1_700_000_000_000,
+  artifacts?: Artifact[]
+): Chunk {
   return {
     id,
     embedding: [],
@@ -28,6 +36,7 @@ function dreamChunk(id: string, sessionId: string, repo: string, kind: string, c
       tier: 'dream',
       owner: SRC,
       dreamType: kind,
+      ...(artifacts ? { artifacts } : {}),
     },
   };
 }
@@ -382,6 +391,65 @@ describe('ingestWiki', () => {
       const graph = deps.store.linkGraph();
       expect(graph.inbound.get('fingerprint-skip')).toContain('pgvector');
       expect(graph.inbound.get('pgvector')).toContain('fingerprint-skip');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const HOTKEY: Artifact = { kind: 'file', ref: 'src/desktop/hotkey.rs', tool: 'Write' };
+  const PR: Artifact = { kind: 'pr', ref: 'https://github.com/org/repo/pull/42', tool: 'gh' };
+
+  test('derives page artifacts as the union over source dream chunks (body + fingerprint untouched)', async () => {
+    const dir = join(tmpdir(), `engram-wiki-artifacts-${crypto.randomUUID()}`);
+    const llm = new FakeWikiLLM(() => ({
+      pages: [
+        { slug: 'pgvector', action: 'create' as const, kind: 'tool' as const, title: 'pgvector', summary: 'store', aliases: [], body: 'The vector store. [[fingerprint-skip]]', sources: ['d1'] },
+        { slug: 'fingerprint-skip', action: 'create' as const, kind: 'decision' as const, title: 'fp', summary: 'skip', aliases: [], body: 'Relies on [[pgvector]].', sources: ['d2'] },
+      ],
+    }));
+    const { backend, deps } = makeDeps(dir, llm);
+    try {
+      await backend.upsert([
+        dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector', 1_700_000_000_000, [HOTKEY]),
+        dreamChunk('d2', 's1', 'engram', 'gotcha', 'fp skip', 1_700_000_000_000, [PR]),
+      ]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+
+      const pg = deps.store.readPage('pgvector')!;
+      expect(pg.artifacts).toEqual([HOTKEY]);
+      // SACRED: fingerprint = sha256 of sorted sources only; artifacts excluded.
+      expect(pg.fingerprint).toBe(pageFingerprint(pg.sources));
+      // Body is model-owned: no artifacts section, no artifact ref injected.
+      expect(pg.body).not.toContain('hotkey.rs');
+      expect(pg.body).not.toContain('artifacts');
+
+      expect(deps.store.readPage('fingerprint-skip')!.artifacts).toEqual([PR]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('recomputes artifacts each ingest: a source losing its artifact drops it from frontmatter', async () => {
+    const dir = join(tmpdir(), `engram-wiki-artifacts-drop-${crypto.randomUUID()}`);
+    const BODY = 'The vector store persists embeddings across sessions.';
+    const llm = new FakeWikiLLM(() => ({
+      pages: [{ slug: 'pgvector', action: 'update' as const, kind: 'tool' as const, title: 'pgvector', summary: 'x', aliases: [], body: BODY, sources: ['d1', 'd2'] }],
+    }));
+    const { backend, deps } = makeDeps(dir, llm);
+    try {
+      await backend.upsert([dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector', 1_700_000_000_000, [HOTKEY])]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+      expect(deps.store.readPage('pgvector')!.artifacts).toEqual([HOTKEY]);
+
+      // Re-synthesis: d1 loses HOTKEY and a new dream chunk d2 (no artifact) appears,
+      // so the unit fingerprint changes and ingest re-runs the unit → recompute.
+      backend.chunks.get('d1')!.metadata.artifacts = [];
+      await backend.upsert([dreamChunk('d2', 's1', 'engram', 'note', 'later note', 1_700_000_000_001)]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+
+      const pg = deps.store.readPage('pgvector')!;
+      expect([...pg.sources].sort()).toEqual(['d1', 'd2']);
+      expect(pg.artifacts).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

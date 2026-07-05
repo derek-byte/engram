@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
+import type { Artifact } from '../types/index.ts';
 import { WikiStore, parsePage, serializePage, pageFingerprint, type WikiPage } from './store.ts';
 
 function tempDir(): string {
@@ -50,6 +51,50 @@ describe('frontmatter codec', () => {
   });
   test('throws on missing frontmatter', () => {
     expect(() => parsePage('x', 'no frontmatter here')).toThrow();
+  });
+
+  test('artifacts round-trip as JSON objects, byte-identical across write→parse→write', () => {
+    const artifacts: Artifact[] = [
+      { kind: 'file', ref: 'src/desktop/hotkey.rs', tool: 'Write' },
+      { kind: 'pr', ref: 'https://github.com/org/repo/pull/42', tool: 'gh' },
+    ];
+    const page = samplePage({ artifacts });
+    const serialized = serializePage(page);
+    expect(serialized).toContain('artifacts: [{"kind":"file","ref":"src/desktop/hotkey.rs","tool":"Write"}');
+
+    const parsed = parsePage('fingerprint-skip', serialized);
+    expect(parsed.artifacts).toEqual(artifacts);
+    expect(serializePage(parsed)).toBe(serialized); // stable key order + escaping
+  });
+
+  test('parsePage on a pre-wave-10 page (no artifacts key) yields [] without throwing', () => {
+    const legacy = [
+      '---',
+      'schema: 1',
+      'title: Old Page',
+      'kind: topic',
+      'summary: from before artifacts existed',
+      'aliases: []',
+      'sources: ["c1"]',
+      'trajectories: ["dream:x"]',
+      `fingerprint: ${pageFingerprint(['c1'])}`,
+      'created: 2026-01-01T00:00:00.000Z',
+      'updated: 2026-01-01T00:00:00.000Z',
+      '---',
+      '',
+      'Body text.',
+      '',
+    ].join('\n');
+    const parsed = parsePage('old-page', legacy);
+    expect(parsed.artifacts).toEqual([]);
+  });
+
+  test('SACRED: pageFingerprint ignores artifacts (same sources ⇒ same fingerprint)', () => {
+    const sources = ['src-b', 'src-a'];
+    const withArt = samplePage({ sources, artifacts: [{ kind: 'file', ref: 'x.rs', tool: 'Write' }] });
+    const without = samplePage({ sources, artifacts: [] });
+    expect(withArt.fingerprint).toBe(without.fingerprint);
+    expect(pageFingerprint(sources)).toBe(withArt.fingerprint);
   });
 });
 

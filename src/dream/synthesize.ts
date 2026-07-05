@@ -1,4 +1,5 @@
-import type { Chunk, EngramConfig, RawEvent } from '../types/index.ts';
+import { basename } from 'node:path';
+import type { Artifact, Chunk, EngramConfig, RawEvent } from '../types/index.ts';
 import type { DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
 import type { DreamLLM } from './llm.ts';
@@ -69,7 +70,40 @@ function unitKey(sessionId: string, repo: string): string {
 export function fingerprintOf(unit: SynthesisUnit): string {
   // Sort defensively so the fingerprint is invariant to physical row order,
   // independent of whether the backend pre-sorted (SQL does; be robust anyway).
+  // NOTE: artifacts must NEVER enter this input — the fingerprint gates the
+  // dream/wiki re-synthesis short-circuit, so it stays a pure function of the
+  // unit's chunk ids.
   return contentSha256([...unit.chunkIds].sort().join('\n'));
+}
+
+function artifactKey(a: Artifact): string {
+  return `${a.kind}\n${a.tool}\n${a.ref}`;
+}
+
+// The de-duplicated union of every artifact carried on a unit's raw chunks.
+function unionArtifacts(chunks: Chunk[]): Artifact[] {
+  const seen = new Set<string>();
+  const out: Artifact[] = [];
+  for (const c of chunks) {
+    for (const a of c.metadata.artifacts ?? []) {
+      const key = artifactKey(a);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(a);
+    }
+  }
+  return out;
+}
+
+// Deterministic attachment: an artifact belongs to a dream item iff its
+// identifying token appears VERBATIM in the item text — the file basename for
+// kind 'file', the full URL for 'pr'/'url'. No fuzzy matching, no LLM: no match
+// ⇒ no attachment (conservative on purpose).
+function artifactsForText(text: string, unitArtifacts: Artifact[]): Artifact[] {
+  return unitArtifacts.filter((a) => {
+    const needle = a.kind === 'file' ? basename(a.ref) : a.ref;
+    return needle.length > 0 && text.includes(needle);
+  });
 }
 
 export async function synthesizeDreams(
@@ -146,6 +180,7 @@ export async function synthesizeDreams(
     try {
       const trajectoryId = `dream:${fingerprint}`;
       const rawChunks = await backend.getUnitChunks(params.sourceOwner, unit.sessionId, unit.repo);
+      const unitArtifacts = unionArtifacts(rawChunks);
       const transcript = buildTranscript(rawChunks, capChars);
       const { items, usage } = await llm.extract(buildUnitHeader(unit), transcript);
       if (usage) {
@@ -182,6 +217,7 @@ export async function synthesizeDreams(
             chunkCount: items.length,
             sourceChunkIds: unit.chunkIds,
             embeddingModel: model,
+            artifacts: artifactsForText(item.text, unitArtifacts),
           },
         }));
         newChunkIds = chunks.map((c) => c.id);

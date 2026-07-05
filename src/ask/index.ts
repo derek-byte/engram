@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { runSearch } from '../search/index.ts';
 import { modelParams } from '../wiki/llm.ts';
 import { ASK_SYSTEM_PROMPT, buildAskUser, extractCitedIndices } from './prompt.ts';
-import type { SearchFilters, SearchResult } from '../types/index.ts';
+import type { Artifact, SearchFilters, SearchResult } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
 
@@ -51,6 +51,9 @@ export interface AskSource {
   chunkId: string;
   trajectoryId?: string;
   cited: boolean;
+  // Durable outputs this source's chunk produced (files/PRs/URLs). Carried
+  // through so ask surfaces can render chips; absent when the chunk has none.
+  artifacts?: Artifact[];
 }
 
 export interface AskUsage {
@@ -119,7 +122,7 @@ function toSource(n: number, r: SearchResult, cited: boolean): AskSource {
   const m = r.chunk.metadata;
   const date = m.timestamp instanceof Date ? m.timestamp.toISOString() : String(m.timestamp);
   const ref = m.tier === 'wiki' ? (m.trajectoryId?.replace(/^wiki:/, '') ?? '?') : `${m.repo}@${m.branch || '(no-branch)'}`;
-  return { n, tier: m.tier, dreamType: m.dreamType, ref, date, chunkId: r.chunk.id, trajectoryId: m.trajectoryId, cited };
+  return { n, tier: m.tier, dreamType: m.dreamType, ref, date, chunkId: r.chunk.id, trajectoryId: m.trajectoryId, cited, artifacts: m.artifacts };
 }
 
 // One human-readable source line, shared by the CLI and MCP so both stay in
@@ -130,7 +133,11 @@ export function formatSourceLine(s: AskSource): string {
   // Dream chunks carry a stable trajectory id (dream:<fp>#i); for wiki/raw the
   // chunk id is the reopenable handle.
   const tail = s.tier === 'dream' && s.trajectoryId ? s.trajectoryId : `chunk ${shortId(s.chunkId)}`;
-  return `[${s.n}] [${badge}] ${s.ref} · ${day} · ${tail}`;
+  // Subtle artifact hint — appended only when the source carries ≥1, so CLI and
+  // MCP (both call this) stay in lockstep automatically.
+  const na = s.artifacts?.length ?? 0;
+  const arts = na > 0 ? ` · ${na} artifact${na === 1 ? '' : 's'}` : '';
+  return `[${s.n}] [${badge}] ${s.ref} · ${day} · ${tail}${arts}`;
 }
 
 function shortId(id: string): string {

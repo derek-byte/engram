@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
-import type { DreamStore, DreamUnitRow, EmbeddingCache, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from '../storage/backend.ts';
+import type { DreamStore, DreamUnitRow, EmbeddingCache, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
 import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
 import type { WikiIngestLLM, WikiIngestResponse, WikiSplitLLM } from '../wiki/llm.ts';
@@ -99,7 +99,7 @@ function tierSet(tier: SearchFilters['tier']): Set<string> | null {
 // In-memory VectorBackend mirroring pgvector's conflict semantics
 // ---------------------------------------------------------------------------
 
-export class FakeBackend implements VectorBackend, DreamStore, WikiLedger {
+export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiEvidenceStore {
   readonly rawEvents = new Map<string, RawEvent>(); // keyed by content_sha256 (unique)
   readonly chunks = new Map<string, Chunk>(); // keyed by id (primary key)
   readonly dreamUnits = new Map<string, DreamUnitRow>(); // keyed by owner\nsessionId\nrepo
@@ -295,6 +295,45 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger {
     this.wikiUnits.set(this.unitKey(row.owner, row.sessionId, row.repo), { ...row });
   }
 
+  // --- WikiEvidenceStore -----------------------------------------------------
+
+  async existingChunkIds(ids: string[], tier: string): Promise<Set<string>> {
+    const out = new Set<string>();
+    for (const id of ids) {
+      const c = this.chunks.get(id);
+      if (c && c.metadata.tier === tier) out.add(id);
+    }
+    return out;
+  }
+
+  // The fake carries no dream_units.synthesized_at, so it can't reproduce the
+  // 48h staleness gate — always empty. The pending-unit decision is covered by
+  // pendingUnitsFrom's own unit tests (src/wiki/lint.test.ts).
+  async pendingWikiUnits(_owner: string, _staleHours = 48): Promise<PendingUnit[]> {
+    return [];
+  }
+
+  async wikiPageEvidence(sourceIds: string[]): Promise<WikiPageEvidence> {
+    const sessions = new Set<string>();
+    let first: number | null = null;
+    let last: number | null = null;
+    for (const id of sourceIds) {
+      const c = this.chunks.get(id);
+      if (!c) continue;
+      if (c.metadata.sessionId) sessions.add(c.metadata.sessionId);
+      const t = c.metadata.timestamp?.getTime();
+      if (t != null && !Number.isNaN(t)) {
+        first = first == null ? t : Math.min(first, t);
+        last = last == null ? t : Math.max(last, t);
+      }
+    }
+    return {
+      sessionCount: sessions.size,
+      firstSeen: first == null ? null : new Date(first),
+      lastSeen: last == null ? null : new Date(last),
+    };
+  }
+
   async close(): Promise<void> {}
 }
 
@@ -399,7 +438,7 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     wikiDir: join(tmpdir(), `engram-wiki-${crypto.randomUUID()}`),
     wikiModel: 'fake-wiki-model',
     wikiMaxInputChars: 60_000,
-    synthesis: { enabled: false, hour: 3 },
+    synthesis: { enabled: false, hour: 3, targetedSessionsPerNight: 5 },
     contextInjection: { enabled: true, budget: 1500 },
     ...overrides,
   };
@@ -481,6 +520,7 @@ export function genTrajectory(next: () => number, scale = 1): Trajectory {
     assistantBlocks,
     toolCalls,
     filePaths: [],
+    artifacts: [],
     exitCode: null,
   };
 }

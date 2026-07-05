@@ -130,6 +130,7 @@ export async function splitPage(params: WikiSplitParams, deps: WikiSplitDeps): P
       aliases: op.aliases,
       sources: childSources,
       trajectories: [...hub.trajectories], // per-claim trajectory subsetting isn't determinable
+      artifacts: [], // DERIVED: recomputed for this child on its next `wiki ingest` writeOp
       fingerprint: pageFingerprint(childSources),
       created: now,
       updated: now,
@@ -149,6 +150,7 @@ export async function splitPage(params: WikiSplitParams, deps: WikiSplitDeps): P
     aliases: [...new Set([...hub.aliases, ...hubOp.aliases])],
     sources: hub.sources,
     trajectories: hub.trajectories,
+    artifacts: hub.artifacts, // hub keeps its FULL source set → its derived union is unchanged
     fingerprint: pageFingerprint(hub.sources),
     created: hub.created || now,
     updated: now,

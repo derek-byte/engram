@@ -5,9 +5,10 @@ import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
+import { collectArtifacts } from '../ingest/artifacts.ts';
 import { ingestFile } from '../ingest/pipeline.ts';
 
-export async function backfillCommand(): Promise<void> {
+export async function backfillCommand(opts: { artifacts?: boolean } = {}): Promise<void> {
   let config = loadConfig();
   if (!configIsComplete(config)) {
     console.log('First-time setup:');
@@ -23,6 +24,11 @@ export async function backfillCommand(): Promise<void> {
   try {
     console.log('Initializing pgvector schema...');
     await backend.initialize();
+
+    if (opts.artifacts) {
+      await backfillArtifacts(backend);
+      return;
+    }
 
     console.log(`Scanning ${config.watchPath}...`);
     const files = findJsonl(config.watchPath);
@@ -54,6 +60,32 @@ export async function backfillCommand(): Promise<void> {
     await backend.close();
     local.close();
   }
+}
+
+// Re-derive artifacts for chunks already ingested and write them into
+// chunks.artifacts. A plain re-ingest can't do this: upsert is ON CONFLICT DO
+// NOTHING and the pipeline's hasSeen() skips existing chunk hashes, so both
+// silently no-op. This sweep reads raw_events payloads (source 'claude-code',
+// each payload is the full Trajectory incl. toolCalls) and UPDATEs only the
+// artifacts column of the raw-tier chunks — embeddings/content are untouched.
+// Note: payload tool outputs are already truncated (2000 chars) by the chunker,
+// so a URL beyond that cut-off won't be seen here. Acceptable for a backfill.
+async function backfillArtifacts(backend: PgVectorBackend): Promise<void> {
+  console.log('Backfilling artifacts from raw_events...');
+  const trajectories = await backend.rawTrajectoriesForArtifacts('claude-code');
+
+  let withArtifacts = 0;
+  let chunksUpdated = 0;
+  for (const t of trajectories) {
+    const artifacts = collectArtifacts(t.payload.toolCalls ?? []);
+    if (artifacts.length === 0) continue;
+    withArtifacts++;
+    chunksUpdated += await backend.setChunkArtifacts(t.trajectoryId, artifacts);
+  }
+
+  console.log(
+    `Done. Scanned ${trajectories.length} trajectories, ${withArtifacts} with artifacts, ${chunksUpdated} chunks updated.`
+  );
 }
 
 function findJsonl(root: string): string[] {
