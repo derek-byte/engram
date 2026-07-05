@@ -1,7 +1,17 @@
 import postgres from 'postgres';
-import type { Artifact, Chunk, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
-import type { ContextStore, DreamStore, DreamUnitRow, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
+import type { Artifact, Chunk, EngramConfig, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
+import type { ContextStore, DreamStore, DreamUnitRow, MaintenanceStore, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
 import { pendingUnitsFrom } from '../wiki/lint.ts';
+import { CHUNKER_VERSION } from '../ingest/chunker.ts';
+
+// Schema version gate for the initialize() fast path. BUMP THIS ON ANY DDL EDIT
+// in initialize() (new table/column/index, changed type, etc.) — otherwise a
+// deployed backend with a matching stored version will SKIP the full DDL and
+// never apply your change. Bumping forces the full DDL + version re-stamp once.
+const SCHEMA_VERSION = 1;
+
+// Rows/statement for batched multi-row INSERTs (upsert, raw events, cache).
+const INSERT_BATCH = 100;
 
 // Map a SearchFilters tier to the concrete tier list, or null for "no tier
 // filter" ('all'/'both'/undefined). 'synth' = wiki+dream.
@@ -32,7 +42,29 @@ const DEFAULT_SCORING: ScoringConfig = {
 const CANDIDATE_POOL = 100;
 const KEYWORD_POOL = 50;
 
-export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, WikiEvidenceStore, ContextStore {
+// Canonical shape rowToChunk consumes. Every field is nullable/optional so a
+// query may SELECT only the columns it needs (missing keys read as undefined).
+type ChunkRow = {
+  id: string;
+  content: string;
+  repo?: string | null;
+  branch?: string | null;
+  timestamp?: Date | null;
+  file_paths?: string[] | null;
+  exit_code?: number | null;
+  session_id?: string | null;
+  cwd?: string | null;
+  tier: 'raw' | 'dream' | 'wiki';
+  owner?: string | null;
+  dream_type?: string | null;
+  source_chunk_ids?: string[] | null;
+  trajectory_id?: string | null;
+  chunk_index?: number | null;
+  chunk_count?: number | null;
+  artifacts?: Artifact[] | null;
+};
+
+export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, WikiEvidenceStore, ContextStore, MaintenanceStore {
   private sql: ReturnType<typeof postgres>;
   private embeddingDim: number;
   private embeddingModel: string;
@@ -44,18 +76,59 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     embeddingDim: number,
     embeddingModel: string,
     chunkerVersion: string,
-    scoring: ScoringConfig = DEFAULT_SCORING
+    scoring: ScoringConfig = DEFAULT_SCORING,
+    opts?: { connectTimeoutSec?: number }
   ) {
     // SSL is derived from the URL (e.g. ?sslmode=require for Neon).
     // Local Postgres URLs without sslmode connect without TLS.
-    this.sql = postgres(databaseUrl, { prepare: false, onnotice: () => {} });
+    // connect_timeout defaults to 10s (down from postgres.js's 30s) so a dead
+    // host fails fast instead of hanging the CLI/hooks.
+    this.sql = postgres(databaseUrl, {
+      prepare: false,
+      onnotice: () => {},
+      connect_timeout: opts?.connectTimeoutSec ?? 10,
+    });
     this.embeddingDim = embeddingDim;
     this.embeddingModel = embeddingModel;
     this.chunkerVersion = chunkerVersion;
     this.scoring = scoring;
   }
 
+  // Build a backend from an EngramConfig: stamps CHUNKER_VERSION and lifts the
+  // scoring weights out of config so call sites don't re-thread them. opts flows
+  // connect_timeout through to the constructor.
+  static fromConfig(config: EngramConfig, opts?: { connectTimeoutSec?: number }): PgVectorBackend {
+    return new PgVectorBackend(
+      config.databaseUrl,
+      config.embeddingDim,
+      config.embeddingModel,
+      CHUNKER_VERSION,
+      {
+        vectorWeight: config.vectorWeight,
+        keywordWeight: config.keywordWeight,
+        timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
+      },
+      opts
+    );
+  }
+
   async initialize(): Promise<void> {
+    // Fast path: if schema_meta records our version, the full DDL already ran
+    // for this SCHEMA_VERSION — skip every CREATE. A missing schema_meta table
+    // (42P01, fresh DB or pre-versioning schema) or a version mismatch falls
+    // through to the full DDL, which is idempotent (IF NOT EXISTS throughout).
+    try {
+      const [row] = await this.sql<Array<{ value: string }>>`
+        SELECT value FROM schema_meta WHERE key = 'schema_version'
+      `;
+      if (row && Number(row.value) === SCHEMA_VERSION) {
+        await this.assertEmbeddingDim();
+        return;
+      }
+    } catch (e) {
+      if ((e as { code?: string }).code !== '42P01') throw e; // 42P01 = undefined_table
+    }
+
     await this.sql`CREATE EXTENSION IF NOT EXISTS vector`;
 
     await this.sql.unsafe(`
@@ -174,28 +247,85 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         PRIMARY KEY (owner, session_id, repo)
       );
     `);
+
+    // Record the schema version so the next initialize() can take the fast path.
+    await this.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS schema_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+    await this.sql`
+      INSERT INTO schema_meta (key, value) VALUES ('schema_version', ${String(SCHEMA_VERSION)})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+    `;
+
+    await this.assertEmbeddingDim();
+  }
+
+  // Guard against a chunks.embedding column whose declared dimension differs
+  // from this backend's embeddingDim — a silent mismatch would make every
+  // upsert/search fail deep inside pgvector with an opaque error. Runs on BOTH
+  // the fast path and the full-DDL path. pgvector stores the declared dimension
+  // directly in pg_attribute.atttypmod (no -4 header offset), so it IS the dim.
+  private async assertEmbeddingDim(): Promise<void> {
+    const [row] = await this.sql<Array<{ atttypmod: number }>>`
+      SELECT atttypmod FROM pg_attribute
+      WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'
+    `;
+    const actual = row?.atttypmod ?? -1;
+    // -1 = dimensionless vector (shouldn't happen for chunks, which declares a
+    // dim); only a positive, differing typmod is a real mismatch.
+    if (actual > 0 && actual !== this.embeddingDim) {
+      throw new Error(
+        `Embedding dimension mismatch: chunks.embedding is vector(${actual}), but this backend is configured for ${this.embeddingDim} dims. ` +
+          `Either re-embed at the stored dimension (drop the chunks + embedding_cache tables, then run \`engram backfill\`), ` +
+          `or set embeddingProvider/embeddingModel/embeddingDim in your config to match the existing data (${actual} dims).`
+      );
+    }
   }
 
   async insertRawEvents(events: RawEvent[]): Promise<number> {
     if (events.length === 0) return 0;
+    const rows = events.map((e) => ({
+      owner: e.owner ?? DEFAULT_OWNER,
+      source: e.source,
+      session_id: e.sessionId,
+      content_sha256: e.contentSha256,
+      occurred_at: e.occurredAt,
+      payload: this.sql.json(e.payload as postgres.JSONValue),
+    }));
+    // Multi-row inserts, ~INSERT_BATCH rows/statement. RETURNING id + summing
+    // row counts preserves the exact inserted-count contract across the
+    // ON CONFLICT DO NOTHING dedupe (skipped rows don't RETURN).
     let inserted = 0;
-    for (const e of events) {
-      const rows = await this.sql`
-        INSERT INTO raw_events (owner, source, session_id, content_sha256, occurred_at, payload)
-        VALUES (
-          ${e.owner ?? DEFAULT_OWNER}, ${e.source}, ${e.sessionId},
-          ${e.contentSha256}, ${e.occurredAt}, ${this.sql.json(e.payload as postgres.JSONValue)}
-        )
-        ON CONFLICT (content_sha256) DO NOTHING
-        RETURNING id
-      `;
-      inserted += rows.length;
-    }
+    await this.sql.begin(async (tx) => {
+      for (let i = 0; i < rows.length; i += INSERT_BATCH) {
+        const slice = rows.slice(i, i + INSERT_BATCH);
+        const ret = await tx`
+          INSERT INTO raw_events ${tx(slice, 'owner', 'source', 'session_id', 'content_sha256', 'occurred_at', 'payload')}
+          ON CONFLICT (content_sha256) DO NOTHING
+          RETURNING id
+        `;
+        inserted += ret.length;
+      }
+    });
     return inserted;
   }
 
   async upsert(chunks: Chunk[]): Promise<void> {
     if (chunks.length === 0) return;
+
+    // Reject the whole batch before any INSERT if any embedding is the wrong
+    // length — a mismatched vector would fail opaquely inside pgvector mid-batch.
+    for (const c of chunks) {
+      if (c.embedding.length !== this.embeddingDim) {
+        throw new Error(
+          `upsert rejected: chunk ${c.id} has embedding length ${c.embedding.length}, expected ${this.embeddingDim}. ` +
+            `No rows were written. Re-embed with the configured model, or fix embeddingDim/embeddingModel to match.`
+        );
+      }
+    }
 
     const rows = chunks.map((c) => {
       // Stamp the model that actually embedded (may differ after a fallback latch).
@@ -222,29 +352,35 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         trajectory_id: c.metadata.trajectoryId ?? null,
         chunk_index: c.metadata.chunkIndex ?? null,
         chunk_count: c.metadata.chunkCount ?? null,
-        artifacts: c.metadata.artifacts && c.metadata.artifacts.length > 0 ? c.metadata.artifacts : null,
+        // JSONB: wrap non-null with sql.json so the multi-row helper types it as
+        // json rather than a Postgres array literal.
+        artifacts:
+          c.metadata.artifacts && c.metadata.artifacts.length > 0
+            ? this.sql.json(c.metadata.artifacts as unknown as postgres.JSONValue)
+            : null,
       };
     });
 
-    for (const r of rows) {
-      await this.sql`
-        INSERT INTO chunks (
-          id, embedding, content, model_id, embedding_dim,
-          owner, chunker_version, embedding_model,
-          repo, branch, timestamp, file_paths, exit_code,
-          session_id, cwd, tier, dream_type, source_chunk_ids,
-          trajectory_id, chunk_index, chunk_count, artifacts
-        ) VALUES (
-          ${r.id}, ${r.embedding}::vector, ${r.content}, ${r.model_id}, ${r.embedding_dim},
-          ${r.owner}, ${r.chunker_version}, ${r.embedding_model},
-          ${r.repo}, ${r.branch}, ${r.timestamp}, ${r.file_paths as string[]}, ${r.exit_code},
-          ${r.session_id}, ${r.cwd}, ${r.tier}, ${r.dream_type}, ${r.source_chunk_ids as string[] | null},
-          ${r.trajectory_id}, ${r.chunk_index}, ${r.chunk_count},
-          ${r.artifacts === null ? null : this.sql.json(r.artifacts as unknown as postgres.JSONValue)}
-        )
-        ON CONFLICT (id) DO NOTHING
-      `;
-    }
+    // Batched multi-row INSERTs (~INSERT_BATCH rows/statement) in one tx.
+    // postgres.js coerces the formatVector() text into the vector column and
+    // handles text[]/jsonb/nulls per-column (proven in live.test). ON CONFLICT
+    // (id) DO NOTHING preserves upsert idempotency.
+    const cols = [
+      'id', 'embedding', 'content', 'model_id', 'embedding_dim',
+      'owner', 'chunker_version', 'embedding_model',
+      'repo', 'branch', 'timestamp', 'file_paths', 'exit_code',
+      'session_id', 'cwd', 'tier', 'dream_type', 'source_chunk_ids',
+      'trajectory_id', 'chunk_index', 'chunk_count', 'artifacts',
+    ] as const;
+    await this.sql.begin(async (tx) => {
+      for (let i = 0; i < rows.length; i += INSERT_BATCH) {
+        const slice = rows.slice(i, i + INSERT_BATCH);
+        await tx`
+          INSERT INTO chunks ${tx(slice, ...cols)}
+          ON CONFLICT (id) DO NOTHING
+        `;
+      }
+    });
   }
 
   async getCachedEmbeddings(shas: string[], model: string): Promise<Map<string, number[]>> {
@@ -263,13 +399,53 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     entries: Array<{ sha: string; embedding: number[] }>,
     model: string
   ): Promise<void> {
-    for (const e of entries) {
-      await this.sql`
-        INSERT INTO embedding_cache (content_sha256, embedding_model, embedding)
-        VALUES (${e.sha}, ${model}, ${formatVector(e.embedding)}::vector)
-        ON CONFLICT (content_sha256, embedding_model) DO NOTHING
-      `;
-    }
+    if (entries.length === 0) return;
+    const rows = entries.map((e) => ({
+      content_sha256: e.sha,
+      embedding_model: model,
+      embedding: formatVector(e.embedding),
+    }));
+    // Batched multi-row INSERTs. embedding_cache.embedding is a dimensionless
+    // vector (model-keyed), so no dim guard here.
+    await this.sql.begin(async (tx) => {
+      for (let i = 0; i < rows.length; i += INSERT_BATCH) {
+        const slice = rows.slice(i, i + INSERT_BATCH);
+        await tx`
+          INSERT INTO embedding_cache ${tx(slice, 'content_sha256', 'embedding_model', 'embedding')}
+          ON CONFLICT (content_sha256, embedding_model) DO NOTHING
+        `;
+      }
+    });
+  }
+
+  // Single Row→Chunk mapping shared by search/getTrajectory/getUnitChunks/
+  // recentDreamChunks. Nullable text columns coalesce to '' (metadata types them
+  // non-null; real ingested chunks always set them). embedding is always []
+  // — reads never rehydrate the vector. owner is included only when the query
+  // SELECTed it (undefined otherwise), preserving prior per-call-site behavior.
+  private rowToChunk(row: ChunkRow): Chunk {
+    return {
+      id: row.id,
+      embedding: [],
+      content: row.content,
+      metadata: {
+        repo: row.repo ?? '',
+        branch: row.branch ?? '',
+        timestamp: row.timestamp as Date,
+        filePaths: row.file_paths ?? [],
+        exitCode: row.exit_code ?? null,
+        sessionId: row.session_id ?? '',
+        cwd: row.cwd ?? '',
+        tier: row.tier,
+        owner: row.owner ?? undefined,
+        dreamType: row.dream_type ?? undefined,
+        sourceChunkIds: row.source_chunk_ids ?? undefined,
+        trajectoryId: row.trajectory_id ?? undefined,
+        chunkIndex: row.chunk_index ?? undefined,
+        chunkCount: row.chunk_count ?? undefined,
+        artifacts: row.artifacts ?? undefined,
+      },
+    };
   }
 
   async search(queryEmbedding: number[], queryText: string, filters: SearchFilters): Promise<SearchResult[]> {
@@ -392,51 +568,12 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       similarity: r.similarity,
       keywordRank: r.keyword_rank,
       combined: r.combined,
-      chunk: {
-        id: r.id,
-        embedding: [],
-        content: r.content,
-        metadata: {
-          repo: r.repo,
-          branch: r.branch,
-          timestamp: r.timestamp,
-          filePaths: r.file_paths ?? [],
-          exitCode: r.exit_code,
-          sessionId: r.session_id,
-          cwd: r.cwd,
-          tier: r.tier,
-          dreamType: r.dream_type ?? undefined,
-          sourceChunkIds: r.source_chunk_ids ?? undefined,
-          trajectoryId: r.trajectory_id ?? undefined,
-          chunkIndex: r.chunk_index ?? undefined,
-          chunkCount: r.chunk_count ?? undefined,
-          artifacts: r.artifacts ?? undefined,
-        },
-      },
+      chunk: this.rowToChunk(r),
     }));
   }
 
   async getTrajectory(trajectoryId: string): Promise<Chunk[]> {
-    const rows = await this.sql<
-      Array<{
-        id: string;
-        content: string;
-        repo: string;
-        branch: string;
-        timestamp: Date;
-        file_paths: string[];
-        exit_code: number | null;
-        session_id: string;
-        cwd: string;
-        tier: 'raw' | 'dream' | 'wiki';
-        dream_type: string | null;
-        source_chunk_ids: string[] | null;
-        trajectory_id: string | null;
-        chunk_index: number | null;
-        chunk_count: number | null;
-        artifacts: Artifact[] | null;
-      }>
-    >`
+    const rows = await this.sql<ChunkRow[]>`
       SELECT
         id, content, repo, branch, timestamp, file_paths,
         exit_code, session_id, cwd, tier, dream_type, source_chunk_ids,
@@ -445,28 +582,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       WHERE trajectory_id = ${trajectoryId}
       ORDER BY chunk_index ASC NULLS LAST
     `;
-
-    return rows.map((r) => ({
-      id: r.id,
-      embedding: [],
-      content: r.content,
-      metadata: {
-        repo: r.repo,
-        branch: r.branch,
-        timestamp: r.timestamp,
-        filePaths: r.file_paths ?? [],
-        exitCode: r.exit_code,
-        sessionId: r.session_id,
-        cwd: r.cwd,
-        tier: r.tier,
-        dreamType: r.dream_type ?? undefined,
-        sourceChunkIds: r.source_chunk_ids ?? undefined,
-        trajectoryId: r.trajectory_id ?? undefined,
-        chunkIndex: r.chunk_index ?? undefined,
-        chunkCount: r.chunk_count ?? undefined,
-        artifacts: r.artifacts ?? undefined,
-      },
-    }));
+    return rows.map((r) => this.rowToChunk(r));
   }
 
   async count(): Promise<number> {
@@ -538,32 +654,21 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
   }
 
   async getUnitChunks(owner: string, sessionId: string, repo: string, tier: 'raw' | 'dream' = 'raw'): Promise<Chunk[]> {
-    const rows = await this.sql<
-      Array<{ id: string; content: string; timestamp: Date; dream_type: string | null; artifacts: Artifact[] | null }>
-    >`
-      SELECT id, content, timestamp, dream_type, artifacts
+    // SELECT the real columns (was fabricating branch:''/filePaths:[]/cwd:''/
+    // exitCode:null) and route through rowToChunk. SACRED: the returned chunk-id
+    // SET (and its order) is unchanged — dream fingerprintOf / pageFingerprint
+    // depend on it. Only the metadata is now real; ids/order are identical.
+    const rows = await this.sql<ChunkRow[]>`
+      SELECT
+        id, content, repo, branch, timestamp, file_paths,
+        exit_code, session_id, cwd, tier, dream_type, source_chunk_ids,
+        trajectory_id, chunk_index, chunk_count, artifacts
       FROM chunks
       WHERE tier = ${tier} AND owner = ${owner} AND session_id = ${sessionId}
         AND COALESCE(repo, '') = ${repo}
       ORDER BY timestamp ASC NULLS LAST, chunk_index ASC NULLS LAST
     `;
-    return rows.map((r) => ({
-      id: r.id,
-      embedding: [],
-      content: r.content,
-      metadata: {
-        repo,
-        branch: '',
-        timestamp: r.timestamp,
-        filePaths: [],
-        exitCode: null,
-        sessionId,
-        cwd: '',
-        tier,
-        dreamType: r.dream_type ?? undefined,
-        artifacts: r.artifacts ?? undefined,
-      },
-    }));
+    return rows.map((r) => this.rowToChunk(r));
   }
 
   async getDreamUnits(owner: string): Promise<DreamUnitRow[]> {
@@ -749,35 +854,17 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
   }
 
   async recentDreamChunks(owner: string, repo: string, since: Date, types: string[], limit: number): Promise<Chunk[]> {
-    const rows = await this.sql<
-      Array<{ id: string; content: string; timestamp: Date; session_id: string; dream_type: string | null; trajectory_id: string | null; artifacts: Artifact[] | null }>
-    >`
-      SELECT id, content, timestamp, session_id, dream_type, trajectory_id, artifacts
+    // repo/owner/tier are fixed by the WHERE clause, so selecting them yields the
+    // same values the old code stamped from params; rowToChunk fills the rest.
+    const rows = await this.sql<ChunkRow[]>`
+      SELECT id, content, repo, timestamp, session_id, tier, owner, dream_type, trajectory_id, artifacts
       FROM chunks
       WHERE tier = 'dream' AND owner = ${owner} AND repo = ${repo}
         AND timestamp >= ${since} AND dream_type = ANY(${types})
       ORDER BY timestamp DESC, id ASC
       LIMIT ${limit}
     `;
-    return rows.map((r) => ({
-      id: r.id,
-      embedding: [],
-      content: r.content,
-      metadata: {
-        repo,
-        branch: '',
-        timestamp: r.timestamp,
-        filePaths: [],
-        exitCode: null,
-        sessionId: r.session_id,
-        cwd: '',
-        tier: 'dream' as const,
-        owner,
-        dreamType: r.dream_type ?? undefined,
-        trajectoryId: r.trajectory_id ?? undefined,
-        artifacts: r.artifacts ?? undefined,
-      },
-    }));
+    return rows.map((r) => this.rowToChunk(r));
   }
 
   async keywordSearchChunks(

@@ -108,6 +108,8 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
 
   insertRawEventsCalls = 0;
   upsertCalls = 0;
+  // Ids passed to deleteChunksByIds, in call order (V2 supersession assertions).
+  deletedIds: string[] = [];
   // Set to throw from upsert. Receives the 0-based upsert call index (pre-increment).
   upsertHook?: (chunks: Chunk[], callIndex: number) => void;
 
@@ -260,6 +262,7 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
   }
 
   async deleteChunksByIds(ids: string[], owner: string, tier: string): Promise<number> {
+    this.deletedIds.push(...ids);
     let n = 0;
     for (const id of ids) {
       const c = this.chunks.get(id);
@@ -397,6 +400,19 @@ export class FakeWikiLLM implements WikiIngestLLM, WikiSplitLLM {
     this.callCount++;
     this.calls.push({ header, itemsText, candidatesText, inventory, correction });
     const out = this.script(header, itemsText, candidatesText, inventory, correction);
+    return {
+      pages: out.pages,
+      usage: out.usage ?? { promptTokens: itemsText.length, completionTokens: out.pages.length * 40 },
+    };
+  }
+
+  // Slim shrink-guard retry: records candidatesText/inventory as '' so tests can
+  // prove pass 1's payload was dropped, while still driving the same script's
+  // `correction` branch.
+  async ingestRetry(header: string, itemsText: string, correction: string): Promise<WikiIngestResponse> {
+    this.callCount++;
+    this.calls.push({ header, itemsText, candidatesText: '', inventory: '', correction });
+    const out = this.script(header, itemsText, '', '', correction);
     return {
       pages: out.pages,
       usage: out.usage ?? { promptTokens: itemsText.length, completionTokens: out.pages.length * 40 },

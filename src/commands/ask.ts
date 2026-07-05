@@ -2,8 +2,7 @@ import { loadConfig, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
-import { runAsk, OpenAIAskLLM, AskError, askOutcome, formatSourceLine } from '../ask/index.ts';
+import { runAsk, OpenAIAskLLM, AskError, demandRowForAsk, formatSourceLine } from '../ask/index.ts';
 import { parseTier } from './search.ts';
 import type { SearchFilters } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
@@ -53,11 +52,7 @@ export async function askCommand(question: string, opts: AskOptions, injected?: 
       process.exit(1);
     }
 
-    const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
-      vectorWeight: config.vectorWeight,
-      keywordWeight: config.keywordWeight,
-      timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
-    });
+    const backend = PgVectorBackend.fromConfig(config);
     await backend.initialize();
     const embedder = new Embedder(buildProvider(config));
     const llm = new OpenAIAskLLM(config.openaiApiKey, config.wikiModel);
@@ -92,19 +87,9 @@ export async function askCommand(question: string, opts: AskOptions, injected?: 
   try {
     const result = await runAsk(question, filters, { backend, embedder, llm });
 
-    // AskSource carries no similarity/sessionId, so top_similarity/top_session_id
-    // stay null for asks; top_tier is the best-ranked candidate's tier.
     // Demand logging must never take down a paid, successful ask.
     try {
-      local.logDemand({
-        ...demandBase,
-        resultCount: result.sources.length,
-        topSimilarity: null,
-        topTier: result.sources[0]?.tier ?? null,
-        topSessionId: null,
-        outcome: askOutcome(result),
-        citedCount: result.sources.filter((s) => s.cited).length,
-      });
+      local.logDemand(demandRowForAsk('cli', question, filters.tier ?? null, opts.repo ?? null, result));
     } catch {
       /* demand log is telemetry */
     }

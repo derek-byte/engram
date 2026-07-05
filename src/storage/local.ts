@@ -1,10 +1,20 @@
 import { Database } from 'bun:sqlite';
-import { LOCAL_DB_PATH, ensureEngramDir } from '../config/index.ts';
+import { ensureEngramDir, resolveLocalDbPath } from '../config/index.ts';
 
 export interface CursorRow {
   sessionId: string;
   chunkOffset: number;
   processedAt: string;
+}
+
+// The full ingest cursor for a session: the slice offset plus the supersession
+// bookkeeping (V2). lastTrajectoryId/lastChunkIds record the trajectory that sat
+// at the cursor position on the previous successful ingest, so the next ingest
+// can detect in-place growth of that turn and retract its stale raw chunks.
+export interface CursorState {
+  chunkOffset: number;
+  lastTrajectoryId: string | null;
+  lastChunkIds: string[];
 }
 
 // Recency-ranked usage log powering the UI's empty-state and, later, the
@@ -114,7 +124,7 @@ const UNMET_PREDICATE = `(
 export class LocalStore {
   private db: Database;
 
-  constructor(path: string = LOCAL_DB_PATH) {
+  constructor(path: string = resolveLocalDbPath()) {
     ensureEngramDir();
     this.db = new Database(path);
     this.db.exec('PRAGMA journal_mode = WAL;');
@@ -126,7 +136,9 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS cursor (
         session_id TEXT PRIMARY KEY,
         chunk_offset INTEGER NOT NULL,
-        processed_at TEXT NOT NULL
+        processed_at TEXT NOT NULL,
+        last_trajectory_id TEXT,
+        last_chunk_ids TEXT
       );
 
       CREATE TABLE IF NOT EXISTS seen_hashes (
@@ -197,6 +209,19 @@ export class LocalStore {
         pages INTEGER NOT NULL, memories INTEGER NOT NULL, est_tokens INTEGER NOT NULL
       );
     `);
+
+    // V2 supersession columns for cursor tables created before this migration.
+    this.ensureColumn('cursor', 'last_trajectory_id', 'TEXT');
+    this.ensureColumn('cursor', 'last_chunk_ids', 'TEXT');
+  }
+
+  // Add a column to an existing table if it isn't already present (bun:sqlite has
+  // no ADD COLUMN IF NOT EXISTS). Used to evolve the cursor table in place.
+  private ensureColumn(table: string, column: string, decl: string): void {
+    const cols = this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+    }
   }
 
   // Log a usage event. Collapses noise: if the newest row of the same kind has
@@ -377,16 +402,42 @@ export class LocalStore {
     return row?.chunk_offset ?? 0;
   }
 
-  setCursor(sessionId: string, chunkOffset: number): void {
+  // Full cursor row including the V2 supersession bookkeeping. Missing session →
+  // offset 0, no recorded last trajectory.
+  getCursorState(sessionId: string): CursorState {
+    const row = this.db
+      .query<{ chunk_offset: number; last_trajectory_id: string | null; last_chunk_ids: string | null }, [string]>(
+        'SELECT chunk_offset, last_trajectory_id, last_chunk_ids FROM cursor WHERE session_id = ?'
+      )
+      .get(sessionId);
+    if (!row) return { chunkOffset: 0, lastTrajectoryId: null, lastChunkIds: [] };
+    let lastChunkIds: string[] = [];
+    if (row.last_chunk_ids) {
+      try {
+        const parsed = JSON.parse(row.last_chunk_ids);
+        if (Array.isArray(parsed)) lastChunkIds = parsed as string[];
+      } catch {
+        // corrupt/legacy value — treat as none
+      }
+    }
+    return { chunkOffset: row.chunk_offset, lastTrajectoryId: row.last_trajectory_id, lastChunkIds };
+  }
+
+  // Advance the cursor and (optionally) record the trajectory that now sits at the
+  // cursor position for the next ingest's supersession check. Omitting the last-*
+  // args leaves those columns null (they only matter for the ingest pipeline).
+  setCursor(sessionId: string, chunkOffset: number, lastTrajectoryId?: string, lastChunkIds?: string[]): void {
     this.db
       .query(
-        `INSERT INTO cursor (session_id, chunk_offset, processed_at)
-         VALUES (?, ?, datetime('now'))
+        `INSERT INTO cursor (session_id, chunk_offset, processed_at, last_trajectory_id, last_chunk_ids)
+         VALUES (?, ?, datetime('now'), ?, ?)
          ON CONFLICT(session_id) DO UPDATE SET
            chunk_offset = excluded.chunk_offset,
-           processed_at = excluded.processed_at`
+           processed_at = excluded.processed_at,
+           last_trajectory_id = excluded.last_trajectory_id,
+           last_chunk_ids = excluded.last_chunk_ids`
       )
-      .run(sessionId, chunkOffset);
+      .run(sessionId, chunkOffset, lastTrajectoryId ?? null, lastChunkIds ? JSON.stringify(lastChunkIds) : null);
   }
 
   hasSeen(hash: string): boolean {
@@ -396,6 +447,16 @@ export class LocalStore {
 
   markSeen(hash: string): void {
     this.db.query('INSERT OR IGNORE INTO seen_hashes (hash) VALUES (?)').run(hash);
+  }
+
+  // Retract seen-markers for chunks whose backend rows were deleted (V2
+  // supersession). Keeps the seen⇒present invariant: without this, content that
+  // reverts to a previously-seen state is hasSeen-skipped after its replacement
+  // was deleted, leaving the backend with neither version.
+  forgetSeen(hashes: string[]): void {
+    if (hashes.length === 0) return;
+    const del = this.db.query('DELETE FROM seen_hashes WHERE hash = ?');
+    for (const h of hashes) del.run(h);
   }
 
   setStat(key: string, value: string): void {

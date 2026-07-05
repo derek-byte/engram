@@ -157,10 +157,9 @@ CHUNK_COUNT="$(
   bun -e '
     import { loadConfig, configIsComplete } from "./src/config/index.ts";
     import { PgVectorBackend } from "./src/storage/pgvector.ts";
-    import { CHUNKER_VERSION } from "./src/ingest/chunker.ts";
     const c = loadConfig();
     if (!configIsComplete(c)) { console.error("config incomplete"); process.exit(2); }
-    const b = new PgVectorBackend(c.databaseUrl, c.embeddingDim, c.embeddingModel, CHUNKER_VERSION);
+    const b = PgVectorBackend.fromConfig(c);
     try { await b.initialize(); process.stdout.write(String(await b.count())); }
     finally { await b.close(); }
   ' 2>/tmp/engram-count-err

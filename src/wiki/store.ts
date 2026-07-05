@@ -116,7 +116,13 @@ export class WikiStore {
     }
   }
 
+  // The single chokepoint for slug→path. Rejecting an invalid slug here means no
+  // caller (readPage/writePage/every future one) can escape pagesDir via
+  // '../…' or a percent-encoded traversal — the fs is never touched for a bad slug.
   pagePath(slug: string): string {
+    if (!isValidSlug(slug)) {
+      throw new Error(`invalid wiki slug: ${JSON.stringify(slug)} (must match ^[a-z0-9-]{1,64}$)`);
+    }
     return join(this.pagesDir, `${slug}.md`);
   }
 

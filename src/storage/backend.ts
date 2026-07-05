@@ -1,4 +1,4 @@
-import type { Chunk, RawEvent, SearchFilters, SearchResult } from '../types/index.ts';
+import type { Artifact, Chunk, RawEvent, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
 
 export interface EmbeddingCache {
   getCachedEmbeddings(shas: string[], model: string): Promise<Map<string, number[]>>;
@@ -116,6 +116,21 @@ export interface WikiEvidenceStore {
   pendingWikiUnits(owner: string, staleHours?: number): Promise<PendingUnit[]>;
   // Distinct sessions + first/last timestamp over the given source chunk ids.
   wikiPageEvidence(sourceIds: string[]): Promise<WikiPageEvidence>;
+}
+
+// Maintenance/backfill seam: artifact re-derivation and owner-scoped retraction.
+// Kept off VectorBackend so the hot-path contract stays minimal. Only the
+// backfill sweep, the artifacts re-derive, and the retraction/bench-teardown
+// callers depend on this. PgVectorBackend implements it alongside the others.
+export interface MaintenanceStore {
+  // Raw trajectories for artifact backfill: content_sha256 == trajectoryId, payload = full Trajectory.
+  rawTrajectoriesForArtifacts(source: string): Promise<Array<{ trajectoryId: string; payload: Trajectory }>>;
+  // Attach artifacts to a trajectory's raw chunks. Never touches embeddings/content.
+  setChunkArtifacts(trajectoryId: string, artifacts: Artifact[]): Promise<number>;
+  // Retract every chunk + raw event + dream/wiki unit for an owner, atomically.
+  deleteByOwner(owner: string): Promise<{ chunks: number; rawEvents: number }>;
+  // Same, for every owner sharing a prefix (e.g. 'bench:' → 'bench:%').
+  deleteByOwnerPrefix(prefix: string): Promise<{ chunks: number; rawEvents: number }>;
 }
 
 // The wiki layer's storage seam. PgVectorBackend implements this alongside

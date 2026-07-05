@@ -363,6 +363,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Raw constructor (NOT fromConfig): the benchmark deliberately pins FAKE dims/
+  // models for cross-run comparability, so it must bypass config-derived stamping.
   const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
   await backend.initialize();
 

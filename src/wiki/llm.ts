@@ -1,7 +1,12 @@
 import OpenAI from 'openai';
-import { WIKI_SYSTEM_PROMPT, WIKI_SPLIT_SYSTEM_PROMPT, buildIngestUser, buildSplitUser } from './prompt.ts';
+import { WIKI_SYSTEM_PROMPT, WIKI_SPLIT_SYSTEM_PROMPT, buildIngestUser, buildRetryUser, buildSplitUser } from './prompt.ts';
 import { PAGE_KINDS, type PageKind, type WikiPage } from './store.ts';
 import { isValidSlug, slugify, stripIdCitations } from './links.ts';
+import { modelParams, withRetry, REQUEST_TIMEOUT_MS } from '../llm/shared.ts';
+
+// Re-exported so existing importers (src/ask, src/eval) keep their path; the
+// definition now lives in the shared LLM module.
+export { modelParams };
 
 export interface WikiPageOp {
   slug: string;
@@ -24,36 +29,23 @@ export interface WikiIngestResponse {
   usage?: WikiUsage;
 }
 
-const REQUEST_TIMEOUT_MS = 120_000;
-
-// Per-model completion params. A generous output cap either way: truncated JSON
-// fails the unit identically on every retry. gpt-5+/o-series reasoning models
-// reject the legacy `max_tokens` and any non-default `temperature`; older chat
-// models accept `max_completion_tokens` but need `temperature: 0` for stable
-// re-runs.
-export function modelParams(model: string): { max_completion_tokens: number; temperature?: number } {
-  const reasoning = /^(gpt-5|o\d)/.test(model);
-  return reasoning
-    ? { max_completion_tokens: 16384 }
-    : { max_completion_tokens: 16384, temperature: 0 };
-}
-
 // Dream item types the model sometimes leaks into page ops despite the prompt;
 // coerce to the closest wiki kind instead of dropping the whole page.
 const KIND_ALIASES: Record<string, PageKind> = { fix: 'gotcha', preference: 'topic' };
 
 // The wiki-ingest LLM seam: one call per synthesis unit returns full page ops.
-// `correction` (optional) is appended to the user message on a shrink-guard
-// retry — the byte-stable system prompt + shared user prefix keep OpenAI prompt
-// caching intact.
 export interface WikiIngestLLM {
   ingest(
     header: string,
     itemsText: string,
     candidatesText: string,
-    inventory: string,
-    correction?: string
+    inventory: string
   ): Promise<WikiIngestResponse>;
+  // Shrink-guard retry: a SLIM prompt (header + items + correction only, no
+  // candidates/inventory). The retry only ACCEPTS ops on the violating slugs, so
+  // re-sending the full candidate/inventory payload roughly doubled unit spend
+  // for no benefit. A distinct method keeps pass-1's cacheable prefix untouched.
+  ingestRetry(header: string, itemsText: string, correction: string): Promise<WikiIngestResponse>;
 }
 
 // The hub-split seam: one call takes an oversized page + inventory, returns a
@@ -71,13 +63,10 @@ export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
     this.model = model;
   }
 
-  async ingest(
-    header: string,
-    itemsText: string,
-    candidatesText: string,
-    inventory: string,
-    correction?: string
-  ): Promise<WikiIngestResponse> {
+  // One STRICT-JSON chat call shared by ingest, its retry, and split. Without a
+  // timeout the SDK default is 10 minutes — one hung request stalls the whole
+  // ingest; withRetry owns the retries (SDK maxRetries: 0).
+  private async complete(systemPrompt: string, userContent: string): Promise<WikiIngestResponse> {
     const res = await withRetry(() =>
       this.client.chat.completions.create(
         {
@@ -85,12 +74,10 @@ export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
           ...modelParams(this.model),
           response_format: { type: 'json_object' },
           messages: [
-            { role: 'system', content: WIKI_SYSTEM_PROMPT },
-            { role: 'user', content: buildIngestUser(header, itemsText, candidatesText, inventory, correction) },
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent },
           ],
         },
-        // Without a timeout the SDK default is 10 minutes — one hung request
-        // stalls the whole ingest. withRetry owns the retries.
         { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 }
       )
     );
@@ -103,28 +90,16 @@ export class OpenAIWikiLLM implements WikiIngestLLM, WikiSplitLLM {
     };
   }
 
-  async split(page: WikiPage, inventory: string): Promise<WikiIngestResponse> {
-    const res = await withRetry(() =>
-      this.client.chat.completions.create(
-        {
-          model: this.model,
-          ...modelParams(this.model),
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: WIKI_SPLIT_SYSTEM_PROMPT },
-            { role: 'user', content: buildSplitUser(page, inventory) },
-          ],
-        },
-        { timeout: REQUEST_TIMEOUT_MS, maxRetries: 0 }
-      )
-    );
-    const content = res.choices[0]?.message?.content ?? '';
-    return {
-      pages: parsePageOps(content),
-      usage: res.usage
-        ? { promptTokens: res.usage.prompt_tokens, completionTokens: res.usage.completion_tokens }
-        : undefined,
-    };
+  ingest(header: string, itemsText: string, candidatesText: string, inventory: string): Promise<WikiIngestResponse> {
+    return this.complete(WIKI_SYSTEM_PROMPT, buildIngestUser(header, itemsText, candidatesText, inventory));
+  }
+
+  ingestRetry(header: string, itemsText: string, correction: string): Promise<WikiIngestResponse> {
+    return this.complete(WIKI_SYSTEM_PROMPT, buildRetryUser(header, itemsText, correction));
+  }
+
+  split(page: WikiPage, inventory: string): Promise<WikiIngestResponse> {
+    return this.complete(WIKI_SPLIT_SYSTEM_PROMPT, buildSplitUser(page, inventory));
   }
 }
 
@@ -188,36 +163,4 @@ export function parsePageOps(raw: string): WikiPageOp[] {
     });
   }
   return out;
-}
-
-async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryable(err) || i === attempts - 1) break;
-      await new Promise((r) => setTimeout(r, retryDelayMs(err, i)));
-    }
-  }
-  throw lastErr;
-}
-
-// TPM 429s need seconds-scale waits (the budget refills per minute); with
-// concurrent workers a sub-second backoff just re-collides.
-function retryDelayMs(err: unknown, attempt: number): number {
-  const base = Math.min(2 ** attempt * 500, 8000);
-  if (err instanceof OpenAI.APIError && err.status === 429) {
-    return Math.max(base, (attempt + 1) * 5000);
-  }
-  return base;
-}
-
-function isRetryable(err: unknown): boolean {
-  if (err instanceof OpenAI.APIError) {
-    const status = err.status;
-    return status === undefined || status === 408 || status === 429 || status >= 500;
-  }
-  return true;
 }

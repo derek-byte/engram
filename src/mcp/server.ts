@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { runSearch } from '../search/index.ts';
-import { runAsk, OpenAIAskLLM, AskError, askOutcome, formatSourceLine } from '../ask/index.ts';
+import { runAsk, OpenAIAskLLM, AskError, demandRowForAsk, formatSourceLine } from '../ask/index.ts';
 import type { OpenAIReranker } from '../search/rerank.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
@@ -30,25 +30,37 @@ function parseTier(value: string | undefined): SearchFilters['tier'] {
   return 'synth';
 }
 
-export async function startMcpServer(deps: McpDeps): Promise<void> {
-  const server = new McpServer({ name: 'engram', version: '0.1.0' });
+// The MCP tool result shape (text-only, optional isError). Shared by every handler.
+export type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
-  server.registerTool(
-    'engram_search',
-    {
-      description:
-        "Search Derek's past Claude Code sessions — decisions, fixes, and discussions from all projects.",
-      inputSchema: {
-        query: z.string().describe('natural-language query'),
-        repo: z.string().optional().describe('limit to a repo name'),
-        branch: z.string().optional().describe('limit to a git branch'),
-        since: z.string().optional().describe('only results after this ISO date'),
-        limit: z.number().int().positive().optional().describe('max results (default 5)'),
-        tier: z.enum(['raw', 'dream', 'wiki', 'synth', 'all']).optional().describe("which memory tiers to search (default 'synth' = wiki+dream; 'raw' for verbatim drill-down)"),
-        rerank: z.boolean().optional().describe('rerank candidates with an LLM (default from config)'),
-      },
-    },
-    async ({ query, repo, branch, since, limit, tier, rerank }) => {
+export interface SearchArgs {
+  query: string;
+  repo?: string;
+  branch?: string;
+  since?: string;
+  limit?: number;
+  tier?: 'raw' | 'dream' | 'wiki' | 'synth' | 'all';
+  rerank?: boolean;
+}
+export interface AskArgs {
+  question: string;
+  repo?: string;
+  limit?: number;
+}
+
+// The four tool handlers, extracted from startMcpServer so tests drive them with
+// fake backend/embedder/store — no stdio transport, no MCP client. startMcpServer
+// registers these verbatim; the wire-up stays a thin adapter.
+export interface McpToolHandlers {
+  search(args: SearchArgs): Promise<ToolResult>;
+  ask(args: AskArgs): Promise<ToolResult>;
+  wikiPage(args: { slug: string }): Promise<ToolResult>;
+  status(): Promise<ToolResult>;
+}
+
+export function buildToolHandlers(deps: McpDeps): McpToolHandlers {
+  return {
+    async search({ query, repo, branch, since, limit, tier, rerank }): Promise<ToolResult> {
       const sinceDate = since ? new Date(since) : undefined;
       if (sinceDate && Number.isNaN(sinceDate.getTime())) {
         throw new Error(`invalid 'since' date: ${since} (use ISO format, e.g. 2026-01-15)`);
@@ -69,8 +81,110 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
         embedder: deps.embedder,
         reranker: useRerank ? deps.reranker : undefined,
       });
+      // Demand signal (roadmap #6), mirroring the UI search row: surface 'mcp',
+      // top_* from the best hit. Swallow-all — telemetry must never break search.
+      try {
+        const top = results[0];
+        deps.logDemand?.({
+          surface: 'mcp',
+          kind: 'search',
+          query,
+          tier: filters.tier ?? null,
+          repo: repo ?? null,
+          resultCount: results.length,
+          topSimilarity: top?.similarity ?? null,
+          topTier: top?.chunk.metadata.tier ?? null,
+          topSessionId: top?.chunk.metadata.sessionId ?? null,
+        });
+      } catch {
+        /* demand log is telemetry */
+      }
       return { content: [{ type: 'text', text: formatResults(results) }] };
-    }
+    },
+
+    async ask({ question, repo, limit }): Promise<ToolResult> {
+      deps.logRecent?.('ask', question, question);
+      if (!deps.askLLM) {
+        return {
+          content: [{ type: 'text', text: 'engram_ask unavailable: no OPENAI_API_KEY. Use engram_search instead.' }],
+          isError: true,
+        };
+      }
+      try {
+        const result = await runAsk(
+          question,
+          { repo, tier: 'synth', limit: limit ?? 12 },
+          { backend: deps.backend, embedder: deps.embedder, llm: deps.askLLM }
+        );
+        // One demand row per ask. Telemetry only — a sqlite hiccup must never
+        // discard a paid answer.
+        try {
+          deps.logDemand?.(demandRowForAsk('mcp', question, 'synth', repo ?? null, result));
+        } catch {
+          /* demand log is telemetry */
+        }
+        if (result.answer === null) {
+          return { content: [{ type: 'text', text: 'No indexed material matched.' }] };
+        }
+        const cited = result.sources.filter((s) => s.cited);
+        const sourcesText = cited.length > 0 ? cited.map(formatSourceLine).join('\n') : '(no sources cited)';
+        return { content: [{ type: 'text', text: `${result.answer}\n\n---\n${sourcesText}` }] };
+      } catch (err) {
+        try {
+          deps.logDemand?.({ surface: 'mcp', kind: 'ask', query: question, tier: 'synth', repo: repo ?? null, outcome: 'error' });
+        } catch {
+          /* demand log is telemetry */
+        }
+        const reason = err instanceof AskError ? err.message : err instanceof Error ? err.message : String(err);
+        console.error(`[ask] ${reason}`);
+        return {
+          content: [{ type: 'text', text: `engram_ask failed: ${reason}. Use engram_search instead.` }],
+          isError: true,
+        };
+      }
+    },
+
+    async wikiPage({ slug }): Promise<ToolResult> {
+      if (!deps.store) return { content: [{ type: 'text', text: 'wiki is not available.' }] };
+      let page;
+      try {
+        page = deps.store.readPage(slug);
+      } catch (err) {
+        return { content: [{ type: 'text', text: `page ${slug}: ${err instanceof Error ? err.message : err}` }] };
+      }
+      if (!page) return { content: [{ type: 'text', text: `no wiki page: ${slug}` }] };
+      return { content: [{ type: 'text', text: serializePage(page) }] };
+    },
+
+    async status(): Promise<ToolResult> {
+      const count = await deps.backend.count();
+      const last = deps.lastIngestAt() ?? 'never';
+      const pages = deps.store ? deps.store.listSlugs().length : 0;
+      return { content: [{ type: 'text', text: `chunks: ${count}\nwiki pages: ${pages}\nlast ingest: ${last}` }] };
+    },
+  };
+}
+
+export async function startMcpServer(deps: McpDeps): Promise<void> {
+  const server = new McpServer({ name: 'engram', version: '0.1.0' });
+  const handlers = buildToolHandlers(deps);
+
+  server.registerTool(
+    'engram_search',
+    {
+      description:
+        "Search Derek's past Claude Code sessions — decisions, fixes, and discussions from all projects.",
+      inputSchema: {
+        query: z.string().describe('natural-language query'),
+        repo: z.string().optional().describe('limit to a repo name'),
+        branch: z.string().optional().describe('limit to a git branch'),
+        since: z.string().optional().describe('only results after this ISO date'),
+        limit: z.number().int().positive().optional().describe('max results (default 5)'),
+        tier: z.enum(['raw', 'dream', 'wiki', 'synth', 'all']).optional().describe("which memory tiers to search (default 'synth' = wiki+dream; 'raw' for verbatim drill-down)"),
+        rerank: z.boolean().optional().describe('rerank candidates with an LLM (default from config)'),
+      },
+    },
+    (args) => handlers.search(args)
   );
 
   server.registerTool(
@@ -84,56 +198,7 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
         limit: z.number().int().positive().max(50).optional().describe('retrieval candidates fed to the answer model (default 12, max 50)'),
       },
     },
-    async ({ question, repo, limit }) => {
-      deps.logRecent?.('ask', question, question);
-      if (!deps.askLLM) {
-        return {
-          content: [{ type: 'text', text: 'engram_ask unavailable: no OPENAI_API_KEY. Use engram_search instead.' }],
-          isError: true,
-        };
-      }
-      const demandBase = { surface: 'mcp' as const, kind: 'ask' as const, query: question, tier: 'synth', repo: repo ?? null };
-      try {
-        const result = await runAsk(
-          question,
-          { repo, tier: 'synth', limit: limit ?? 12 },
-          { backend: deps.backend, embedder: deps.embedder, llm: deps.askLLM }
-        );
-        // One demand row per ask (AskSource has no similarity/sessionId → null).
-        // Telemetry only — a sqlite hiccup must never discard a paid answer.
-        try {
-          deps.logDemand?.({
-            ...demandBase,
-            resultCount: result.sources.length,
-            topSimilarity: null,
-            topTier: result.sources[0]?.tier ?? null,
-            topSessionId: null,
-            outcome: askOutcome(result),
-            citedCount: result.sources.filter((s) => s.cited).length,
-          });
-        } catch {
-          /* demand log is telemetry */
-        }
-        if (result.answer === null) {
-          return { content: [{ type: 'text', text: 'No indexed material matched.' }] };
-        }
-        const cited = result.sources.filter((s) => s.cited);
-        const sourcesText = cited.length > 0 ? cited.map(formatSourceLine).join('\n') : '(no sources cited)';
-        return { content: [{ type: 'text', text: `${result.answer}\n\n---\n${sourcesText}` }] };
-      } catch (err) {
-        try {
-          deps.logDemand?.({ ...demandBase, outcome: 'error' });
-        } catch {
-          /* demand log is telemetry */
-        }
-        const reason = err instanceof AskError ? err.message : err instanceof Error ? err.message : String(err);
-        console.error(`[ask] ${reason}`);
-        return {
-          content: [{ type: 'text', text: `engram_ask failed: ${reason}. Use engram_search instead.` }],
-          isError: true,
-        };
-      }
-    }
+    (args) => handlers.ask(args)
   );
 
   server.registerTool(
@@ -142,17 +207,7 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
       description: 'Fetch one compiled wiki page by slug — the full markdown with frontmatter provenance (drill-down from a wiki search hit).',
       inputSchema: { slug: z.string().describe('the page slug, e.g. from a [wiki:...] search hit') },
     },
-    async ({ slug }) => {
-      if (!deps.store) return { content: [{ type: 'text', text: 'wiki is not available.' }] };
-      let page;
-      try {
-        page = deps.store.readPage(slug);
-      } catch (err) {
-        return { content: [{ type: 'text', text: `page ${slug}: ${err instanceof Error ? err.message : err}` }] };
-      }
-      if (!page) return { content: [{ type: 'text', text: `no wiki page: ${slug}` }] };
-      return { content: [{ type: 'text', text: serializePage(page) }] };
-    }
+    (args) => handlers.wikiPage(args)
   );
 
   server.registerTool(
@@ -161,12 +216,7 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
       description: 'Report engram index health: total indexed chunks, wiki page count, and last ingest time.',
       inputSchema: {},
     },
-    async () => {
-      const count = await deps.backend.count();
-      const last = deps.lastIngestAt() ?? 'never';
-      const pages = deps.store ? deps.store.listSlugs().length : 0;
-      return { content: [{ type: 'text', text: `chunks: ${count}\nwiki pages: ${pages}\nlast ingest: ${last}` }] };
-    }
+    () => handlers.status()
   );
 
   const transport = new StdioServerTransport();

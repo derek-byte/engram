@@ -22,7 +22,6 @@ import OpenAI from 'openai';
 import { configIsComplete, LOCAL_DB_PATH } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { runAsk, OpenAIAskLLM, askOutcome, type AskResult } from '../ask/index.ts';
 import { runSearch } from '../search/index.ts';
 import { modelParams } from '../wiki/llm.ts';
@@ -183,11 +182,7 @@ export function askEvalConfigError(config: EngramConfig): string | null {
 // must guard with askEvalConfigError first. Returns a close() the caller runs in
 // finally to release the pg pool.
 export async function buildAskEvalDeps(config: EngramConfig): Promise<{ deps: AskEvalDeps; close: () => Promise<void> }> {
-  const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION, {
-    vectorWeight: config.vectorWeight,
-    keywordWeight: config.keywordWeight,
-    timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
-  });
+  const backend = PgVectorBackend.fromConfig(config);
   await backend.initialize();
   // No cache seam → no writes, exactly like askCommand builds its embedder.
   const embedder = new Embedder(buildProvider(config));

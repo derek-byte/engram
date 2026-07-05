@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { EmbeddingCache } from '../storage/backend.ts';
 import { contentSha256 } from './hash.ts';
+import { withRetry } from '../llm/shared.ts';
 
 export const MAX_CHARS_PER_INPUT = 24000;
 
@@ -48,8 +49,9 @@ export class OpenAIProvider implements EmbeddingProvider {
   }
 
   async embed(texts: string[]): Promise<ProviderEmbedding> {
-    const result = await withRetry(() =>
-      this.client.embeddings.create({ model: this.model, input: texts })
+    const result = await withRetry(
+      () => this.client.embeddings.create({ model: this.model, input: texts }),
+      { attempts: 4 }
     );
     return {
       vectors: result.data.sort((a, b) => a.index - b.index).map((d) => d.embedding),
@@ -110,9 +112,9 @@ export class FallbackProvider implements EmbeddingProvider {
     return this.active.maxInputChars;
   }
 
-  forceLatch(reason: string): void {
+  forceLatch(reason: string, fallback?: EmbeddingProvider): void {
     if (this.latched) return;
-    this.active = this.makeFallback();
+    this.active = fallback ?? this.makeFallback();
     this.latched = true;
     console.warn(
       `[embed] ${reason}; using local provider ${this.active.model} for the rest of this process`
@@ -124,8 +126,21 @@ export class FallbackProvider implements EmbeddingProvider {
     try {
       return await this.primary.embed(texts);
     } catch (err) {
+      // A mid-process latch swaps the active provider for the REST of the run.
+      // If the fallback's dimension differs from the primary's, latching would
+      // write vectors of a second dimension into the same index — silent
+      // corruption far worse than the failure itself. Refuse to latch; surface
+      // the original error so the run fails loudly instead.
+      const fallback = this.makeFallback();
+      if (fallback.dim !== this.primary.dim) {
+        console.warn(
+          `[embed] fallback suppressed: dim mismatch (primary ${this.primary.model} dim ${this.primary.dim} vs fallback ${fallback.model} dim ${fallback.dim})`
+        );
+        throw err;
+      }
       this.forceLatch(
-        `primary provider ${this.primary.model} failed (${err instanceof Error ? err.message : err})`
+        `primary provider ${this.primary.model} failed (${err instanceof Error ? err.message : err})`,
+        fallback
       );
       return this.active.embed(texts);
     }
@@ -241,28 +256,4 @@ export class Embedder {
     if (!v) throw new Error('embedding returned no result');
     return v;
   }
-}
-
-async function withRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryable(err) || i === attempts - 1) break;
-      const delay = Math.min(2 ** i * 500, 8000);
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
-  throw lastErr;
-}
-
-// Auth/validation errors won't heal on retry; fail fast so the fallback latch fires.
-function isRetryable(err: unknown): boolean {
-  if (err instanceof OpenAI.APIError) {
-    const status = err.status;
-    return status === undefined || status === 408 || status === 429 || status >= 500;
-  }
-  return true;
 }

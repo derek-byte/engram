@@ -34,6 +34,28 @@ describe('WikiStore safety', () => {
     expect(() => new WikiStore(homedir())).toThrow();
     expect(() => new WikiStore('relative/path')).toThrow();
   });
+
+  test('pagePath rejects traversal slugs at the single chokepoint (no fs escape)', () => {
+    const dir = tempDir();
+    const store = new WikiStore(dir);
+    try {
+      store.init();
+      // readPage/writePage/pagePath all funnel through pagePath → isValidSlug.
+      expect(() => store.readPage('../../../etc/passwd')).toThrow(/invalid wiki slug/);
+      expect(() => store.readPage('..%2f..')).toThrow(/invalid wiki slug/);
+      expect(() => store.pagePath('../secret')).toThrow(/invalid wiki slug/);
+      expect(() => store.writePage(samplePage({ slug: '../../evil' }))).toThrow(/invalid wiki slug/);
+      // Nothing was written or read outside pagesDir.
+      expect(existsSync(join(dir, '..', 'evil.md'))).toBe(false);
+
+      // A valid slug is unchanged — resolves under pages/ and round-trips.
+      expect(store.pagePath('fingerprint-skip')).toBe(join(store.pagesDir, 'fingerprint-skip.md'));
+      store.writePage(samplePage());
+      expect(store.readPage('fingerprint-skip')?.slug).toBe('fingerprint-skip');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('frontmatter codec', () => {

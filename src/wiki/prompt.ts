@@ -118,6 +118,22 @@ export function buildIngestUser(
   return parts.join('\n');
 }
 
+// Slim shrink-guard retry prompt: header + items + correction ONLY. Deliberately
+// OMITS the candidates + full inventory that pass 1 sends — the retry is scoped to
+// re-merging the violating slugs (whose full existing bodies ride inside
+// `correction`), so re-sending that payload was pure waste (~2× unit spend). Kept
+// separate from buildIngestUser so pass-1's cacheable prefix stays byte-stable.
+export function buildRetryUser(header: string, itemsText: string, correction: string): string {
+  return [
+    header,
+    '',
+    'DREAM ITEMS (id in brackets):',
+    itemsText,
+    '',
+    correction,
+  ].join('\n');
+}
+
 // Correction block for a shrink-guard retry: per violating slug, restate the
 // char drop and re-supply the FULL existing body so the model re-merges instead
 // of collapsing the page. One block covers every violating slug in the unit.

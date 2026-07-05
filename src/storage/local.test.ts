@@ -1,10 +1,32 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempStore, type TempStore } from '../ingest/testkit.ts';
 import { LocalStore, RECENTS_CAP, SNAPSHOTS_CAP, ASKEVAL_CAP } from './local.ts';
+
+describe('LocalStore ENGRAM_LOCAL_DB seam', () => {
+  test('a LocalStore built after ENGRAM_LOCAL_DB is set uses that path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'engram-dbseam-'));
+    const dbPath = join(dir, 'redirected.sqlite');
+    const prev = process.env.ENGRAM_LOCAL_DB;
+    process.env.ENGRAM_LOCAL_DB = dbPath; // set AFTER the module was imported
+    try {
+      const s = new LocalStore(); // default arg resolves the env var at call time
+      s.setStat('k', 'v');
+      s.close();
+      expect(existsSync(dbPath)).toBe(true);
+      const reopened = new LocalStore(dbPath);
+      expect(reopened.getStat('k')).toBe('v');
+      reopened.close();
+    } finally {
+      if (prev === undefined) delete process.env.ENGRAM_LOCAL_DB;
+      else process.env.ENGRAM_LOCAL_DB = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('LocalStore recents', () => {
   let t: TempStore;

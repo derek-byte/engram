@@ -1,7 +1,21 @@
 import { describe, expect, test } from 'bun:test';
-import { Embedder } from './embed.ts';
+import { Embedder, FallbackProvider, type EmbeddingProvider, type ProviderEmbedding } from './embed.ts';
 import { contentSha256 } from './hash.ts';
 import { FakeCache, FakeProvider } from './testkit.ts';
+
+// A primary that always fails, to drive the FallbackProvider latch decision.
+class ThrowingProvider implements EmbeddingProvider {
+  readonly maxInputChars = undefined;
+  callCount = 0;
+  constructor(
+    readonly model: string,
+    readonly dim: number
+  ) {}
+  async embed(): Promise<ProviderEmbedding> {
+    this.callCount++;
+    throw new Error('primary down');
+  }
+}
 
 describe('Embedder cache', () => {
   test('places hits and misses at their original indices', async () => {
@@ -74,5 +88,38 @@ describe('Embedder cache', () => {
     await expect(
       embedder.embedWithStats(['short', big], ['label-A', 'label-OFFENDER'])
     ).rejects.toThrow(/50 chars/);
+  });
+});
+
+describe('FallbackProvider latch rule (V5)', () => {
+  test('equal-dim primary failure latches to the fallback for the rest of the process', async () => {
+    const primary = new ThrowingProvider('openai-4', 4);
+    const fallback = new FakeProvider({ model: 'local-4', dim: 4 });
+    const provider = new FallbackProvider(primary, () => fallback);
+
+    const res = await provider.embed(['hello']);
+    expect(res.model).toBe('local-4');
+    expect(res.vectors[0]).toEqual(fallback.vec('hello'));
+
+    // Latched: subsequent calls skip the (broken) primary entirely.
+    expect(provider.model).toBe('local-4');
+    expect(provider.dim).toBe(4);
+    await provider.embed(['again']);
+    expect(primary.callCount).toBe(1); // primary hit once, never again after latch
+  });
+
+  test('dim-mismatch primary failure does NOT latch — it rethrows the original error', async () => {
+    const primary = new ThrowingProvider('openai-1536', 1536);
+    const fallback = new FakeProvider({ model: 'local-384', dim: 384 });
+    const provider = new FallbackProvider(primary, () => fallback);
+
+    // The original failure surfaces; a 384-dim fallback would corrupt a 1536-dim index.
+    await expect(provider.embed(['hello'])).rejects.toThrow('primary down');
+
+    // Not latched: active provider is still the primary (dims unchanged), and the
+    // fallback's vectors were never returned.
+    expect(provider.model).toBe('openai-1536');
+    expect(provider.dim).toBe(1536);
+    expect(fallback.callCount).toBe(0);
   });
 });

@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildUiFetch, type ServiceOps, type UiDeps } from './ui.ts';
+import { indexPath } from './service.ts';
 import { JobConflictError, type JobOps } from './jobs.ts';
 import { OpenAIAskLLM, type AskChatClient } from '../ask/index.ts';
 import { Embedder } from '../ingest/embed.ts';
@@ -425,6 +426,14 @@ describe('buildUiFetch', () => {
     expect(serviceCalls.restart).toEqual(['com.engram.watcher']);
   });
 
+  test('POST /api/services/%ZZ/restart → 400 (malformed %-encoding, not a 500)', async () => {
+    const res = await fetch(
+      new Request('http://' + HOST + '/api/services/%ZZ/restart', { method: 'POST', headers: { host: HOST } })
+    );
+    expect(res.status).toBe(400);
+    expect(serviceCalls.restart.length).toBe(0);
+  });
+
   test('GET /api/wiki/:slug carries evidence fields from the source chunks', async () => {
     await backend.upsert([
       chunk('c1', 'dream', { sessionId: 's1', timestamp: new Date('2026-01-01T00:00:00Z') }),
@@ -707,7 +716,7 @@ describe('buildUiFetch', () => {
             SessionStart: [
               {
                 matcher: 'startup|clear',
-                hooks: [{ type: 'command', command: '/old/moved/repo/src/index.ts context --cwd "$CLAUDE_PROJECT_DIR"' }],
+                hooks: [{ type: 'command', command: '/old/moved/engram/src/index.ts context --cwd "$CLAUDE_PROJECT_DIR"' }],
               },
             ],
           },
@@ -791,6 +800,19 @@ describe('buildUiFetch', () => {
       const res = await postJob('backfill', {});
       expect(res.status).toBe(404);
       expect(jobCalls.start.length).toBe(0);
+    });
+
+    // A malformed %-escape in the path param used to throw an uncaught URIError
+    // (→ 500); safeDecode now yields a clean 400 before any job work.
+    test('POST /api/jobs/%ZZ/run → 400 (malformed %-encoding, not a 500)', async () => {
+      const res = await postJob('%ZZ', {});
+      expect(res.status).toBe(400);
+      expect(jobCalls.start.length).toBe(0);
+    });
+
+    test('GET /api/jobs/%ZZ → 400 (malformed %-encoding, not a 500)', async () => {
+      const res = await fetch(req('/api/jobs/%ZZ'));
+      expect(res.status).toBe(400);
     });
 
     test('POST /api/jobs/askeval/run rejects bad body (400)', async () => {
@@ -897,6 +919,22 @@ describe('buildUiFetch', () => {
       // Fake services: installed + supported → ok, no fix.
       expect(c.service.ok).toBe(true);
       expect(c.service.fix).toBeNull();
+    });
+
+    // Review-confirmed gap: staleInterpreter (bun upgraded, versioned path gone)
+    // was reported STALE by the CLI but rendered green by the setup checklist.
+    test('hook check is NOT ok when the interpreter is stale', async () => {
+      const command = `/nonexistent/versioned/bun ${indexPath()} context --cwd "$CLAUDE_PROJECT_DIR"`;
+      writeFileSync(
+        hookSettings,
+        JSON.stringify({
+          hooks: { SessionStart: [{ matcher: 'startup|clear', hooks: [{ type: 'command', command }] }] },
+        })
+      );
+      const c = byId((await getSetup()).checks);
+      expect(c.hook.ok).toBe(false);
+      expect(c.hook.detail).toContain('interpreter');
+      expect(c.hook.fix).toBe('in-app');
     });
 
     test('index check ok + "N chunks" once the backend has content', async () => {

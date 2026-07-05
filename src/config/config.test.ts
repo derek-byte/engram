@@ -2,9 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import {
+  loadConfig,
   mergeConfig,
   patchConfigFile,
+  promptForMissing,
   CONTEXT_BUDGET_DEFAULT,
   CONTEXT_BUDGET_MIN,
   CONTEXT_BUDGET_MAX,
@@ -77,5 +80,49 @@ describe('synthesis targetedSessionsPerNight', () => {
 
   test('patchConfigFile falls back to the default on a non-numeric value (not an error)', () => {
     expect(patch({ targetedSessionsPerNight: 'x' }).targetedSessionsPerNight).toBe(TARGETED_SESSIONS_DEFAULT);
+  });
+});
+
+describe('promptForMissing (D3: env secrets never leak into config.json)', () => {
+  let configPath: string;
+  let priorKey: string | undefined;
+  let priorDbUrl: string | undefined;
+
+  afterEach(() => {
+    delete process.env.ENGRAM_CONFIG_PATH;
+    if (priorKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = priorKey;
+    if (priorDbUrl === undefined) delete process.env.ENGRAM_DATABASE_URL;
+    else process.env.ENGRAM_DATABASE_URL = priorDbUrl;
+    try { rmSync(configPath, { force: true }); } catch { /* best effort */ }
+  });
+
+  test('prompting only databaseUrl writes that key — not the env OPENAI key, not provider defaults', async () => {
+    configPath = join(tmpdir(), `engram-cfg-prompt-${crypto.randomUUID()}.json`);
+    process.env.ENGRAM_CONFIG_PATH = configPath;
+    writeFileSync(configPath, '{}'); // empty on-disk config
+    priorKey = process.env.OPENAI_API_KEY;
+    priorDbUrl = process.env.ENGRAM_DATABASE_URL;
+    process.env.OPENAI_API_KEY = 'sk-env-secret';
+    delete process.env.ENGRAM_DATABASE_URL; // force databaseUrl to be the only prompt
+
+    // loadConfig folds the env key in; provider stays 'local' so only databaseUrl is prompted.
+    const config = loadConfig();
+    expect(config.openaiApiKey).toBe('sk-env-secret');
+    expect(config.databaseUrl).toBe('');
+
+    const url = 'postgres://neon.example/db';
+    const merged = await promptForMissing(config, async () => url);
+    // Caller still gets the fully merged config (env key included).
+    expect(merged.databaseUrl).toBe(url);
+    expect(merged.openaiApiKey).toBe('sk-env-secret');
+
+    // On disk: ONLY the prompted key. No env secret, no provider-derived defaults.
+    const written = JSON.parse(readFileSync(configPath, 'utf-8'));
+    expect(written).toEqual({ databaseUrl: url });
+    expect(written.openaiApiKey).toBeUndefined();
+    expect(written.embeddingModel).toBeUndefined();
+    expect(written.embeddingDim).toBeUndefined();
+    expect(written.embeddingProvider).toBeUndefined();
   });
 });

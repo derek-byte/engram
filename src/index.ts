@@ -15,6 +15,7 @@ import { askevalRunCommand } from './commands/askevalRun.ts';
 import { contextCommand } from './commands/context.ts';
 import { demandCommand } from './commands/demand.ts';
 import { hooksCommand } from './commands/hooks.ts';
+import { DEFAULT_OWNER } from './config/index.ts';
 
 const program = new Command();
 
@@ -99,7 +100,7 @@ program
   .option('--repo <repo>', 'limit to a repo')
   .option('--since <date>', 'only units with activity after this ISO date')
   .option('--limit <n>', 'max units to compile this run', '20')
-  .option('--owner <owner>', 'source owner (dream chunks) to compile from', 'derek')
+  .option('--owner <owner>', 'source owner (dream chunks) to compile from', DEFAULT_OWNER)
   .option('--wiki-owner <owner>', 'owner to write wiki chunks under (default = --owner)')
   .option('--dry-run', 'print the compile plan + token estimate without calling the LLM or writing')
   .option('--llm', 'wiki lint: also run the LLM contradiction pass')
@@ -137,7 +138,7 @@ program
   .option('--repo <repo>', 'limit to a repo')
   .option('--since <date>', 'only units with activity after this ISO date')
   .option('--limit <n>', 'max units to synthesize this run', '20')
-  .option('--owner <owner>', 'source owner to synthesize from', 'derek')
+  .option('--owner <owner>', 'source owner to synthesize from', DEFAULT_OWNER)
   .option('--dream-owner <owner>', 'owner to write dream chunks under (default = --owner)')
   .option('--dry-run', 'print the unit plan + token estimate without calling the LLM or writing')
   .option('--json', 'emit JSON instead of formatted output')
@@ -152,7 +153,7 @@ program
   .option('--branch <branch>', 'branch (feeds the header + keyword query; never a hard filter)')
   .option('--cwd <path>', 'resolve repo/branch from the git checkout at this path')
   .option('--budget <tokens>', 'hard token budget (default 1500, clamped 100–20000)')
-  .option('--owner <owner>', 'owner to read from', 'derek')
+  .option('--owner <owner>', 'owner to read from', DEFAULT_OWNER)
   .option('--json', 'always emit one JSON object (empty arrays when nothing relevant)')
   .action(async (opts) => {
     await contextCommand(opts);
