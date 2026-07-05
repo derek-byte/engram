@@ -11,6 +11,7 @@ import { serviceCommand } from './commands/service.ts';
 import { dreamCommand } from './commands/dream.ts';
 import { wikiCommand } from './commands/wiki.ts';
 import { synthesisRunCommand } from './commands/synthesisRun.ts';
+import { askevalRunCommand } from './commands/askevalRun.ts';
 import { contextCommand } from './commands/context.ts';
 import { demandCommand } from './commands/demand.ts';
 import { hooksCommand } from './commands/hooks.ts';
@@ -115,6 +116,22 @@ program
   });
 
 program
+  .command('askeval-run', { hidden: true })
+  .description('Headless ask-quality eval: streams one JSON line per question + a final summary (UI job runner)')
+  .option('--from-demand <days>', 'replay distinct answered asks from the last N days of demand log')
+  .option('--questions <path>', 'question set JSONL (default benchmarks/askeval_questions.jsonl)')
+  .option('--limit <n>', 'cap the number of questions')
+  .option('--judge-model <model>', 'model for the citation-faithfulness judge (default = wiki model)')
+  .action(async (opts) => {
+    await askevalRunCommand({
+      questionsPath: opts.questions,
+      fromDemandDays: opts.fromDemand !== undefined ? Number(opts.fromDemand) : undefined,
+      limit: opts.limit !== undefined ? Number(opts.limit) : undefined,
+      judgeModel: opts.judgeModel,
+    });
+  });
+
+program
   .command('dream')
   .description('Synthesize a dream-tier memory layer over raw chunks (incremental, fingerprinted)')
   .option('--repo <repo>', 'limit to a repo')
@@ -152,9 +169,9 @@ program
 
 program
   .command('hooks')
-  .description('Print Claude Code hook wiring: print')
-  .argument('<action>', 'print')
-  .option('--json', 'emit only the settings.json snippet')
+  .description('Manage the Claude Code SessionStart hook: install | uninstall | status | print')
+  .argument('<action>', 'install, uninstall, status, or print')
+  .option('--json', 'emit JSON (snippet for print; status/result for the rest)')
   .action(async (action, opts) => {
     await hooksCommand(action, opts);
   });

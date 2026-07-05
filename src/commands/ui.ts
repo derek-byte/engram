@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -14,9 +15,15 @@ import {
   restartAgent,
   reconcileSynthesisAgent,
   isKnownServiceLabel,
+  installAgent,
+  uninstallAgent,
+  watcherSpec,
+  synthesisSpec,
   type ServicesStatus,
   type SynthesisReconcile,
 } from './service.ts';
+import { hookStatus, installHook, uninstallHook, SettingsParseError } from './hooks.ts';
+import { isKnownJobKind, realJobOps, JobConflictError, type JobOps } from './jobs.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { WikiStore } from '../wiki/store.ts';
@@ -30,7 +37,10 @@ import type { VectorBackend, WikiEvidenceStore } from '../storage/backend.ts';
 import type { Artifact, EngramConfig, SearchFilters } from '../types/index.ts';
 
 const SNIPPET_CHARS = 300;
-const HTML_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui', 'index.html');
+const UI_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui');
+const HTML_PATH = join(UI_DIR, 'index.html');
+const CSS_PATH = join(UI_DIR, 'app.css');
+const JS_PATH = join(UI_DIR, 'app.js');
 
 export interface UiOptions {
   port?: string;
@@ -55,17 +65,39 @@ export interface ServiceOps {
   status: () => ServicesStatus;
   restart: (label: string) => { ok: boolean; out: string };
   reconcileSynthesis: () => SynthesisReconcile;
+  // Setup-pane fixers: install/uninstall the launchd agents. Injected so route
+  // tests exercise POST /api/setup/service without shelling out to launchctl or
+  // writing plists to the developer's own LaunchAgents dir.
+  install: () => void;
+  uninstall: () => void;
 }
 
 export const realServiceOps: ServiceOps = {
   status: servicesStatus,
   restart: restartAgent,
   reconcileSynthesis: reconcileSynthesisAgent,
+  // Mirrors serviceCommand's install: watcher always, synthesis iff enabled
+  // (and a previously-installed synthesis agent is removed when toggled off).
+  install: () => {
+    installAgent(watcherSpec());
+    const config = loadConfig();
+    const synthesis = synthesisSpec(config.synthesis.hour);
+    if (config.synthesis.enabled) installAgent(synthesis);
+    else if (existsSync(synthesis.plistPath)) uninstallAgent(synthesis);
+  },
+  uninstall: () => {
+    uninstallAgent(watcherSpec());
+    uninstallAgent(synthesisSpec(loadConfig().synthesis.hour));
+  },
 };
 
 export interface UiDeps {
   // Called per GET / so edits to index.html show on refresh — no server restart.
   html: () => string;
+  // Same per-request read for the split-out static assets. Optional so route
+  // tests can inject fakes; default reads the real files off disk.
+  css?: () => string;
+  js?: () => string;
   // Vector store + the read-only trust queries the wiki lint/evidence routes need.
   backend: VectorBackend & WikiEvidenceStore;
   embedder: Embedder;
@@ -74,6 +106,10 @@ export interface UiDeps {
   dim: number;
   port: number;
   services?: ServiceOps;
+  // Job runner for the Analytics "Run eval" button. Injected so route tests
+  // fake the runner without spawning a child — same seam as `services`. Default
+  // wires in the real Bun.spawn-backed ops.
+  jobs?: JobOps;
   // POST /api/ask builds its LLM per request from the on-disk config (a key
   // added in Settings works without a restart). Injected so route tests supply
   // a fake OpenAIAskLLM (real class + fake AskChatClient) with no network, and
@@ -99,12 +135,120 @@ function publicConfig() {
   };
 }
 
+// Default target for the MCP-registration probe. Overridable via
+// ENGRAM_CLAUDE_JSON so tests never read the real ~/.claude.json (mirrors the
+// ENGRAM_CLAUDE_SETTINGS seam in hooks.ts). Read-only — the setup pane never
+// writes this file; `make setup` owns it.
+export const CLAUDE_JSON_PATH = join(homedir(), '.claude.json');
+function resolveClaudeJsonPath(): string {
+  return process.env.ENGRAM_CLAUDE_JSON ?? CLAUDE_JSON_PATH;
+}
+
+// One setup check as returned by GET /api/setup. `fix` is null when ok — a
+// passing check has nothing to fix; 'make-setup' points the user at the CLI
+// fix-path for heavy items; 'in-app' means a button on the pane can fix it.
+export interface SetupCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  fix: 'make-setup' | 'in-app' | null;
+}
+
+function isPlainObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+// Is the engram MCP server registered in ~/.claude.json? Read-only. Absent or
+// unparseable ⇒ we can't tell, so ok:false with the make-setup hint.
+function mcpCheck(): { ok: boolean; detail: string } {
+  const path = resolveClaudeJsonPath();
+  if (!existsSync(path)) return { ok: false, detail: 'unknown — run make setup' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf-8'));
+  } catch {
+    return { ok: false, detail: 'unknown — run make setup' };
+  }
+  if (!isPlainObj(parsed)) return { ok: false, detail: 'unknown — run make setup' };
+  const servers = parsed.mcpServers;
+  if (isPlainObj(servers) && 'engram' in servers) return { ok: true, detail: 'engram server registered' };
+  return { ok: false, detail: 'engram server not registered — run make setup' };
+}
+
+// Drift-detection checklist for the setup pane. `make setup` is the fix-path for
+// the heavy items (postgres/index/mcp); hook + service each have an in-app fixer.
+// postgres + index share a single count guarded by a short race timeout — the
+// backend is the server's shared one, so pg was up at boot but can die after.
+async function buildSetupChecks(
+  backend: VectorBackend,
+  services: ServiceOps
+): Promise<SetupCheck[]> {
+  let count: number | null = null;
+  let pgOk = false;
+  let pgDetail = '';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('postgres unreachable (timed out after 1.5s)')), 1500);
+    });
+    count = await Promise.race([backend.count(), timeout]);
+    pgOk = true;
+    pgDetail = 'reachable';
+  } catch (err) {
+    pgDetail = `${err instanceof Error ? err.message : String(err)} — is Postgres running? (Docker Desktop / make setup)`;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
+  const indexOk = count !== null && count > 0;
+  const indexDetail =
+    count === null ? 'unknown — postgres unreachable' : `${count} chunk${count === 1 ? '' : 's'}`;
+
+  const hs = hookStatus();
+  const hookOk = hs.installed && !hs.stalePath && !hs.parseError;
+  let hookDetail: string;
+  if (hs.parseError) hookDetail = 'settings.json malformed — fix it manually';
+  else if (!hs.installed) hookDetail = 'not installed';
+  else if (hs.stalePath) hookDetail = 'installed but stale — points at a different src/index.ts';
+  else hookDetail = 'installed (current)';
+
+  const mcp = mcpCheck();
+
+  const st = services.status();
+  let serviceOk: boolean;
+  let serviceDetail: string;
+  if (!st.supported) {
+    serviceOk = false;
+    serviceDetail = 'launchd unsupported (macOS only)';
+  } else if (!st.serviceInstalled) {
+    serviceOk = false;
+    serviceDetail = 'not installed';
+  } else {
+    serviceOk = true;
+    serviceDetail = st.agents
+      .map((a) => `${a.label}: ${a.loaded ? (a.state ?? 'loaded') : 'not loaded'}`)
+      .join(', ');
+  }
+
+  return [
+    { id: 'postgres', label: 'Postgres', ok: pgOk, detail: pgDetail, fix: pgOk ? null : 'make-setup' },
+    { id: 'index', label: 'Index', ok: indexOk, detail: indexDetail, fix: indexOk ? null : 'make-setup' },
+    { id: 'hook', label: 'SessionStart hook', ok: hookOk, detail: hookDetail, fix: hookOk ? null : 'in-app' },
+    { id: 'mcp', label: 'MCP server', ok: mcp.ok, detail: mcp.detail, fix: mcp.ok ? null : 'make-setup' },
+    { id: 'service', label: 'Background service', ok: serviceOk, detail: serviceDetail, fix: serviceOk ? null : 'in-app' },
+  ];
+}
+
 // The full request handler, extracted from Bun.serve so route tests can call it
 // with Request objects directly (no port bind, no network) — same seam
 // philosophy as service.ts's exported buildPlist. uiCommand is a thin wire-up.
 export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> {
   const { html, backend, embedder, local, wiki, dim, port } = deps;
+  const css = deps.css ?? (() => readFileSync(CSS_PATH, 'utf-8'));
+  const js = deps.js ?? (() => readFileSync(JS_PATH, 'utf-8'));
   const services = deps.services ?? realServiceOps;
+  const jobs = deps.jobs ?? realJobOps;
   const buildAskLLM =
     deps.buildAskLLM ??
     ((config: EngramConfig) => (config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.wikiModel) : null));
@@ -131,6 +275,20 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     if (url.pathname === '/') {
       return new Response(html(), {
         headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+
+    // Exact-match static assets, served per-request like GET / (edits show on
+    // refresh, no restart). No filesystem interpolation from the request path.
+    if (url.pathname === '/app.css') {
+      return new Response(css(), {
+        headers: { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+
+    if (url.pathname === '/app.js') {
+      return new Response(js(), {
+        headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' },
       });
     }
 
@@ -203,6 +361,46 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
         }
       }
       return Response.json({ ...publicConfig(), reembedRequired, synthesisReconcile });
+    }
+
+    if (url.pathname === '/api/hook') {
+      // SessionStart hook install/uninstall/status for the settings pane.
+      if (req.method === 'GET') {
+        try {
+          return Response.json(hookStatus());
+        } catch (err) {
+          console.error('hook status failed:', err instanceof Error ? err.message : err);
+          return Response.json({ error: 'hook status failed' }, { status: 500 });
+        }
+      }
+      if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+      // Writes are JSON-gated like PUT /api/config so a form/navigation POST can't reach here.
+      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
+        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
+      }
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: 'invalid json' }, { status: 400 });
+      }
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        return Response.json({ error: 'expected a json object' }, { status: 400 });
+      }
+      const action = (body as Record<string, unknown>).action;
+      try {
+        let changed: boolean;
+        if (action === 'install') changed = installHook().changed;
+        else if (action === 'uninstall') changed = uninstallHook().changed;
+        else return Response.json({ error: "unknown action (expected 'install' or 'uninstall')" }, { status: 400 });
+        return Response.json({ changed, status: hookStatus() });
+      } catch (err) {
+        // A malformed settings.json makes the installer REFUSE — surface the
+        // message so the pane can tell the user to fix it by hand.
+        if (err instanceof SettingsParseError) return Response.json({ error: err.message }, { status: 500 });
+        console.error('hook mutation failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'hook mutation failed' }, { status: 500 });
+      }
     }
 
     if (url.pathname === '/api/ask') {
@@ -357,6 +555,48 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       } catch (err) {
         console.error('service restart failed:', err instanceof Error ? err.message : err);
         return Response.json({ error: 'restart failed' }, { status: 500 });
+      }
+    }
+
+    // GET /api/setup — drift-detection checklist for the setup pane. One payload
+    // {checks:[{id,label,ok,detail,fix}]} the view renders as a fix-it list.
+    if (url.pathname === '/api/setup') {
+      if (req.method !== 'GET') return new Response('method not allowed', { status: 405 });
+      try {
+        return Response.json({ checks: await buildSetupChecks(backend, services) });
+      } catch (err) {
+        console.error('setup checks failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'setup checks failed' }, { status: 500 });
+      }
+    }
+
+    // POST /api/setup/service — the in-app fixer for the background service.
+    // JSON-gated like the other write routes; launchd is macOS-only so a
+    // non-darwin host is a clean 400 rather than a launchctl error.
+    if (url.pathname === '/api/setup/service') {
+      if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+      if (process.platform !== 'darwin') return Response.json({ error: 'macOS only' }, { status: 400 });
+      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
+        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
+      }
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: 'invalid json' }, { status: 400 });
+      }
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        return Response.json({ error: 'expected a json object' }, { status: 400 });
+      }
+      const action = (body as Record<string, unknown>).action;
+      try {
+        if (action === 'install') services.install();
+        else if (action === 'uninstall') services.uninstall();
+        else return Response.json({ error: "unknown action (expected 'install' or 'uninstall')" }, { status: 400 });
+        return Response.json({ ok: true, status: services.status() });
+      } catch (err) {
+        console.error('setup service change failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'service change failed' }, { status: 500 });
       }
     }
 
@@ -538,6 +778,89 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       }
     }
 
+    // POST /api/jobs/:kind/run — launch a whitelisted job. Behind the same JSON
+    // gates as PUT /api/config; body {fromDemandDays?, limit?, judgeModel?} is
+    // validated/clamped and translated to askeval-run flags. 202 on launch, 409
+    // if one is already running, 404 for an unknown kind (never spawned).
+    const jobRunMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/run$/);
+    if (jobRunMatch) {
+      if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
+      const kind = decodeURIComponent(jobRunMatch[1]!);
+      if (!isKnownJobKind(kind)) return Response.json({ error: 'unknown job' }, { status: 404 });
+      if (req.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json') {
+        return Response.json({ error: 'expected content-type: application/json' }, { status: 400 });
+      }
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: 'invalid json' }, { status: 400 });
+      }
+      if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        return Response.json({ error: 'expected a json object' }, { status: 400 });
+      }
+      const b = body as Record<string, unknown>;
+      const args: string[] = [];
+      if (b.fromDemandDays !== undefined) {
+        const d = Math.floor(Number(b.fromDemandDays));
+        if (!Number.isFinite(d)) return Response.json({ error: 'fromDemandDays must be a number' }, { status: 400 });
+        args.push('--from-demand', String(Math.min(365, Math.max(1, d))));
+      }
+      if (b.limit !== undefined) {
+        const l = Math.floor(Number(b.limit));
+        if (!Number.isFinite(l)) return Response.json({ error: 'limit must be a number' }, { status: 400 });
+        args.push('--limit', String(Math.min(50, Math.max(1, l))));
+      }
+      if (b.judgeModel !== undefined) {
+        if (typeof b.judgeModel !== 'string' || !b.judgeModel.trim()) {
+          return Response.json({ error: 'judgeModel must be a non-empty string' }, { status: 400 });
+        }
+        args.push('--judge-model', b.judgeModel.trim());
+      }
+      try {
+        jobs.start(kind, args);
+        return Response.json({ started: true }, { status: 202 });
+      } catch (err) {
+        if (err instanceof JobConflictError) return Response.json({ error: 'already running' }, { status: 409 });
+        console.error('job start failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'job start failed' }, { status: 500 });
+      }
+    }
+
+    // GET /api/jobs/:kind — runner status + recent run history in one call so
+    // the Analytics view renders without a second round-trip.
+    const jobStatusMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
+    if (jobStatusMatch) {
+      const kind = decodeURIComponent(jobStatusMatch[1]!);
+      if (!isKnownJobKind(kind)) return Response.json({ error: 'unknown job' }, { status: 404 });
+      try {
+        return Response.json({ ...jobs.status(kind), runs: local.getAskevalRuns(10) });
+      } catch (err) {
+        console.error('job status failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'job status failed' }, { status: 500 });
+      }
+    }
+
+    // GET /api/analytics — one read-only payload the Analytics view renders:
+    // demand/lint trends, context-injection activity + gate + hook, askeval runs.
+    if (url.pathname === '/api/analytics') {
+      try {
+        return Response.json({
+          demandTrend: local.getSnapshots('demand', 30),
+          lintTrend: local.getSnapshots('lint', 30),
+          context: {
+            ...local.contextStats(30),
+            configEnabled: loadConfig().contextInjection.enabled,
+            hook: hookStatus(),
+          },
+          askevalRuns: local.getAskevalRuns(10),
+        });
+      } catch (err) {
+        console.error('analytics failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'analytics failed' }, { status: 500 });
+      }
+    }
+
     return new Response('not found', { status: 404 });
   };
 }
@@ -551,6 +874,8 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
 
   const port = opts.port ? Number(opts.port) : 7777;
   const html = () => readFileSync(HTML_PATH, 'utf-8');
+  const css = () => readFileSync(CSS_PATH, 'utf-8');
+  const js = () => readFileSync(JS_PATH, 'utf-8');
 
   const backend = new PgVectorBackend(config.databaseUrl, config.embeddingDim, config.embeddingModel, CHUNKER_VERSION);
   await backend.initialize();
@@ -567,7 +892,7 @@ export async function uiCommand(opts: UiOptions): Promise<void> {
     // dropped socket rather than the answer. 240s comfortably covers the ask
     // path's own 60s LLM timeout + retry.
     idleTimeout: 240,
-    fetch: buildUiFetch({ html, backend, embedder, local, wiki, dim: config.embeddingDim, port }),
+    fetch: buildUiFetch({ html, css, js, backend, embedder, local, wiki, dim: config.embeddingDim, port }),
   });
 
   console.log(`engram ui → http://${server.hostname}:${server.port}`);

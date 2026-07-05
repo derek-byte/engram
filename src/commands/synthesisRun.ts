@@ -144,7 +144,7 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
       targetedSynthesized += t.synthesized;
       targetedDreamChunks += t.dreamChunks;
     }
-    lg('demand', {
+    const demandLine = {
       days: summary.days,
       total: summary.total,
       searches: summary.searches,
@@ -154,7 +154,14 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
       targetedSessions: targeted.length,
       targetedSynthesized,
       targetedDreamChunks,
-    });
+    };
+    lg('demand', demandLine);
+    // Trend snapshot: never let a snapshot write affect the run.
+    try {
+      local.addSnapshot('demand', demandLine);
+    } catch {
+      /* best effort */
+    }
 
     const wiki = await ingest(
       { sourceOwner: owner, wikiOwner: owner, limit: 1000, dryRun: false },
@@ -180,7 +187,14 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
       const warns = findings.filter((f) => f.severity === 'warn').length;
       const rules: Record<string, number> = {};
       for (const f of findings) rules[f.rule] = (rules[f.rule] ?? 0) + 1;
-      lg('lint', { warns, infos: findings.length - warns, rules });
+      const lintLine = { warns, infos: findings.length - warns, rules };
+      lg('lint', lintLine);
+      // Trend snapshot: never let a snapshot write affect the run.
+      try {
+        local.addSnapshot('lint', lintLine);
+      } catch {
+        /* best effort */
+      }
     } catch (err) {
       lg('lint', { error: err instanceof Error ? err.message : String(err) });
     }

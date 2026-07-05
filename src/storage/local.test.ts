@@ -4,7 +4,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tempStore, type TempStore } from '../ingest/testkit.ts';
-import { LocalStore, RECENTS_CAP } from './local.ts';
+import { LocalStore, RECENTS_CAP, SNAPSHOTS_CAP, ASKEVAL_CAP } from './local.ts';
 
 describe('LocalStore recents', () => {
   let t: TempStore;
@@ -251,5 +251,135 @@ describe('LocalStore demand_log', () => {
     expect(s.searches).toBe(3);
     expect(s.unmet).toBe(5); // 3 unmet asks + 2 unmet searches
     expect(s.unmetQueries).toBe(3);
+  });
+});
+
+describe('LocalStore snapshots', () => {
+  let t: TempStore;
+  beforeEach(() => { t = tempStore(); });
+  afterEach(() => t.cleanup());
+
+  test('addSnapshot round-trips a parsed payload, newest first', () => {
+    const s = t.store;
+    s.addSnapshot('demand', { total: 1, unmet: 0 });
+    s.addSnapshot('demand', { total: 2, unmet: 1 });
+    const rows = s.getSnapshots('demand');
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.payload).toEqual({ total: 2, unmet: 1 }); // newest first
+    expect(rows[1]!.payload).toEqual({ total: 1, unmet: 0 });
+    expect(rows[0]!.kind).toBe('demand');
+    expect(typeof rows[0]!.ts).toBe('string');
+  });
+
+  test('kinds are isolated', () => {
+    const s = t.store;
+    s.addSnapshot('demand', { a: 1 });
+    s.addSnapshot('lint', { warns: 3 });
+    expect(s.getSnapshots('demand').length).toBe(1);
+    expect(s.getSnapshots('lint').length).toBe(1);
+    expect(s.getSnapshots('lint')[0]!.payload).toEqual({ warns: 3 });
+  });
+
+  test('prunes to SNAPSHOTS_CAP newest rows per kind on write', () => {
+    const s = t.store;
+    for (let i = 0; i < SNAPSHOTS_CAP + 10; i++) s.addSnapshot('demand', { i });
+    const rows = s.getSnapshots('demand', 1000);
+    expect(rows.length).toBe(SNAPSHOTS_CAP);
+    expect(rows[0]!.payload).toEqual({ i: SNAPSHOTS_CAP + 9 }); // newest kept
+    expect(rows.some((r) => (r.payload as { i: number }).i === 0)).toBe(false); // oldest dropped
+  });
+
+  test('cap is per-kind: a second kind does not evict the first', () => {
+    const s = t.store;
+    for (let i = 0; i < SNAPSHOTS_CAP; i++) s.addSnapshot('demand', { i });
+    for (let i = 0; i < SNAPSHOTS_CAP; i++) s.addSnapshot('lint', { i });
+    expect(s.getSnapshots('demand', 1000).length).toBe(SNAPSHOTS_CAP);
+    expect(s.getSnapshots('lint', 1000).length).toBe(SNAPSHOTS_CAP);
+  });
+
+  test('getSnapshots honors the limit', () => {
+    const s = t.store;
+    for (let i = 0; i < 10; i++) s.addSnapshot('demand', { i });
+    expect(s.getSnapshots('demand', 3).length).toBe(3);
+  });
+});
+
+describe('LocalStore askeval_runs', () => {
+  let t: TempStore;
+  beforeEach(() => { t = tempStore(); });
+  afterEach(() => t.cleanup());
+
+  test('start returns an id; run opens as running with started_at, no finish', () => {
+    const s = t.store;
+    const id = s.startAskevalRun();
+    expect(typeof id).toBe('number');
+    const runs = s.getAskevalRuns();
+    expect(runs.length).toBe(1);
+    expect(runs[0]!.id).toBe(id);
+    expect(runs[0]!.status).toBe('running');
+    expect(runs[0]!.finishedAt).toBeNull();
+    expect(runs[0]!.summary).toBeNull();
+    expect(runs[0]!.reports).toBeNull();
+    expect(typeof runs[0]!.startedAt).toBe('string');
+  });
+
+  test('finish stamps status, finished_at, and parsed summary/reports blobs', () => {
+    const s = t.store;
+    const id = s.startAskevalRun();
+    s.finishAskevalRun(id, 'done', { passed: 3, failed: 1 }, [{ q: 'a', ok: true }]);
+    const run = s.getAskevalRuns()[0]!;
+    expect(run.status).toBe('done');
+    expect(run.finishedAt).not.toBeNull();
+    expect(run.summary).toEqual({ passed: 3, failed: 1 });
+    expect(run.reports).toEqual([{ q: 'a', ok: true }]);
+  });
+
+  test('finish with omitted blobs leaves summary/reports null', () => {
+    const s = t.store;
+    const id = s.startAskevalRun();
+    s.finishAskevalRun(id, 'error');
+    const run = s.getAskevalRuns()[0]!;
+    expect(run.status).toBe('error');
+    expect(run.summary).toBeNull();
+    expect(run.reports).toBeNull();
+  });
+
+  test('newest first and limit honored', () => {
+    const s = t.store;
+    const ids: number[] = [];
+    for (let i = 0; i < 5; i++) ids.push(s.startAskevalRun());
+    const runs = s.getAskevalRuns(2);
+    expect(runs.length).toBe(2);
+    expect(runs[0]!.id).toBe(ids[4]);
+    expect(runs[1]!.id).toBe(ids[3]);
+  });
+
+  test('prunes to the ASKEVAL_CAP newest runs on insert', () => {
+    const s = t.store;
+    for (let i = 0; i < ASKEVAL_CAP + 5; i++) s.startAskevalRun();
+    expect(s.getAskevalRuns(1000).length).toBe(ASKEVAL_CAP);
+  });
+});
+
+describe('LocalStore context_log', () => {
+  let t: TempStore;
+  beforeEach(() => { t = tempStore(); });
+  afterEach(() => t.cleanup());
+
+  test('logs empty fires too, counted in contextStats', () => {
+    const s = t.store;
+    s.logContextInjection('engram', 0, 0, 0);
+    s.logContextInjection('engram', 2, 1, 340);
+    const stats = s.contextStats(30);
+    expect(stats.count).toBe(2);
+    expect(stats.last7d).toBe(2);
+    expect(stats.lastTs).not.toBeNull();
+  });
+
+  test('empty log yields zero count and null lastTs', () => {
+    const stats = t.store.contextStats(30);
+    expect(stats.count).toBe(0);
+    expect(stats.lastTs).toBeNull();
+    expect(stats.last7d).toBe(0);
   });
 });

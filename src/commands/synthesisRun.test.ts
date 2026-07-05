@@ -328,4 +328,38 @@ describe('synthesisRunCommand', () => {
     expect(logs.some((l) => l.phase === 'done')).toBe(true);
     expect(store.getStat('last_synthesis_at')).not.toBeNull();
   });
+
+  test('demand + lint phase lines land as trend snapshots via the injected store', async () => {
+    const findings: Finding[] = [
+      { severity: 'warn', rule: 'orphan', page: 'a', detail: 'x' },
+      { severity: 'info', rule: 'stub', page: 'b', detail: 'y' },
+    ];
+    store.logDemand(weakSearch('rollup query', 'sess-rollup'));
+
+    await synthesisRunCommand(baseDeps({ lint: async () => findings }));
+
+    const demandSnaps = store.getSnapshots('demand');
+    expect(demandSnaps.length).toBe(1);
+    // Snapshot payload mirrors the demand phase line exactly.
+    expect(demandSnaps[0]!.payload).toEqual(phase('demand')!.data);
+    expect(demandSnaps[0]!.payload).toMatchObject({ targetedSessions: 1, unmet: 1 });
+
+    const lintSnaps = store.getSnapshots('lint');
+    expect(lintSnaps.length).toBe(1);
+    expect(lintSnaps[0]!.payload).toEqual({ warns: 1, infos: 1, rules: { orphan: 1, stub: 1 } });
+  });
+
+  test('a snapshot write failure never fails the run', async () => {
+    // Break both snapshot writes; the run must still complete with stamps set.
+    store.addSnapshot = () => {
+      throw new Error('snapshot boom');
+    };
+
+    await synthesisRunCommand(baseDeps({ lint: async () => [{ severity: 'warn', rule: 'orphan', page: 'a', detail: 'x' }] }));
+
+    expect(logs.some((l) => l.phase === 'done')).toBe(true);
+    expect(phase('demand')).toBeDefined();
+    expect(phase('lint')!.data).toMatchObject({ warns: 1 });
+    expect(store.getStat('last_synthesis_at')).not.toBeNull();
+  });
 });
