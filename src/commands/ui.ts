@@ -241,11 +241,12 @@ async function buildSetupChecks(
     count === null ? 'unknown — postgres unreachable' : `${count} chunk${count === 1 ? '' : 's'}`;
 
   const hs = hookStatus();
-  const hookOk = hs.installed && !hs.stalePath && !hs.parseError;
+  const hookOk = hs.installed && !hs.stalePath && !hs.staleInterpreter && !hs.parseError;
   let hookDetail: string;
   if (hs.parseError) hookDetail = 'settings.json malformed — fix it manually';
   else if (!hs.installed) hookDetail = 'not installed';
   else if (hs.stalePath) hookDetail = 'installed but stale — points at a different src/index.ts';
+  else if (hs.staleInterpreter) hookDetail = 'installed but stale — interpreter path gone (bun upgraded?)';
   else hookDetail = 'installed (current)';
 
   const mcp = mcpCheck();

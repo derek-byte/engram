@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildUiFetch, type ServiceOps, type UiDeps } from './ui.ts';
+import { indexPath } from './service.ts';
 import { JobConflictError, type JobOps } from './jobs.ts';
 import { OpenAIAskLLM, type AskChatClient } from '../ask/index.ts';
 import { Embedder } from '../ingest/embed.ts';
@@ -918,6 +919,22 @@ describe('buildUiFetch', () => {
       // Fake services: installed + supported → ok, no fix.
       expect(c.service.ok).toBe(true);
       expect(c.service.fix).toBeNull();
+    });
+
+    // Review-confirmed gap: staleInterpreter (bun upgraded, versioned path gone)
+    // was reported STALE by the CLI but rendered green by the setup checklist.
+    test('hook check is NOT ok when the interpreter is stale', async () => {
+      const command = `/nonexistent/versioned/bun ${indexPath()} context --cwd "$CLAUDE_PROJECT_DIR"`;
+      writeFileSync(
+        hookSettings,
+        JSON.stringify({
+          hooks: { SessionStart: [{ matcher: 'startup|clear', hooks: [{ type: 'command', command }] }] },
+        })
+      );
+      const c = byId((await getSetup()).checks);
+      expect(c.hook.ok).toBe(false);
+      expect(c.hook.detail).toContain('interpreter');
+      expect(c.hook.fix).toBe('in-app');
     });
 
     test('index check ok + "N chunks" once the backend has content', async () => {

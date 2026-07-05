@@ -42,7 +42,13 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   // cursor would slice it away and silently drop the new content (V2). Everything
   // before the cursor is settled; the last turn re-runs each ingest until a newer
   // turn supersedes it — unchanged chunks are free (hasSeen skips before embed).
-  const cursor = Math.min(state.chunkOffset, lastIndex);
+  // Legacy rows (pre-wave-12) stored the trajectory COUNT and recorded no
+  // last-turn identity; map count → index explicitly, because Math.min alone only
+  // pulls a legacy cursor back when NOTHING was appended — one new turn since the
+  // upgrade and the old final turn (which may have grown in place) is sliced away.
+  const isLegacyCursor = state.lastTrajectoryId === null && state.chunkOffset > 0;
+  const offset = isLegacyCursor ? state.chunkOffset - 1 : state.chunkOffset;
+  const cursor = Math.min(offset, lastIndex);
   const fresh = trajectories.slice(cursor);
 
   // Supersession: the trajectory that sat at the cursor position last time was
@@ -51,12 +57,15 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   // duplicates — retract them (owner/tier-scoped) BEFORE upserting replacements.
   // New turns appended after it leave that trajectory's hash intact, so this does
   // NOT fire for growth-by-new-turn (those chunks stay, the new turn embeds).
-  // Superseded raw_events rows are intentionally left (append-only journal); the
-  // stale seen_hashes entries are harmless (their hashes never recur).
+  // Superseded raw_events rows are intentionally left (append-only journal), but
+  // the deleted ids' seen-markers must go: hasSeen must imply present-in-backend,
+  // or content that reverts to a prior state (external file restore, sync-conflict
+  // overwrite) is skipped as seen with nothing left in the index.
   if (state.lastTrajectoryId && state.lastChunkIds.length) {
     const atCursor = trajectoryHash(trajectories[cursor]!);
     if (atCursor !== state.lastTrajectoryId) {
       await deps.backend.deleteChunksByIds(state.lastChunkIds, DEFAULT_OWNER, 'raw');
+      deps.local.forgetSeen(state.lastChunkIds);
     }
   }
 
@@ -145,10 +154,9 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
 
   // Advance to the last trajectory's index (not the count) so the final turn is
   // re-examined next ingest. Record that turn's identity for the supersession
-  // check. Only runs after every batch upserted (a mid-file throw leaves the
-  // cursor untouched — the crash-safety invariant). This can move the cursor
-  // *back* from a legacy count-based value (N → N-1) — that one-time migration is
-  // intended, so no Math.max floor here.
+  // check — after this write the row is index-semantics and never re-enters the
+  // legacy path above. Only runs after every batch upserted (a mid-file throw
+  // leaves the cursor untouched — the crash-safety invariant).
   deps.local.setCursor(sessionId, lastIndex, lastTrajectoryId ?? undefined, lastChunkIds);
   deps.local.setStat('last_ingest_at', new Date().toISOString());
 

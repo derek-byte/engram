@@ -1920,7 +1920,7 @@
     const hook = ctx.hook || {};
     let hookText, hookOk, hookAction;
     if (!hook.installed) { hookText = 'hook missing'; hookOk = false; hookAction = 'install'; }
-    else if (hook.stalePath) { hookText = 'hook stale'; hookOk = false; hookAction = 'install'; }
+    else if (hook.stalePath || hook.staleInterpreter) { hookText = 'hook stale'; hookOk = false; hookAction = 'install'; }
     else { hookText = 'hook installed'; hookOk = true; hookAction = 'uninstall'; }
     badges.appendChild(stateBadge(hookOk, hookText));
     card.appendChild(badges);

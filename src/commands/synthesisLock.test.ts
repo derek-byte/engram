@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireSynthesisLock } from './synthesisLock.ts';
+import { acquireSynthesisLock, claimStaleLock } from './synthesisLock.ts';
 
 // Redirect the lock to a scratch path (env seam) so no test touches ~/.engram.
 let lockPath: string;
@@ -64,6 +64,35 @@ describe('acquireSynthesisLock', () => {
     const after = statSync(lockPath).mtimeMs;
     expect(after).toBeGreaterThan(before);
     lock!.release();
+  });
+
+  // Review-confirmed race: two processes both judge the same dead lock stale;
+  // the winner reclaims and writes a FRESH lock, then the loser's bare unlink
+  // (old code) deleted that fresh lock and the loser acquired too — two
+  // concurrent synthesis holders. The rename-verify claim must lose instead.
+  test("a racing reclaimer with a stale judgment cannot evict the winner's fresh lock", () => {
+    // Stale lock: dead holder, 31 min idle.
+    writeFileSync(lockPath, `999999\n2020-01-01T00:00:00.000Z\n`);
+    ageFile(lockPath, 31 * 60 * 1000);
+    // The slower reclaimer (B) snapshots its staleness judgment first…
+    const judged = readFileSync(lockPath, 'utf-8');
+    // …then the winner (A) reclaims and now holds a fresh lock at the same path.
+    const winner = acquireSynthesisLock();
+    expect(winner).not.toBeNull();
+    // B's claim must fail AND leave A's fresh lock in place.
+    expect(claimStaleLock(lockPath, judged)).toBe(false);
+    expect(readFileSync(lockPath, 'utf-8').split('\n')[0]).toBe(String(process.pid));
+    winner!.release();
+    expect(existsSync(lockPath)).toBe(false);
+  });
+
+  test('claiming an unchanged stale lock succeeds exactly once', () => {
+    writeFileSync(lockPath, `999999\n2020-01-01T00:00:00.000Z\n`);
+    const judged = readFileSync(lockPath, 'utf-8');
+    expect(claimStaleLock(lockPath, judged)).toBe(true);
+    expect(existsSync(lockPath)).toBe(false);
+    // A second claim of the now-gone file loses cleanly.
+    expect(claimStaleLock(lockPath, judged)).toBe(false);
   });
 
   test('release removes only our own lock', () => {

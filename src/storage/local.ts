@@ -449,6 +449,16 @@ export class LocalStore {
     this.db.query('INSERT OR IGNORE INTO seen_hashes (hash) VALUES (?)').run(hash);
   }
 
+  // Retract seen-markers for chunks whose backend rows were deleted (V2
+  // supersession). Keeps the seen⇒present invariant: without this, content that
+  // reverts to a previously-seen state is hasSeen-skipped after its replacement
+  // was deleted, leaving the backend with neither version.
+  forgetSeen(hashes: string[]): void {
+    if (hashes.length === 0) return;
+    const del = this.db.query('DELETE FROM seen_hashes WHERE hash = ?');
+    for (const h of hashes) del.run(h);
+  }
+
   setStat(key: string, value: string): void {
     this.db
       .query(

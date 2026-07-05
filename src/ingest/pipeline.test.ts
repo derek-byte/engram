@@ -319,6 +319,55 @@ describe('ingestFile V2 supersession (appended-content data loss)', () => {
     expect(ts.store.getCursor(SESSION)).toBe(1); // count 2 → index 1
   });
 
+  // Review-confirmed residual: legacy cursor + in-place growth + a NEW appended
+  // turn in the same first post-upgrade ingest. Math.min alone leaves the cursor
+  // at the appended turn, slicing away the grown old turn — permanently lost.
+  // The explicit count→index mapping must re-examine it.
+  test('legacy cursor + grown last turn + appended turn: nothing is lost', async () => {
+    const path = writeSession([{ user: 'legacy turn one' }]);
+    await ingestFile(path, deps);
+    // Simulate the pre-wave-12 row: cursor = COUNT (1), no last-turn identity.
+    ts.store.setCursor(SESSION, 1);
+
+    // Turn one grows in place AND turn two is appended before the next ingest.
+    const grown = writeSession([
+      { user: 'legacy turn one', assistant: 'grown legacy reply about vector indexes' },
+      { user: 'brand new turn two' },
+    ]);
+    const r = await ingestFile(grown, deps);
+    expect(r.embedded).toBeGreaterThan(0);
+    const contents = [...backend.chunks.values()].map((c) => c.content.toLowerCase()).join('\n');
+    expect(contents).toContain('vector indexes'); // grown turn re-examined, not sliced away
+    expect(contents).toContain('turn two'); // appended turn embedded
+    expect(ts.store.getCursor(SESSION)).toBe(1); // index semantics from here on
+    assertDenseProvenance([...backend.chunks.values()]);
+  });
+
+  // Review-confirmed (seen⇒present): after a supersession delete, the retracted
+  // ids' seen-markers must be forgotten too. Otherwise content that reverts to a
+  // previously-seen state (external file restore, sync-conflict overwrite) is
+  // hasSeen-skipped while its replacement was just deleted — the backend ends
+  // up holding NEITHER version of the turn.
+  test('A→B→A revert of the last turn re-embeds A instead of losing both', async () => {
+    const a = writeSession([{ user: 'revert turn' }]);
+    await ingestFile(a, deps);
+    const aIds = new Set(backend.chunks.keys());
+    expect(aIds.size).toBeGreaterThan(0);
+
+    const b = writeSession([{ user: 'revert turn', assistant: 'transient reply later reverted' }]);
+    await ingestFile(b, deps);
+    for (const id of aIds) expect(backend.chunks.has(id)).toBe(false); // A superseded by B
+
+    // The file reverts to A. B is superseded in turn; A's chunks must be
+    // re-embedded, not skipped as already-seen.
+    const a2 = writeSession([{ user: 'revert turn' }]);
+    const r = await ingestFile(a2, deps);
+    expect(r.embedded).toBeGreaterThan(0); // was 0 under the bug — neither version survived
+    for (const id of aIds) expect(backend.chunks.has(id)).toBe(true);
+    const contents = [...backend.chunks.values()].map((c) => c.content.toLowerCase()).join('\n');
+    expect(contents).not.toContain('transient reply');
+  });
+
   // Review-flagged gap #3: a crash between the supersession delete and the upsert
   // is recoverable — the next ingest re-derives and re-embeds, no permanent loss.
   test('crash after supersession delete, before upsert, recovers next run', async () => {
