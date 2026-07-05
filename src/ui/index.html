@@ -577,21 +577,35 @@
   .svc-dot.on { background: var(--accent); }
 
   /* ── overlay ── */
+  /* Fixed header + separate scroll region: content scrolls INSIDE #overlay-body,
+     never behind the back/meta header (or the Tauri traffic-light strip). */
   #overlay {
     position: fixed; inset: 0; background: var(--bg); display: none;
-    overflow-y: auto; overscroll-behavior: contain; padding: 32px 24px 32px;
-    z-index: 10;
+    flex-direction: column; z-index: 10;
   }
-  #overlay.open { display: block; }
+  #overlay.open { display: flex; }
+  #overlay-head {
+    flex: none; display: flex; align-items: center; gap: 14px;
+    padding: 14px 24px 12px; background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .tauri #overlay-head { padding-top: 44px; } /* clear the macOS traffic lights */
+  #overlay-body {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    padding: 20px 24px 32px;
+  }
   #overlay-inner { max-width: 680px; margin: 0 auto; }
   #back {
     background: var(--surface); color: var(--muted); border: 1px solid var(--border);
-    border-radius: 8px; padding: 7px 13px; font: 12px/1 var(--mono); cursor: pointer; margin-bottom: 20px;
+    border-radius: 8px; padding: 7px 13px; font: 12px/1 var(--mono); cursor: pointer;
     box-shadow: var(--shadow);
     transition: background-color 0.1s ease, color 0.1s ease;
   }
   #back:hover { background: var(--surface-hi); color: var(--fg); }
-  #overlay-meta { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+  #overlay-meta {
+    color: var(--muted); font-size: 12px; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .turn {
     border-left: 2px solid transparent;
     padding: 12px 16px; margin: 6px 0; white-space: pre-wrap; word-break: break-word;
@@ -731,11 +745,15 @@
 </div>
 
 <div id="overlay">
-  <div id="overlay-inner">
+  <div id="overlay-head">
     <button id="back">← back</button>
     <div id="overlay-meta"></div>
-    <div id="turns"></div>
-    <div id="page"></div>
+  </div>
+  <div id="overlay-body">
+    <div id="overlay-inner">
+      <div id="turns"></div>
+      <div id="page"></div>
+    </div>
   </div>
 </div>
 <script>
@@ -757,6 +775,7 @@
   const answerEl = document.getElementById('answer');
   const resultsPaneEl = document.getElementById('results-pane');
   const overlayEl = document.getElementById('overlay');
+  const overlayBodyEl = document.getElementById('overlay-body'); // the overlay's scroll container
   const overlayMetaEl = document.getElementById('overlay-meta');
   const turnsEl = document.getElementById('turns');
   const pageEl = document.getElementById('page');
@@ -1765,7 +1784,7 @@
     clear(pageEl);
     showPageView();
     overlayEl.classList.add('open');
-    overlayEl.scrollTop = 0;
+    overlayBodyEl.scrollTop = 0;
     let page = null;
     try {
       const res = await fetch('/api/wiki/' + encodeURIComponent(slug));
@@ -1820,7 +1839,7 @@
     overlayMetaEl.textContent = 'loading…';
     clear(turnsEl);
     overlayEl.classList.add('open');
-    overlayEl.scrollTop = 0;
+    overlayBodyEl.scrollTop = 0;
     try {
       const res = await fetch('/api/trajectory/' + encodeURIComponent(r.trajectoryId));
       const chunks = await res.json();
