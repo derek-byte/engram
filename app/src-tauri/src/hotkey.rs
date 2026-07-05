@@ -116,6 +116,16 @@ pub fn toggle_search_window(app: &AppHandle) {
     }
 }
 
+/// Dock-icon click / macOS reopen: always show + focus, never hide (unlike the
+/// hotkey toggle — clicking the Dock while visible should not dismiss).
+pub fn show_search_window(app: &AppHandle) {
+    if let Some(win) = ensure_main_window(app) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        let _ = win.eval("document.getElementById('q')?.focus()");
+    }
+}
+
 /// Tray "Settings…": show/focus the search window and open the settings pane.
 /// Polls briefly for `window.openSettings` in case the page hasn't finished
 /// loading yet (fresh window: the init script runs before the page's own script).

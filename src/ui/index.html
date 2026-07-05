@@ -723,7 +723,88 @@
 
   // ── sidebar nav / views ──
   let currentView = 'search';
-  function showView(name) {
+
+  // ── hash routing ──
+  // location.hash is the single source of truth. Nav actions call updateHash()
+  // to record history (push) or rewrite the current entry (replace); the
+  // hashchange listener (browser back/forward) calls routeFromHash() to re-apply
+  // state. We mutate history via push/replaceState — which do NOT fire
+  // hashchange — so our own updates never re-enter the router; `applyingRoute`
+  // additionally suppresses updateHash while routeFromHash drives showView/
+  // openWikiPage/closeOverlay, so re-applying a route never pushes a dup entry.
+  //   #/search            search view (empty query → recents)
+  //   #/search?q=<query>  search view, query restored + run
+  //   #/wiki              wiki index
+  //   #/wiki/<slug>       wiki page overlay over the wiki view
+  //   #/settings          settings view
+  // Push on explicit navigation (nav click, open page, open settings,
+  // Enter/open a result); replace while typing and on close / Esc-reset — so
+  // window hides don't grow history and a Tauri summon lands cleanly on search.
+  let applyingRoute = false;
+  let overlayWikiSlug = null; // slug of the wiki page in the overlay, else null
+
+  function stateForView(name) {
+    return name === 'search' ? { view: 'search', q: qEl.value.trim() } : { view: name };
+  }
+  function hashFor(s) {
+    if (s.view === 'wiki') return s.slug ? '#/wiki/' + encodeURIComponent(s.slug) : '#/wiki';
+    if (s.view === 'settings') return '#/settings';
+    return s.q ? '#/search?q=' + encodeURIComponent(s.q) : '#/search';
+  }
+  function updateHash(state, opts) {
+    if (applyingRoute) return;                 // the router is driving; don't fight it
+    const h = hashFor(state);
+    if (h === location.hash) return;           // compare-before-apply: nothing changed
+    const url = location.pathname + location.search + h;
+    if (opts && opts.replace) history.replaceState(null, '', url);
+    else history.pushState(null, '', url);
+  }
+  function parseHash() {
+    const raw = location.hash.replace(/^#\/?/, '');
+    const qi = raw.indexOf('?');
+    const path = qi === -1 ? raw : raw.slice(0, qi);
+    const query = qi === -1 ? '' : raw.slice(qi + 1);
+    const segs = path.split('/').filter(Boolean);
+    const head = segs[0] || 'search';
+    if (head === 'wiki') return { view: 'wiki', slug: segs[1] ? decodeURIComponent(segs[1]) : null };
+    if (head === 'settings') return { view: 'settings' };
+    if (head === 'search') {
+      let q = '';
+      if (query) { try { q = new URLSearchParams(query).get('q') || ''; } catch { q = ''; } }
+      return { view: 'search', q };
+    }
+    return null; // unknown → default to search
+  }
+  function routeFromHash() {
+    let st = parseHash();
+    if (!st || !location.hash) {                // unknown / empty hash → #/search (silent)
+      st = { view: 'search', q: '' };
+      history.replaceState(null, '', location.pathname + location.search + '#/search');
+    }
+    applyingRoute = true;
+    try {
+      if (currentView !== st.view) showView(st.view);
+      if (st.view === 'search') {
+        const q = st.q || '';
+        if (qEl.value !== q) qEl.value = q;
+        if (overlayEl.classList.contains('open')) closeOverlay();
+        search(q);
+      } else if (st.view === 'settings') {
+        if (overlayEl.classList.contains('open')) closeOverlay();
+      } else if (st.view === 'wiki') {
+        if (st.slug) {
+          if (overlayWikiSlug !== st.slug) openWikiPage({ slug: st.slug, trajectoryId: 'wiki:' + st.slug, tier: 'wiki' });
+        } else if (overlayEl.classList.contains('open')) {
+          closeOverlay();
+        }
+      }
+    } finally {
+      applyingRoute = false;
+    }
+  }
+  window.addEventListener('hashchange', routeFromHash);
+
+  function showView(name, opts) {
     if (!['search', 'wiki', 'settings'].includes(name)) return;
     currentView = name;
     for (const v of document.querySelectorAll('.view')) v.classList.toggle('active', v.id === name + '-view');
@@ -732,6 +813,7 @@
     if (name === 'search') qEl.focus();
     else if (name === 'wiki') loadWiki();
     else if (name === 'settings') loadSettings();
+    updateHash(stateForView(name), opts); // push by default; opts.replace for resets
   }
   sidebarEl.addEventListener('click', (e) => {
     const b = e.target.closest('.nav-item');
@@ -1146,7 +1228,7 @@
 
   // Open dispatch shared by clicks, Enter, and recents rows.
   function openItem(r) {
-    if (r._recent === 'search') { qEl.value = r.key; search(r.key); return; }
+    if (r._recent === 'search') { qEl.value = r.key; search(r.key); updateHash({ view: 'search', q: r.key.trim() }, {}); return; }
     if (r._recent === 'view') { openRecentView(r.key); return; }
     if (r.tier === 'wiki') { openWikiPage(r); return; }
     openTrajectory(r);
@@ -1264,8 +1346,12 @@
     flushPara(para);
   }
 
+  let wikiPageReq = 0; // guards rapid opens: only the latest fetch may render
   async function openWikiPage(r) {
     const slug = r.slug;
+    const reqId = ++wikiPageReq;
+    overlayWikiSlug = slug;
+    updateHash({ view: 'wiki', slug }, {}); // push (suppressed while the router drives)
     overlayMetaEl.textContent = '';
     clear(pageEl);
     showPageView();
@@ -1274,12 +1360,15 @@
     let page = null;
     try {
       const res = await fetch('/api/wiki/' + encodeURIComponent(slug));
+      if (reqId !== wikiPageReq) return; // a newer open superseded this one
       if (!res.ok) { openTrajectory({ trajectoryId: r.trajectoryId || 'wiki:' + slug, tier: 'wiki', slug }); return; }
       page = await res.json();
     } catch {
+      if (reqId !== wikiPageReq) return;
       openTrajectory({ trajectoryId: r.trajectoryId || 'wiki:' + slug, tier: 'wiki', slug });
       return;
     }
+    if (reqId !== wikiPageReq) return;
     const head = document.createElement('div');
     head.className = 'page-head';
     const title = document.createElement('h2');
@@ -1368,18 +1457,28 @@
 
   function closeOverlay() {
     overlayEl.classList.remove('open');
+    const wasWiki = overlayWikiSlug;
+    overlayWikiSlug = null;
     qEl.focus();
+    // Closing a routed wiki page returns to the underlying view (replace, so the
+    // close — and a Tauri Esc-hide — never grows history). Trajectory overlays
+    // aren't routed (wasWiki null), so their close leaves the hash untouched.
+    if (wasWiki) updateHash(stateForView(currentView), { replace: true });
   }
 
   qEl.addEventListener('input', () => {
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => search(qEl.value), DEBOUNCE_MS);
+    debounceTimer = setTimeout(() => {
+      search(qEl.value);
+      updateHash({ view: 'search', q: qEl.value.trim() }, { replace: true }); // debounced: replace while typing
+    }, DEBOUNCE_MS);
   });
   qEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       if (activeIndex >= 0 && items[activeIndex]) { openItem(items[activeIndex]); return; }
       clearTimeout(debounceTimer);
       search(qEl.value);
+      updateHash({ view: 'search', q: qEl.value.trim() }, {}); // explicit: push a history entry
     } else if (e.key === 'ArrowDown') {
       if (rows.length) {
         e.preventDefault();
@@ -1398,7 +1497,7 @@
     if (e.key === 'Escape') {
       // Compose: overlay first, then any non-search view, else nothing.
       if (overlayEl.classList.contains('open')) { closeOverlay(); return; }
-      if (currentView !== 'search') { showView('search'); return; }
+      if (currentView !== 'search') { showView('search', { replace: true }); return; }
       return;
     }
     // Tab cycles scope only in the search view with the overlay closed. On this
@@ -1799,5 +1898,5 @@
   navHL.moveTo(sidebarEl.querySelector('.nav-item.active')); // seat the pill in place on load
   renderScope();                                             // …renderScope seats the scope pill
   loadStats();
-  showRecents();
+  routeFromHash();                                           // apply the initial hash (deep links, else #/search → recents)
 </script>
