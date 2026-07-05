@@ -29,5 +29,6 @@ export async function mcpCommand(): Promise<void> {
     store: new WikiStore(config.wikiDir),
     askLLM: config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.wikiModel) : undefined,
     logRecent: (k, key, label) => local.logRecent(k, key, label),
+    logDemand: (row) => local.logDemand(row),
   });
 }

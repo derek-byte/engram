@@ -65,6 +65,19 @@ export interface AskResult {
   model: string;
 }
 
+// Canonical mapping from an ask result to its demand-log outcome. Every ask
+// surface (CLI, MCP, UI) records one demand row per runAsk; this derives the
+// outcome the same way everywhere. `answer === null` is the zero-candidates
+// short-circuit (no LLM call) → 'no_candidates'; an answer that cites nothing
+// means the model said the material doesn't cover the question → 'not_covered';
+// anything with at least one cited source → 'answered'. The 'error' outcome is
+// NOT derived here — it belongs to the catch path where there is no AskResult.
+export function askOutcome(result: AskResult): 'answered' | 'not_covered' | 'no_candidates' {
+  if (result.answer === null) return 'no_candidates';
+  if (!result.sources.some((s) => s.cited)) return 'not_covered';
+  return 'answered';
+}
+
 export class OpenAIAskLLM {
   readonly model: string;
   private client: AskChatClient;
