@@ -363,8 +363,12 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
 
     // Batched multi-row INSERTs (~INSERT_BATCH rows/statement) in one tx.
     // postgres.js coerces the formatVector() text into the vector column and
-    // handles text[]/jsonb/nulls per-column (proven in live.test). ON CONFLICT
-    // (id) DO NOTHING preserves upsert idempotency.
+    // handles text[]/jsonb/nulls per-column (proven in live.test). On an id
+    // conflict only chunker_version is restamped: ids are content-derived
+    // (hash of trajectoryId+index+text), so a conflicting row holds the exact
+    // text the current chunker just produced — it IS a current-version chunk,
+    // and the reindex sweep must not delete it as stale. Every other column
+    // keeps DO NOTHING semantics (embedding/model stay atomic with each other).
     const cols = [
       'id', 'embedding', 'content', 'model_id', 'embedding_dim',
       'owner', 'chunker_version', 'embedding_model',
@@ -377,7 +381,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         const slice = rows.slice(i, i + INSERT_BATCH);
         await tx`
           INSERT INTO chunks ${tx(slice, ...cols)}
-          ON CONFLICT (id) DO NOTHING
+          ON CONFLICT (id) DO UPDATE SET chunker_version = EXCLUDED.chunker_version
         `;
       }
     });
@@ -883,6 +887,17 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       LIMIT ${limit}
     `;
     return rows.map((r) => ({ trajectoryId: r.trajectory_id, rank: Number(r.rank), content: r.content }));
+  }
+
+  // Sweep an owner's stale-chunker chunks of one tier after a reindex pass.
+  // IS DISTINCT FROM also catches NULL chunker_version (pre-stamp rows).
+  async deleteChunksByStaleVersion(owner: string, tier: string, currentVersion: string): Promise<number> {
+    const res = await this.sql`
+      DELETE FROM chunks
+      WHERE owner = ${owner} AND tier = ${tier}
+        AND chunker_version IS DISTINCT FROM ${currentVersion}
+    `;
+    return res.count;
   }
 
   // Retract every chunk + raw event + dream unit for an owner, atomically. Exact

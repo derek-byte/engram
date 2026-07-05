@@ -106,6 +106,13 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
   readonly wikiUnits = new Map<string, WikiUnitRow>(); // keyed by owner\nsessionId\nrepo
   private cache = new FakeCache();
 
+  // Mirror of pgvector's chunker_version stamp: the backend-level version every
+  // upsert writes (tests flip this to simulate a chunker upgrade), and the
+  // per-row stamps it produces. On an id conflict the stamp is RESTAMPED while
+  // the chunk row keeps DO NOTHING semantics — exactly pgvector's upsert.
+  chunkerVersion = 'v2';
+  readonly chunkerVersions = new Map<string, string>(); // chunk id → stamped version
+
   insertRawEventsCalls = 0;
   upsertCalls = 0;
   // Ids passed to deleteChunksByIds, in call order (V2 supersession assertions).
@@ -135,6 +142,7 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
     this.upsertHook?.(chunks, callIndex);
     for (const c of chunks) {
       if (!this.chunks.has(c.id)) this.chunks.set(c.id, c); // ON CONFLICT (id) DO NOTHING
+      this.chunkerVersions.set(c.id, this.chunkerVersion); // …DO UPDATE SET chunker_version
     }
   }
 
@@ -167,6 +175,21 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
 
   async count(): Promise<number> {
     return this.chunks.size;
+  }
+
+  // Mirrors PgVectorBackend.deleteChunksByStaleVersion (MaintenanceStore): sweep
+  // an owner's chunks of one tier whose stamped version differs from
+  // currentVersion. A missing stamp counts as differing (IS DISTINCT FROM NULL).
+  async deleteChunksByStaleVersion(owner: string, tier: string, currentVersion: string): Promise<number> {
+    let n = 0;
+    for (const [id, c] of this.chunks) {
+      if (c.metadata.owner !== owner || c.metadata.tier !== tier) continue;
+      if (this.chunkerVersions.get(id) === currentVersion) continue;
+      this.chunks.delete(id);
+      this.chunkerVersions.delete(id);
+      n++;
+    }
+    return n;
   }
 
   // Mirrors PgVectorBackend.deleteByOwner (not on the VectorBackend interface).
@@ -268,6 +291,7 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
       const c = this.chunks.get(id);
       if (c && c.metadata.tier === tier && c.metadata.owner === owner) {
         this.chunks.delete(id);
+        this.chunkerVersions.delete(id);
         n++;
       }
     }

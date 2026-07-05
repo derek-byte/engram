@@ -1,7 +1,17 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test';
 import { Embedder } from './embed.ts';
 import { FakeBackend, FakeProvider, tempStore, testConfig, type TempStore } from './testkit.ts';
 import type { IngestResult, PipelineDeps } from './pipeline.ts';
+import { fileIsStable, ingestFile } from './pipeline.ts';
+
+// mock.restore() does NOT undo mock.module — the registry entry leaks into every
+// test file that runs later in the same process (their ingestFile would return
+// EMPTY). Copy the real functions NOW (a namespace/live binding would be
+// rewritten by the mock itself) and reinstate them once this file is done.
+const realPipeline = { fileIsStable, ingestFile };
+afterAll(() => {
+  mock.module('./pipeline.ts', () => realPipeline);
+});
 
 const EMPTY: IngestResult = {
   trajectories: 0,

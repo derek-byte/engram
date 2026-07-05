@@ -64,6 +64,10 @@ program
   .command('backfill')
   .description('Scan ~/.claude/projects and index any new sessions')
   .option('--artifacts', 'Re-derive artifact metadata for already-indexed chunks (no re-embedding)')
+  .option(
+    '--reindex',
+    'Re-chunk + re-embed every session under the current chunker, then sweep stale chunker-version chunks'
+  )
   .action(async (opts) => {
     await backfillCommand(opts);
   });

@@ -440,6 +440,13 @@ export class LocalStore {
       .run(sessionId, chunkOffset, lastTrajectoryId ?? null, lastChunkIds ? JSON.stringify(lastChunkIds) : null);
   }
 
+  // Reindex support: wipe the ingest bookkeeping (cursors + seen hashes) so the
+  // next ingest re-chunks and re-embeds every session from the top. Everything
+  // else (stats, recents, demand, snapshots) is untouched.
+  clearIngestState(): void {
+    this.db.exec('DELETE FROM cursor; DELETE FROM seen_hashes;');
+  }
+
   hasSeen(hash: string): boolean {
     const row = this.db.query<{ hash: string }, [string]>('SELECT hash FROM seen_hashes WHERE hash = ?').get(hash);
     return row !== null;
