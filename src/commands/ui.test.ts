@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildUiFetch, type ServiceOps, type UiDeps } from './ui.ts';
@@ -176,7 +176,7 @@ describe('buildUiFetch', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     const body = await res.text();
     expect(body).toContain('<link rel="stylesheet" href="/app.css">');
-    expect(body).toContain('<script src="/app.js" defer></script>');
+    expect(body).toContain('<script type="module" src="/app.js"></script>');
     // The CSS/JS moved out — the shell no longer inlines them.
     expect(body).not.toContain('<style>');
     expect(body).not.toContain('@font-face');
@@ -191,13 +191,28 @@ describe('buildUiFetch', () => {
     expect(await res.text()).toBe('body{color:red}');
   });
 
-  test('GET /app.js → 200 text/javascript, no-store', async () => {
-    const f = buildUiFetch({ html: () => '<html>', js: () => 'const x=1;', backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
-    const res = await f(req('/app.js'));
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
-    expect(res.headers.get('cache-control')).toBe('no-store');
-    expect(await res.text()).toBe('const x=1;');
+  test('GET /<module>.js → 200 text/javascript, no-store (seam serves any entry-imported module)', async () => {
+    const assets: Record<string, string> = { 'app.js': 'const x=1;', 'router.js': 'export const y=2;' };
+    const f = buildUiFetch({ html: () => '<html>', js: (name) => assets[name] ?? null, backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
+    for (const [name, body] of Object.entries(assets)) {
+      const res = await f(req('/' + name));
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.text()).toBe(body);
+    }
+    // A well-formed name the seam doesn't know → 404, seam consulted.
+    expect((await f(req('/nope.js'))).status).toBe(404);
+  });
+
+  test('malformed JS asset names never reach the seam (validated before any read)', async () => {
+    const asked: string[] = [];
+    const f = buildUiFetch({ html: () => '<html>', js: (name) => { asked.push(name); return 'x'; }, backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
+    // Uppercase, dotted stems, %-escapes, and traversal shapes all fail JS_NAME_RE.
+    for (const path of ['/App.js', '/app.min.js', '/%2e%2e%2fapp.js', '/..%2fapp.js', '/a_b.js', '/1.js']) {
+      expect((await f(req(path))).status).toBe(404);
+    }
+    expect(asked).toEqual([]);
   });
 
   test('unknown static path → 404 (no filesystem interpolation)', async () => {
@@ -205,6 +220,31 @@ describe('buildUiFetch', () => {
     expect(res.status).toBe(404);
     // A traversal-shaped path is just an unmatched route — never reads the disk.
     expect((await fetch(req('/../package.json'))).status).toBe(404);
+  });
+
+  test('serve smoke: real shell references /app.js as a module and every src/ui module route serves', async () => {
+    const uiDir = join(import.meta.dir, '..', 'ui');
+    const realHtml = readFileSync(join(uiDir, 'index.html'), 'utf-8');
+    // No css/js seams injected — this exercises the real read-from-disk defaults.
+    const f = buildUiFetch({ html: () => realHtml, backend, embedder, local: t.store, wiki, dim: 4, port: PORT, services });
+    const res = await f(req('/'));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('<script type="module" src="/app.js"></script>');
+    const modules = readdirSync(uiDir).filter((n) => n.endsWith('.js') && !n.endsWith('.test.js'));
+    expect(modules).toContain('app.js');
+    for (const name of modules) {
+      const r = await f(req('/' + name));
+      expect(r.status).toBe(200);
+      expect(r.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+      expect(r.headers.get('cache-control')).toBe('no-store');
+    }
+    // Every static import in the served modules resolves to a sibling module route.
+    for (const name of modules) {
+      const src = readFileSync(join(uiDir, name), 'utf-8');
+      for (const m of src.matchAll(/from '\.\/([a-z-]+\.js)'/g)) {
+        expect(modules).toContain(m[1]!);
+      }
+    }
   });
 
   test('GET /api/wiki/:slug returns page + logs a view', async () => {
