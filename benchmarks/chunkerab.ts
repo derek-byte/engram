@@ -60,6 +60,7 @@ interface Args {
   cleanup: boolean;
   demandDb: string | null;
   out: string;
+  localDb: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -69,6 +70,9 @@ function parseArgs(argv: string[]): Args {
     cleanup: true,
     demandDb: null,
     out: 'chunkerab-report.md',
+    // Stable path so a killed/re-run ingest resumes via seen_hashes instead of
+    // re-embedding the whole corpus.
+    localDb: join(tmpdir(), 'chunkerab-local.sqlite'),
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -77,6 +81,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === '--no-cleanup') args.cleanup = false;
     else if (a === '--demand-db') args.demandDb = argv[++i]!;
     else if (a === '--out') args.out = argv[++i]!;
+    else if (a === '--local-db') args.localDb = argv[++i]!;
     else throw new Error(`unknown arg: ${a}`);
   }
   return args;
@@ -213,8 +218,7 @@ async function main(): Promise<void> {
     // --- Build the v2 bench index --------------------------------------------
     if (!args.skipIngest) {
       await backend.initialize();
-      const scratchDb = join(tmpdir(), `chunkerab-local-${Date.now()}.sqlite`);
-      const local = new LocalStore(scratchDb);
+      const local = new LocalStore(args.localDb);
       const deps: PipelineDeps = { backend, embedder, local, config, owner: BENCH_OWNER };
       let embedded = 0;
       let errors = 0;

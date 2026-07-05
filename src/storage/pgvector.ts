@@ -327,7 +327,14 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       }
     }
 
-    const rows = chunks.map((c) => {
+    // Dedupe by id, first occurrence wins — one batch can legitimately carry the
+    // same chunk twice (identical repeated user turns hash to the same
+    // trajectoryId and chunk ids). DO NOTHING silently skipped the duplicate;
+    // DO UPDATE raises "cannot affect row a second time" on it.
+    const seen = new Set<string>();
+    const unique = chunks.filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+
+    const rows = unique.map((c) => {
       // Stamp the model that actually embedded (may differ after a fallback latch).
       const model = c.metadata.embeddingModel ?? this.embeddingModel;
       return {
