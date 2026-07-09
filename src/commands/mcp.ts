@@ -26,7 +26,7 @@ export async function mcpCommand(): Promise<void> {
     rerankDefault: config.rerank.enabled,
     lastIngestAt: () => local.getStat('last_ingest_at'),
     store: new WikiStore(config.wikiDir),
-    askLLM: config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.wikiModel) : undefined,
+    askLLM: config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.askModel) : undefined,
     logRecent: (k, key, label) => local.logRecent(k, key, label),
     logDemand: (row) => local.logDemand(row),
   });

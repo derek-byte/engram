@@ -45,6 +45,29 @@ describe('mergeConfig contextInjection', () => {
   });
 });
 
+describe('mergeConfig askModel', () => {
+  test('follows wikiModel when unset (pre-key behavior)', () => {
+    expect(mergeConfig({}).askModel).toBe('gpt-4o-mini');
+    expect(mergeConfig({ wikiModel: 'gpt-4.1' }).askModel).toBe('gpt-4.1');
+  });
+
+  test('a file pin wins over wikiModel', () => {
+    const config = mergeConfig({ wikiModel: 'gpt-4.1', askModel: 'gpt-5.6-luna' });
+    expect(config.askModel).toBe('gpt-5.6-luna');
+    expect(config.wikiModel).toBe('gpt-4.1');
+  });
+
+  test('ENGRAM_ASK_MODEL wins over the file', () => {
+    const config = mergeConfig({ askModel: 'gpt-4o-mini' }, { ENGRAM_ASK_MODEL: 'gpt-5.6-luna' });
+    expect(config.askModel).toBe('gpt-5.6-luna');
+  });
+
+  test('ENGRAM_WIKI_MODEL flows through to an unpinned askModel', () => {
+    const config = mergeConfig({}, { ENGRAM_WIKI_MODEL: 'gpt-4.1' });
+    expect(config.askModel).toBe('gpt-4.1');
+  });
+});
+
 describe('synthesis targetedSessionsPerNight', () => {
   let configPath: string;
 

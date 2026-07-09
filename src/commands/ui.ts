@@ -135,6 +135,7 @@ function publicConfig() {
     embeddingProvider: c.embeddingProvider,
     dreamModel: c.dreamModel,
     wikiModel: c.wikiModel,
+    askModel: c.askModel,
     rerank: { enabled: c.rerank.enabled },
     synthesis: c.synthesis,
     contextInjection: c.contextInjection,
@@ -300,7 +301,7 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
   const jobs = deps.jobs ?? realJobOps;
   const buildAskLLM =
     deps.buildAskLLM ??
-    ((config: EngramConfig) => (config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.wikiModel) : null));
+    ((config: EngramConfig) => (config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.askModel) : null));
 
   // DNS-rebinding defense: only loopback Host values are legitimate for this
   // server. A malicious site rebound to 127.0.0.1 arrives with its own Host,

@@ -97,6 +97,9 @@ export interface EngramConfig {
   wikiDir: string;
   wikiModel: string;
   wikiMaxInputChars: number;
+  // Model for the ask surface (CLI/MCP/UI). Empty string = follow wikiModel,
+  // which was the behavior before this key existed.
+  askModel: string;
   synthesis: SynthesisConfig;
   contextInjection: ContextInjectionConfig;
 }

@@ -58,6 +58,7 @@ const DEFAULT_CONFIG: EngramConfig = {
   wikiDir: join(ENGRAM_DIR, 'wiki'),
   wikiModel: 'gpt-4o-mini',
   wikiMaxInputChars: 60_000,
+  askModel: '',
   synthesis: { enabled: false, hour: SYNTHESIS_HOUR_DEFAULT, targetedSessionsPerNight: TARGETED_SESSIONS_DEFAULT },
   contextInjection: { enabled: true, budget: CONTEXT_BUDGET_DEFAULT },
 };
@@ -109,6 +110,11 @@ export function mergeConfig(
   if (env.ENGRAM_DREAM_MODEL) merged.dreamModel = env.ENGRAM_DREAM_MODEL;
   if (env.ENGRAM_WIKI_DIR) merged.wikiDir = env.ENGRAM_WIKI_DIR;
   if (env.ENGRAM_WIKI_MODEL) merged.wikiModel = env.ENGRAM_WIKI_MODEL;
+  if (env.ENGRAM_ASK_MODEL) merged.askModel = env.ENGRAM_ASK_MODEL;
+
+  // askModel follows wikiModel unless pinned (file or env) — ask ran on
+  // wikiModel before the key existed, and this keeps that default in sync.
+  if (!merged.askModel) merged.askModel = merged.wikiModel;
 
   // Model + dim follow the provider unless the file pinned them explicitly.
   // The local provider is fixed (buildProvider ignores pins for it), so pins —
@@ -137,6 +143,7 @@ export const EDITABLE_CONFIG_KEYS = [
   'embeddingProvider',
   'dreamModel',
   'wikiModel',
+  'askModel',
   'rerank',
   'synthesis',
   'contextInjection',
@@ -181,7 +188,8 @@ export function patchConfigFile(patch: Record<string, unknown>): Record<string, 
         raw.embeddingProvider = parseProvider(String(value));
         break;
       case 'dreamModel':
-      case 'wikiModel': {
+      case 'wikiModel':
+      case 'askModel': {
         if (typeof value !== 'string' || value.trim() === '') {
           throw new ConfigPatchError(`${key} must be a non-empty string`);
         }
