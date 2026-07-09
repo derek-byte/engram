@@ -17,6 +17,20 @@ import { routeFromHash } from './nav.js';
 // region under this class so the browser never reserves that space.
 if (window.__TAURI__) document.documentElement.classList.add('tauri');
 
+// Sidebar collapse (titlebar button, app only). localStorage is best-effort:
+// the app's origin changes per launch (random ui-server port), so the state
+// effectively resets each launch — acceptable, default is expanded.
+const sideToggle = document.getElementById('side-toggle');
+if (sideToggle) {
+  try {
+    if (localStorage.getItem('side-collapsed') === '1') document.documentElement.classList.add('side-collapsed');
+  } catch { /* storage unavailable */ }
+  sideToggle.addEventListener('click', () => {
+    const collapsed = document.documentElement.classList.toggle('side-collapsed');
+    try { localStorage.setItem('side-collapsed', collapsed ? '1' : '0'); } catch { /* best effort */ }
+  });
+}
+
 document.addEventListener('keydown', (e) => {
   // Cmd+, opens settings from anywhere (mirrors the macOS Preferences shortcut).
   if (e.metaKey && e.key === ',') { e.preventDefault(); openSettings(); return; }

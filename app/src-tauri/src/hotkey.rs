@@ -75,12 +75,14 @@ fn ensure_main_window(app: &AppHandle) -> Option<WebviewWindow> {
         .title("engram")
         .inner_size(760.0, 560.0)
         .initialization_script(ESC_SCRIPT);
-    // macOS: transparent title bar so the web UI paints edge-to-edge behind the
-    // traffic lights (the sidebar reserves ~52px + a drag region under `.tauri`).
+    // macOS: transparent title bar so the web UI paints edge-to-edge. The page
+    // renders a full-width 48px titlebar strip under `.tauri` (src/ui/app.css);
+    // the traffic lights are inset to sit vertically centered in it.
     #[cfg(target_os = "macos")]
     let builder = builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true);
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(20.0, 18.0));
 
     match builder.build() {
         Ok(win) => {
