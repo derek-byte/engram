@@ -15,6 +15,10 @@ export interface PipelineDeps {
   embedder: Embedder;
   local: LocalStore;
   config: EngramConfig;
+  // Owner stamped on raw events + chunks AND used for the supersession delete —
+  // one value for all three, so a bench/alternate owner can never split-brain
+  // against a hardcoded literal. Defaults to DEFAULT_OWNER.
+  owner?: string;
 }
 
 export interface IngestResult {
@@ -28,6 +32,7 @@ export interface IngestResult {
 }
 
 export async function ingestFile(path: string, deps: PipelineDeps): Promise<IngestResult> {
+  const owner = deps.owner ?? DEFAULT_OWNER;
   const messages = parseJsonl(path);
   const trajectories = chunkMessages(messages);
   if (trajectories.length === 0) {
@@ -64,7 +69,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   if (state.lastTrajectoryId && state.lastChunkIds.length) {
     const atCursor = trajectoryHash(trajectories[cursor]!);
     if (atCursor !== state.lastTrajectoryId) {
-      await deps.backend.deleteChunksByIds(state.lastChunkIds, DEFAULT_OWNER, 'raw');
+      await deps.backend.deleteChunksByIds(state.lastChunkIds, owner, 'raw');
       deps.local.forgetSeen(state.lastChunkIds);
     }
   }
@@ -95,6 +100,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
       lastChunkIds = ids;
     }
     rawEvents.push({
+      owner,
       source: 'claude-code',
       sessionId: t.sessionId,
       contentSha256: trajectoryId,
@@ -138,7 +144,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
         exitCode: b.trajectory.exitCode,
         sessionId: b.trajectory.sessionId,
         cwd: b.trajectory.cwd,
-        owner: DEFAULT_OWNER,
+        owner,
         tier: 'raw',
         trajectoryId: b.trajectoryId,
         chunkIndex: b.chunkIndex,

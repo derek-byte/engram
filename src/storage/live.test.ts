@@ -96,6 +96,45 @@ describe('live storage hardening (Wave 12 Lane A)', () => {
     }
   });
 
+  test.skipIf(!LIVE)('duplicate ids in one upsert batch land once; id conflict restamps chunker_version only', async () => {
+    // Identical repeated user turns hash to the same trajectoryId + chunk ids,
+    // so one pipeline batch can carry the same id twice. DO NOTHING tolerated
+    // that; the reindex restamp (DO UPDATE) must not die on "cannot affect row
+    // a second time" — upsert dedupes first-wins.
+    const v1Backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, 'v1-test');
+    const v2Backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, 'v2-test');
+    const admin = postgres(DB_URL, { prepare: false, onnotice: () => {} });
+    try {
+      await v1Backend.initialize();
+      await v1Backend.deleteByOwnerPrefix('test:');
+
+      const dup = rawChunk('dup-id-a', 1);
+      await v1Backend.upsert([dup, { ...dup }, rawChunk('dup-id-b', 2)]);
+      const versionOf = async (id: string): Promise<string | null> => {
+        const [r] = await admin<Array<{ v: string | null }>>`
+          SELECT chunker_version AS v FROM chunks WHERE id = ${id}
+        `;
+        return r?.v ?? null;
+      };
+      expect(await versionOf('dup-id-a')).toBe('v1-test');
+
+      // Same id upserted under a newer chunker version: row survives (owner and
+      // content untouched) but the version stamp moves — the reindex sweep must
+      // spare content the current chunker still produces.
+      await v2Backend.upsert([rawChunk('dup-id-a', 1)]);
+      expect(await versionOf('dup-id-a')).toBe('v2-test');
+      const swept = await v2Backend.deleteChunksByStaleVersion(OWNER, 'raw', 'v2-test');
+      expect(swept).toBe(1); // only dup-id-b (still v1-test) goes
+      expect(await versionOf('dup-id-a')).toBe('v2-test');
+      expect(await versionOf('dup-id-b')).toBeNull();
+    } finally {
+      await v1Backend.deleteByOwnerPrefix('test:').catch(() => {});
+      await admin.end();
+      await v1Backend.close();
+      await v2Backend.close();
+    }
+  });
+
   test.skipIf(!LIVE)('wrong-length embedding → upsert throws before any insert', async () => {
     const backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION);
     try {

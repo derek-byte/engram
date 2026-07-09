@@ -127,6 +127,11 @@ export interface MaintenanceStore {
   rawTrajectoriesForArtifacts(source: string): Promise<Array<{ trajectoryId: string; payload: Trajectory }>>;
   // Attach artifacts to a trajectory's raw chunks. Never touches embeddings/content.
   setChunkArtifacts(trajectoryId: string, artifacts: Artifact[]): Promise<number>;
+  // Sweep an owner's chunks of one tier whose chunker_version differs from
+  // `currentVersion` (NULL counts as differing) — the stale rows a reindex
+  // leaves behind after the re-ingest pass has fully succeeded. Owner+tier+
+  // version-scoped so no other owner's or tier's rows can ever be touched.
+  deleteChunksByStaleVersion(owner: string, tier: string, currentVersion: string): Promise<number>;
   // Retract every chunk + raw event + dream/wiki unit for an owner, atomically.
   deleteByOwner(owner: string): Promise<{ chunks: number; rawEvents: number }>;
   // Same, for every owner sharing a prefix (e.g. 'bench:' → 'bench:%').
