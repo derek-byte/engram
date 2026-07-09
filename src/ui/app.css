@@ -37,6 +37,42 @@
     grid-template-rows: 100dvh;    /* single full-height row; the sheet insets within it */
     height: 100dvh;
   }
+  .tauri body { grid-template-rows: 48px minmax(0, 1fr); } /* titlebar strip + content */
+
+  /* ── titlebar (Tauri only) ── */
+  /* Full-width horizontal strip spanning sidebar + sheet, Wispr-style: traffic
+     lights (inset to y=18 in hotkey.rs) vertically centered in a clear band
+     that doubles as the drag region. Hidden in the browser. */
+  #titlebar { display: none; }
+  .tauri #titlebar {
+    display: flex;
+    align-items: center;
+    grid-column: 1 / -1;
+    padding-left: 84px;            /* clears the three traffic lights */
+    background: var(--bg);
+    user-select: none;
+    -webkit-app-region: drag;
+  }
+  #side-toggle {
+    -webkit-app-region: no-drag;   /* clickable island inside the drag strip */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px;
+    border: 0;
+    border-radius: 7px;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  #side-toggle:hover { background: var(--surface-hi); color: var(--fg); }
+  #side-toggle svg { width: 17px; height: 17px; }
+
+  /* Collapsed sidebar: the column animates shut; the sheet takes the full width. */
+  .tauri body { transition: grid-template-columns 0.18s ease; }
+  .side-collapsed body { grid-template-columns: 0 1fr; }
+  .side-collapsed #sidebar { padding-left: 0; padding-right: 0; }
+  .side-collapsed #app { margin-left: 12px; }
 
   /* ── sidebar nav ── */
   /* Transparent on --bg; no divider — the floating sheet's edge IS the separation. */
@@ -49,11 +85,10 @@
     overflow: hidden;
     min-height: 0;
   }
-  .tauri #sidebar { padding-top: 52px; }        /* macOS traffic-light clearance (Tauri only) */
+  .tauri #sidebar { padding-top: 2px; }         /* the titlebar strip already clears the traffic lights */
   .side-head {
     padding: 2px 10px 18px;
   }
-  .tauri .side-head { -webkit-app-region: drag; } /* draggable window region (Tauri only) */
   .wordmark {
     font-family: "Departure Mono", var(--mono);
     font-size: 17px;
