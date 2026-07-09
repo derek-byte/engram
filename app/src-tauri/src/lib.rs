@@ -3,6 +3,7 @@ mod paths;
 mod server;
 mod synthesis;
 mod tray;
+mod update;
 
 #[cfg(test)]
 mod testkit;
@@ -36,6 +37,9 @@ pub(crate) struct AppState {
     pub idle_icon: Image<'static>,
     pub active_icon: Image<'static>,
     pub last_active: AtomicBool,
+    /// A launch-time pull touched app/src-tauri — the installed shell is stale
+    /// and the frontend shows the rebuild banner.
+    pub shell_update_pending: AtomicBool,
 }
 
 /// App command: hide the search window. Invoked from the injected Esc handler on
@@ -45,6 +49,20 @@ fn hide_main_window(app: AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
+}
+
+/// App command: did the launch-time auto-pull leave the installed shell stale?
+/// The frontend polls this once on load to decide whether to show the banner.
+#[tauri::command]
+fn shell_update_status(app: AppHandle) -> bool {
+    app.state::<AppState>().shell_update_pending.load(Ordering::Relaxed)
+}
+
+/// App command: rebuild + swap + relaunch the shell via `make app`, detached —
+/// the make target quits this instance once the build succeeds.
+#[tauri::command]
+fn rebuild_shell(app: AppHandle) -> Result<(), String> {
+    update::spawn_rebuild(&app.state::<AppState>().paths)
 }
 
 pub fn run() {
@@ -59,7 +77,7 @@ pub fn run() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![hide_main_window])
+        .invoke_handler(tauri::generate_handler![hide_main_window, shell_update_status, rebuild_shell])
         .setup(|app| {
             // Pure menu-bar app: no Dock icon.
             #[cfg(target_os = "macos")]
@@ -102,6 +120,7 @@ pub fn run() {
                 idle_icon: idle_icon.clone(),
                 active_icon: active_icon.clone(),
                 last_active: AtomicBool::new(false),
+                shell_update_pending: AtomicBool::new(false),
             });
 
             TrayIconBuilder::with_id(TRAY_ID)
@@ -158,10 +177,20 @@ pub fn run() {
 }
 
 /// Start the ui server off the main thread (startup can take up to 20s), then
-/// store the handle and update the status line — or surface an error.
+/// store the handle and update the status line — or surface an error. The
+/// guarded auto-pull runs first, so the spawned server executes the freshest
+/// merged code (the server reads the repo per-request; only Rust needs more).
 fn start_ui_async(handle: AppHandle) {
     std::thread::spawn(move || {
         let paths = handle.state::<AppState>().paths.clone();
+        let outcome = update::auto_pull(&paths.repo_root);
+        update::log_outcome(&paths, &outcome);
+        if outcome.shell_changed {
+            handle
+                .state::<AppState>()
+                .shell_update_pending
+                .store(true, Ordering::Relaxed);
+        }
         match server::start(&paths) {
             Ok(srv) => {
                 let text = format!("UI: {}", srv.url());

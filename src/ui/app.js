@@ -31,6 +31,29 @@ if (sideToggle) {
   });
 }
 
+// Shell-update banner (app only). The launch-time auto-pull already updated the
+// web/server code; this appears only when the pull also touched app/src-tauri,
+// which needs a rebuild. The button spawns `make app` — the app quits and
+// relaunches itself when the build lands, so there's nothing more to click.
+if (window.__TAURI__?.core) {
+  window.__TAURI__.core.invoke('shell_update_status').then((pending) => {
+    if (!pending) return;
+    const banner = document.getElementById('update-banner');
+    const btn = document.getElementById('update-btn');
+    if (!banner || !btn) return;
+    banner.hidden = false;
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.textContent = 'Rebuilding… relaunches when done';
+      window.__TAURI__.core.invoke('rebuild_shell').catch((e) => {
+        btn.disabled = false;
+        btn.textContent = 'Rebuild & relaunch';
+        console.error('rebuild_shell failed:', e);
+      });
+    });
+  }).catch(() => { /* command unavailable (older shell) — no banner */ });
+}
+
 document.addEventListener('keydown', (e) => {
   // Cmd+, opens settings from anywhere (mirrors the macOS Preferences shortcut).
   if (e.metaKey && e.key === ',') { e.preventDefault(); openSettings(); return; }
