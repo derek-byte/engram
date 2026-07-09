@@ -454,6 +454,7 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     wikiDir: join(tmpdir(), `engram-wiki-${crypto.randomUUID()}`),
     wikiModel: 'fake-wiki-model',
     wikiMaxInputChars: 60_000,
+    askModel: 'fake-ask-model',
     synthesis: { enabled: false, hour: 3, targetedSessionsPerNight: 5 },
     contextInjection: { enabled: true, budget: 1500 },
     ...overrides,

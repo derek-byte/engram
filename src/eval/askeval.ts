@@ -37,6 +37,7 @@ const JUDGE_TIMEOUT_MS = 60_000;
 // the cost line is a dollar figure and not just a token count. Unknown models
 // report tokens only. Edit this table for your own model/pricing.
 const PRICING: Record<string, { in: number; out: number }> = {
+  'gpt-5.6-luna': { in: 1, out: 6 },
   'gpt-5.4-mini': { in: 0.75, out: 4.5 },
   'gpt-4o-mini': { in: 0.15, out: 0.6 },
   'gpt-4.1-mini': { in: 0.4, out: 1.6 },
@@ -186,7 +187,7 @@ export async function buildAskEvalDeps(config: EngramConfig): Promise<{ deps: As
   await backend.initialize();
   // No cache seam → no writes, exactly like askCommand builds its embedder.
   const embedder = new Embedder(buildProvider(config));
-  const askLlm = new OpenAIAskLLM(config.openaiApiKey, config.wikiModel);
+  const askLlm = new OpenAIAskLLM(config.openaiApiKey, config.askModel);
   const judge = new OpenAI({ apiKey: config.openaiApiKey }) as unknown as JudgeChatClient;
   const deps: AskEvalDeps = { backend, embedder, askLlm, judge, defaultJudgeModel: config.wikiModel };
   return { deps, close: () => backend.close() };

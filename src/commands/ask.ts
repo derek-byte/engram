@@ -55,7 +55,7 @@ export async function askCommand(question: string, opts: AskOptions, injected?: 
     const backend = PgVectorBackend.fromConfig(config);
     await backend.initialize();
     const embedder = new Embedder(buildProvider(config));
-    const llm = new OpenAIAskLLM(config.openaiApiKey, config.wikiModel);
+    const llm = new OpenAIAskLLM(config.openaiApiKey, config.askModel);
     const local = new LocalStore();
     deps = { backend, embedder, llm, local };
   }

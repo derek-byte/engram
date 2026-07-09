@@ -247,6 +247,10 @@ function renderConfigCards() {
     if (v === cfg.wikiModel) return;
     putConfig({ wikiModel: v });
   }));
+  modCard.appendChild(makeTextRow('Ask model', 'Answers questions over your memory.', cfg.askModel, (v) => {
+    if (v === cfg.askModel) return;
+    putConfig({ askModel: v });
+  }));
   settingsCfgEl.appendChild(modCard);
 
   // Search
