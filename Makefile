@@ -27,6 +27,9 @@ dev:
 app:
 	cd app && bun run tauri build --bundles app
 	@osascript -e 'quit app "Engram"' 2>/dev/null || true
+	@sleep 1
+	@pkill -f 'Engram.app/Contents/MacOS/engram-app' 2>/dev/null || true
+	@sleep 1
 	rm -rf /Applications/Engram.app
 	cp -R app/src-tauri/target/release/bundle/macos/Engram.app /Applications/Engram.app
 	open /Applications/Engram.app

@@ -67,6 +67,13 @@ fn rebuild_shell(app: AppHandle) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        // Must be the first plugin: a second launch (Spotlight picking the
+        // repo's build artifact, or open during a make-app swap) hands off to
+        // the running instance — summoning its window — instead of starting a
+        // duplicate that fights over the tray, hotkey, and ui-server children.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            hotkey::show_search_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
