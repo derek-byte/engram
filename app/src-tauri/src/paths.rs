@@ -46,6 +46,10 @@ impl Paths {
     pub fn synthesis_log(&self) -> PathBuf {
         self.engram_dir.join("app-synthesis.log")
     }
+
+    pub fn update_log(&self) -> PathBuf {
+        self.engram_dir.join("app-update.log")
+    }
 }
 
 fn home() -> PathBuf {

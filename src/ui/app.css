@@ -74,6 +74,30 @@
   .side-collapsed #sidebar { padding-left: 0; padding-right: 0; }
   .side-collapsed #app { margin-left: 12px; }
 
+  /* Shell-update banner: only when a launch-time pull touched app/src-tauri. */
+  #update-banner {
+    -webkit-app-region: no-drag;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;             /* right end of the strip */
+    padding-right: 16px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  #update-banner[hidden] { display: none; }
+  #update-btn {
+    padding: 4px 10px;
+    border: 1px solid var(--border-hi);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--accent);
+    font: 12px/1 var(--mono);
+    cursor: pointer;
+  }
+  #update-btn:hover { background: var(--surface-hi); }
+  #update-btn:disabled { color: var(--dim); cursor: default; }
+
   /* ── sidebar nav ── */
   /* Transparent on --bg; no divider — the floating sheet's edge IS the separation. */
   #sidebar {

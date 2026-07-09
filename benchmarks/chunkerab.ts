@@ -106,6 +106,7 @@ function benchConfig(databaseUrl: string): EngramConfig {
     wikiDir: join(tmpdir(), 'chunkerab-wiki-unused'),
     wikiModel: 'unused',
     wikiMaxInputChars: 60_000,
+    askModel: 'unused',
     synthesis: { enabled: false, hour: 3, targetedSessionsPerNight: 0 },
     contextInjection: { enabled: false, budget: 1500 },
   };
