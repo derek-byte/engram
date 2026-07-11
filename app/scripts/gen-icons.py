@@ -1,33 +1,37 @@
 #!/usr/bin/env python3
-"""Generate engram app icons.
+"""Generate macos engram app icons.
 
 Outputs into ./icons:
-  icon-source.png  1024x1024 app-icon source (feed to `tauri icon`) — the ✳ mark
-                   (accent green #4f6b3c) on a #f7f6f3 macOS-style rounded tile.
+  icon-source.png  1024x1024 app-icon source (feed to `tauri icon`) — the
+                   halftone-bust art (icons/icon-art.png) cover-cropped onto a
+                   macOS-style rounded tile.
   tray-idle.png    44x44 monochrome template (donut) — no synthesis running
   tray-active.png  44x44 monochrome template (filled) — synthesis running
 
-The app-icon source is an SVG rasterized with macOS `qlmanage` (this is a macOS
-menu-bar app; no extra deps). The ✳ is drawn as geometry (eight round-capped
-spokes) rather than a font glyph so it stays crisp and legible down to 32px and
-depends on no installed font. The tray icons stay pure-python (template images:
-black + alpha), keeping the ring/disc idle/active distinction legible at 44px.
+The app-icon source is an SVG (art embedded as a data URI, clipped to the tile)
+rasterized with macOS `qlmanage` (this is a macOS menu-bar app; no extra deps).
+The tray icons stay pure-python (template images: black + alpha), keeping the
+ring/disc idle/active distinction legible at 44px.
 """
-import struct, zlib, math, os, subprocess, tempfile
+import base64, struct, zlib, math, os, subprocess, tempfile
 
-OUT = os.path.join(os.path.dirname(__file__), "src-tauri", "icons")
+OUT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "src-tauri", "icons"))
 os.makedirs(OUT, exist_ok=True)
 
-# ✳ mark on a rounded #f7f6f3 tile. Tile occupies ~80% of the 1024 canvas
-# (macOS icon inset); corner radius ~22% of the tile; spokes fill ~56%.
-SOURCE_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <rect x="102" y="102" width="820" height="820" rx="180" ry="180" fill="#f7f6f3" stroke="#e7e4de" stroke-width="4"/>
-  <g stroke="#4f6b3c" stroke-width="54" stroke-linecap="round" transform="translate(512 512)">
-    <line x1="0" y1="-235" x2="0" y2="235"/>
-    <line x1="-235" y1="0" x2="235" y2="0"/>
-    <line x1="-166" y1="-166" x2="166" y2="166"/>
-    <line x1="-166" y1="166" x2="166" y2="-166"/>
-  </g>
+ART = os.path.join(OUT, "icon-art.png")
+
+
+def source_svg():
+    with open(ART, "rb") as f:
+        art = base64.b64encode(f.read()).decode()
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <clipPath id="tile"><rect x="102" y="102" width="820" height="820" rx="180" ry="180"/></clipPath>
+  </defs>
+  <rect x="102" y="102" width="820" height="820" rx="180" ry="180" fill="#ffffff"/>
+  <image xlink:href="data:image/png;base64,{art}" x="102" y="102" width="820" height="820"
+         preserveAspectRatio="xMidYMid slice" clip-path="url(#tile)"/>
+  <rect x="102" y="102" width="820" height="820" rx="180" ry="180" fill="none" stroke="#e7e4de" stroke-width="4"/>
 </svg>
 """
 
@@ -54,11 +58,11 @@ def write_png(path, w, h, pixels):
 
 
 def gen_source():
-    """Rasterize the ✳ tile SVG to icons/icon-source.png at 1024 via qlmanage."""
+    """Rasterize the bust-tile SVG to icons/icon-source.png at 1024 via qlmanage."""
     with tempfile.TemporaryDirectory() as tmp:
         svg = os.path.join(tmp, "icon-source.svg")
         with open(svg, "w") as f:
-            f.write(SOURCE_SVG)
+            f.write(source_svg())
         subprocess.run(
             ["qlmanage", "-t", "-s", "1024", svg, "-o", tmp],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
