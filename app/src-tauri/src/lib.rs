@@ -67,6 +67,13 @@ fn rebuild_shell(app: AppHandle) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        // Must be the first plugin registered: a second launch (double-open from
+        // /Applications, a stray target/ bundle, `open -n`) hands its argv to THIS
+        // instance and exits — we summon the search window instead of ever running
+        // two trays / two ui children / a hotkey fight.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            hotkey::show_search_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

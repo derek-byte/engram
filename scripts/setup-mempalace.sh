@@ -8,7 +8,7 @@ DSN="${MEMPALACE_PGVECTOR_DSN:-postgresql://engram:engram@localhost:5432/mempala
 
 uv tool install "mempalace[pgvector]==${MEMPALACE_VERSION}"
 
-# Idempotent db bootstrap (no-op if docker/initdb already created it on a fresh volume).
+# Idempotent db bootstrap on the compose Postgres.
 psql_container() {
   docker exec engram-postgres psql -U engram -d "$1" -c "$2"
 }
