@@ -29,7 +29,7 @@ import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { isValidSlug } from '../wiki/links.ts';
-import { lintWiki } from '../wiki/lint.ts';
+import { lintWiki, pendingWikiUnits } from '../wiki/lint.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { runSearch, demandRowForSearch, demandRowForSearchError } from '../search/index.ts';
 import { runAsk, demandRowForAsk, OpenAIAskLLM, AskError } from '../ask/index.ts';
@@ -534,7 +534,7 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       try {
         const findings = await lintWiki(wiki, {
           checkProvenance: (ids) => backend.existingChunkIds(ids, 'dream'),
-          pendingUnits: () => backend.pendingWikiUnits(DEFAULT_OWNER),
+          pendingUnits: () => pendingWikiUnits(backend, DEFAULT_OWNER),
         });
         const warns = findings.filter((f) => f.severity === 'warn').length;
         return Response.json({

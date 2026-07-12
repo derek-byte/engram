@@ -1,7 +1,6 @@
 import postgres from 'postgres';
 import type { Artifact, Chunk, EngramConfig, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
-import type { ContextStore, DreamStore, DreamUnitRow, MaintenanceStore, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
-import { pendingUnitsFrom } from '../wiki/lint.ts';
+import type { ContextStore, DreamStore, DreamUnitRow, DreamUnitWikiRow, MaintenanceStore, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 
 // Schema version gate for the initialize() fast path. BUMP THIS ON ANY DDL EDIT
@@ -877,16 +876,15 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
 
   // --- WikiEvidenceStore -----------------------------------------------------
 
-  // Units where the wiki ledger hasn't absorbed the current dream knowledge and
-  // the dream stamp is older than staleHours. The 48h prefilter runs in SQL; the
-  // fingerprint decision is delegated to the same pure rule wiki lint tests, so
-  // "up to date" here means EXACTLY what ingestWiki's short-circuit means.
+  // Dream units joined to their wiki-ledger fingerprint, prefiltered in SQL to
+  // those synthesized before `cutoff`. Rows only: the pending-unit decision
+  // (fingerprint compare + staleness) is wiki lint's rule, applied by wiki's
+  // pendingWikiUnits — storage stays free of wiki rules.
   //   NOTE: dream_units.fingerprint is sha256(sorted RAW ids) and
   //   wiki_units.fingerprint is sha256(sorted DREAM ids) — different id domains,
   //   never equal even when in sync. The comparable dream signal is
   //   sha256(sorted dream_units.dream_chunk_ids), which is what ingest hashes.
-  async pendingWikiUnits(owner: string, staleHours = 48): Promise<PendingUnit[]> {
-    const cutoff = new Date(Date.now() - staleHours * 3_600_000);
+  async dreamUnitsWithWikiFingerprint(owner: string, cutoff: Date): Promise<DreamUnitWikiRow[]> {
     const rows = await this.sql<
       Array<{ session_id: string; repo: string; dream_chunk_ids: string[]; wiki_fingerprint: string | null; synthesized_at: Date }>
     >`
@@ -897,17 +895,13 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         ON w.owner = d.owner AND w.session_id = d.session_id AND w.repo = d.repo
       WHERE d.owner = ${owner} AND d.synthesized_at < ${cutoff}
     `;
-    return pendingUnitsFrom(
-      rows.map((r) => ({
-        sessionId: r.session_id,
-        repo: r.repo,
-        dreamChunkIds: r.dream_chunk_ids,
-        wikiFingerprint: r.wiki_fingerprint,
-        synthesizedAt: r.synthesized_at,
-      })),
-      new Date(),
-      staleHours
-    );
+    return rows.map((r) => ({
+      sessionId: r.session_id,
+      repo: r.repo,
+      dreamChunkIds: r.dream_chunk_ids,
+      wikiFingerprint: r.wiki_fingerprint,
+      synthesizedAt: r.synthesized_at,
+    }));
   }
 
   // Distinct sessions + first/last timestamp over a page's dream source chunks.
