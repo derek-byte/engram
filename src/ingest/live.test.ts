@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import postgres from 'postgres';
 import type { Artifact, Chunk, RawEvent } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
-import { CHUNKER_VERSION } from './chunker.ts';
+import { CHUNKER_VERSION } from '../types/index.ts';
 import { LOCAL_DIM } from '../config/defaults.ts';
 import { Embedder } from './embed.ts';
 import { injectDocuments, type InjectDoc } from './inject.ts';

@@ -1,3 +1,6 @@
+// Stamps every stored chunk; bump it when chunking semantics change to trigger re-indexing.
+export const CHUNKER_VERSION = 'v3';
+
 // A durable output a trajectory produced (a written file, a PR, a URL). Extracted
 // deterministically from tool inputs/outputs — see ingest/artifacts.ts.
 export interface Artifact {

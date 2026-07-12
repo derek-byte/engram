@@ -6,7 +6,7 @@ import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { collectArtifacts } from '../ingest/artifacts.ts';
 import { ingestFile, type PipelineDeps } from '../ingest/pipeline.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
+import { CHUNKER_VERSION } from '../types/index.ts';
 import type { MaintenanceStore } from '../storage/backend.ts';
 
 // The ingest deps plus the reindex sweep. PgVectorBackend and the test

@@ -2,9 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
 import type { Trajectory } from '../types/index.ts';
 import { trajectoryHash } from './hash.ts';
+import { CHUNKER_VERSION } from '../types/index.ts';
 import {
   CHARS_PER_TOKEN,
-  CHUNKER_VERSION,
   HARD_CAP_TOKENS,
   TARGET_TOKENS,
   TOOL_CHARS_PER_TOKEN,

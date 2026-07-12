@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { loadConfig } from '../src/config/index.ts';
 import { PgVectorBackend } from '../src/storage/pgvector.ts';
 import { Embedder, MAX_CHARS_PER_INPUT, buildProvider } from '../src/ingest/embed.ts';
-import { CHUNKER_VERSION } from '../src/ingest/chunker.ts';
+import { CHUNKER_VERSION } from '../src/types/index.ts';
 import { injectDocuments } from '../src/ingest/inject.ts';
 import { runSearch } from '../src/search/index.ts';
 import { OpenAIReranker } from '../src/search/rerank.ts';
