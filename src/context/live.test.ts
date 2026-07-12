@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { Chunk } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
-import { LOCAL_DIM } from '../ingest/embed.ts';
+import { LOCAL_DIM } from '../config/defaults.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { FakeProvider } from '../ingest/testkit.ts';
 import { buildContext } from './compose.ts';

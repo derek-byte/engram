@@ -4,7 +4,7 @@ import type { Chunk, EngramConfig, RawEvent, ScoringConfig } from '../types/inde
 import { PgVectorBackend } from './pgvector.ts';
 import { FakeBackend } from '../ingest/testkit.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
-import { LOCAL_DIM } from '../ingest/embed.ts';
+import { LOCAL_DIM } from '../config/defaults.ts';
 
 const LIVE = process.env.ENGRAM_TEST_LIVE === '1';
 const DB_URL = process.env.ENGRAM_DATABASE_URL ?? 'postgresql://engram:engram@localhost:5432/engram';

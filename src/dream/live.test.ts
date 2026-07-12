@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import postgres from 'postgres';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
-import { LOCAL_DIM } from '../ingest/embed.ts';
+import { LOCAL_DIM } from '../config/defaults.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { injectDocuments, type InjectDoc } from '../ingest/inject.ts';
 import { FakeDreamLLM, FakeProvider, testConfig } from '../ingest/testkit.ts';

@@ -6,7 +6,7 @@ import postgres from 'postgres';
 import type { Artifact, Chunk, RawEvent } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from './chunker.ts';
-import { LOCAL_DIM } from './embed.ts';
+import { LOCAL_DIM } from '../config/defaults.ts';
 import { Embedder } from './embed.ts';
 import { injectDocuments, type InjectDoc } from './inject.ts';
 import { parseJsonl } from './parser.ts';
