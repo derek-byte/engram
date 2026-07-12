@@ -10,7 +10,6 @@ services:
       - "5432:5432"
     volumes:
       - engram-pgdata:/var/lib/postgresql/data
-      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U engram -d engram"]

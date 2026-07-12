@@ -158,7 +158,7 @@ The snippet registers a `SessionStart` hook running `engram context --cwd "$CLAU
 
 ## MemPalace (benchmark reference)
 
-[MemPalace](https://github.com/MemPalace/mempalace) is the published SOTA we measure against, kept as a side-by-side index over the same corpus — not an engram dependency. `scripts/setup-mempalace.sh` installs a pinned version, bootstraps the `mempalace` database on the compose Postgres (fresh volumes get it automatically via `docker/initdb/`), and mines `~/.claude/projects`. Search it with `mempalace search "..." --backend pgvector`.
+[MemPalace](https://github.com/MemPalace/mempalace) is the published SOTA we measure against, kept as a side-by-side index over the same corpus — not an engram dependency. `scripts/setup-mempalace.sh` installs a pinned version, bootstraps the `mempalace` database on the compose Postgres, and mines `~/.claude/projects`. Search it with `mempalace search "..." --backend pgvector`.
 
 ## References
 
