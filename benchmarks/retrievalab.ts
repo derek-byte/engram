@@ -45,15 +45,8 @@ import OpenAI from 'openai';
 import postgres from 'postgres';
 import { findJsonl } from '../src/commands/backfill.ts';
 import { PgVectorBackend } from '../src/storage/pgvector.ts';
-import {
-  Embedder,
-  FastembedProvider,
-  LOCAL_DIM,
-  LOCAL_MODEL,
-  OpenAIProvider,
-  OPENAI_DEFAULT_DIM,
-  OPENAI_DEFAULT_MODEL,
-} from '../src/ingest/embed.ts';
+import { Embedder, FastembedProvider, OpenAIProvider } from '../src/ingest/embed.ts';
+import { LOCAL_DIM, LOCAL_MODEL, OPENAI_DEFAULT_DIM, OPENAI_DEFAULT_MODEL } from '../src/config/defaults.ts';
 import { parseJsonl } from '../src/ingest/parser.ts';
 import { chunkMessages, chunkTrajectory } from '../src/ingest/chunker.ts';
 import { chunkHash, contentSha256, trajectoryHash } from '../src/ingest/hash.ts';
