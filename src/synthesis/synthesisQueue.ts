@@ -1,13 +1,13 @@
 import { statSync } from 'node:fs';
 import type { EngramConfig } from '../types/index.ts';
-import type { Embedder } from './embed.ts';
+import type { Embedder } from '../ingest/embed.ts';
 import type { WikiBackend } from '../wiki/ingest.ts';
 import { OpenAIDreamLLM } from '../dream/llm.ts';
 import { OpenAIWikiLLM } from '../wiki/llm.ts';
 import { synthesizeDreams } from '../dream/synthesize.ts';
 import { ingestWiki } from '../wiki/ingest.ts';
 import { WikiStore } from '../wiki/store.ts';
-import { acquireSynthesisLock, type Lock } from '../commands/synthesisLock.ts';
+import { acquireSynthesisLock, type Lock } from './lock.ts';
 
 // A session compiles only after this long WITHOUT a fresh ingest — every enqueue
 // resets the timer, so an active session (repeated ingests) never re-dreams
