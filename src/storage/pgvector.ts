@@ -2,7 +2,7 @@ import postgres from 'postgres';
 import type { Artifact, Chunk, EngramConfig, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
 import type { ContextStore, DreamStore, DreamUnitRow, MaintenanceStore, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
 import { pendingUnitsFrom } from '../wiki/lint.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
+import { CHUNKER_VERSION } from '../types/index.ts';
 
 // Schema version gate for the initialize() fast path. BUMP THIS ON ANY DDL EDIT
 // in initialize() (new table/column/index, changed type, etc.) — otherwise a

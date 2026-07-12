@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import type { Chunk, EngramConfig, RawEvent, ScoringConfig } from '../types/index.ts';
 import { PgVectorBackend } from './pgvector.ts';
 import { FakeBackend } from '../ingest/testkit.ts';
-import { CHUNKER_VERSION } from '../ingest/chunker.ts';
+import { CHUNKER_VERSION } from '../types/index.ts';
 import { LOCAL_DIM } from '../config/defaults.ts';
 
 const LIVE = process.env.ENGRAM_TEST_LIVE === '1';

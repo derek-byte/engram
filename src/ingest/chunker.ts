@@ -4,8 +4,6 @@ import { placeholderCaption } from './caption.ts';
 import { dedupeArtifacts, extractArtifacts } from './artifacts.ts';
 import { repoFromCwd, type ContentBlock, type RawMessage } from './parser.ts';
 
-export const CHUNKER_VERSION = 'v3';
-
 const FILE_PATH_TOOL_KEYS = ['file_path', 'path', 'notebook_path'];
 
 // imageSink (optional) receives every collected image's bytes keyed by sha256,
