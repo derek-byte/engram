@@ -5,7 +5,15 @@ export interface EmbeddingCache {
   putCachedEmbeddings(entries: Array<{ sha: string; embedding: number[] }>, model: string): Promise<void>;
 }
 
-export interface VectorBackend extends EmbeddingCache {
+// Persisted image captions, keyed (image_sha256, model). Mirror of EmbeddingCache:
+// a cache hit skips the (paid, slow) vision call, and captions stay stable across
+// re-ingests so chunkHash (which covers the caption) doesn't churn.
+export interface CaptionCache {
+  getCachedCaptions(shas: string[], model: string): Promise<Map<string, string>>;
+  putCachedCaptions(entries: Array<{ sha: string; caption: string }>, model: string): Promise<void>;
+}
+
+export interface VectorBackend extends EmbeddingCache, CaptionCache {
   initialize(): Promise<void>;
   insertRawEvents(events: RawEvent[]): Promise<number>;
   upsert(chunks: Chunk[]): Promise<void>;
@@ -46,7 +54,10 @@ export interface DreamStore {
   getUnitChunks(owner: string, sessionId: string, repo: string, tier?: 'raw' | 'dream'): Promise<Chunk[]>;
   getDreamUnits(owner: string): Promise<DreamUnitRow[]>;
   upsertDreamUnit(row: DreamUnitRow): Promise<void>;
-  deleteDreamChunks(ids: string[], owner: string): Promise<number>;
+  // Soft-invalidate stale dream chunks (knowledge-level replacement by a
+  // re-synthesis) — a tier='dream' wrapper over invalidateChunks. supersededBy
+  // names the replacing dream trajectory (null when nothing replaced them).
+  invalidateDreamChunks(ids: string[], owner: string, supersededBy: string | null): Promise<number>;
 }
 
 // Persisted per-unit wiki ingest state, keyed (owner, sessionId, repo). Mirror of
@@ -148,6 +159,11 @@ export interface WikiLedger {
   listDreamUnitsAsUnits(owner: string, opts?: { repo?: string; since?: Date }): Promise<SynthesisUnit[]>;
   // Tier-scoped delete used by wiki reindex to retract stale rows defensively.
   deleteChunksByIds(ids: string[], owner: string, tier: string): Promise<number>;
+  // Soft-invalidate chunks (knowledge-level replacement): tombstones the rows
+  // instead of deleting them so they survive a content revert (resurrection).
+  // Owner+tier-scoped defensively like deleteChunksByIds; supersededBy names the
+  // replacing trajectory (null = orphaned). Returns the count actually flipped.
+  invalidateChunks(ids: string[], owner: string, tier: string, supersededBy: string | null): Promise<number>;
   // (id, trajectory_id) for every tier='wiki' chunk of an owner — reindex reconciliation.
   listWikiChunkIds(owner: string): Promise<Array<{ id: string; trajectoryId: string | null }>>;
 }

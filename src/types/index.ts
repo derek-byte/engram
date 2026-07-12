@@ -23,6 +23,11 @@ export interface ChunkMetadata {
   dreamType?: string;
   sourceChunkIds?: string[];
   artifacts?: Artifact[];
+  // Supersession tombstone: set when this chunk was soft-invalidated (knowledge
+  // replaced by a dream re-synthesis or wiki cleanup). Live reads filter these
+  // out; supersededBy names the trajectory that replaced it (null = orphaned).
+  invalidAt?: Date;
+  supersededBy?: string | null;
 }
 
 export interface Chunk {
@@ -44,6 +49,9 @@ export interface SearchFilters {
   // Force an exact (seq-scan) search instead of the HNSW approximation — needed
   // when a selective filter (e.g. owner) would starve the ANN candidate set.
   exhaustive?: boolean;
+  // Opt-in to see invalidated (superseded) chunks in results; default false
+  // (live-only). Only the CLI plumbs this; MCP/UI stay live-only.
+  includeSuperseded?: boolean;
 }
 
 export interface SearchResult {
@@ -60,12 +68,25 @@ export interface ScoringConfig {
   vectorWeight: number;
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
+  // Additive recency prior: exp-decay of chunk age over recencyHalfLifeDays,
+  // bounded [0,1]. 0 half-life disables it. Distinct from timeDecayHalfLifeDays
+  // (a multiplicative decay wrapping the whole score).
+  recencyWeight: number;
+  recencyHalfLifeDays: number;
+  // Additive tier-importance prior (Generative-Agents-style): wiki > dream > raw.
+  importanceWeight: number;
 }
 
 export interface RerankConfig {
   enabled: boolean;
   model: string;
   topK: number;
+}
+
+export interface ImageCaptionConfig {
+  enabled: boolean;
+  model: string;
+  maxPerTrajectory: number;
 }
 
 export interface SynthesisConfig {
@@ -91,7 +112,11 @@ export interface EngramConfig {
   vectorWeight: number;
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
+  recencyWeight: number;
+  recencyHalfLifeDays: number;
+  importanceWeight: number;
   rerank: RerankConfig;
+  imageCaption: ImageCaptionConfig;
   dreamModel: string;
   dreamMaxInputChars: number;
   wikiDir: string;
@@ -113,6 +138,17 @@ export interface RawEvent {
   payload: unknown;
 }
 
+// An image referenced by a trajectory. The base64 bytes never live here — they
+// travel in a side-channel Map (sha256 → { mediaType, data }) so the Trajectory
+// (persisted verbatim as the raw_events payload) is structurally incapable of
+// carrying image bytes. sha256 enters the trajectoryHash; caption never does.
+export interface TrajectoryImage {
+  sha256: string; // sha256 hex over the DECODED bytes (Buffer.from(data,'base64'))
+  mediaType: string; // e.g. 'image/png'
+  bytes: number; // decoded byte length
+  caption: string; // '' until the pipeline resolves it
+}
+
 export interface Trajectory {
   sessionId: string;
   repo: string;
@@ -121,6 +157,8 @@ export interface Trajectory {
   timestamp: Date;
   userMessage: string;
   assistantBlocks: string[];
+  thinkingBlocks: string[];
+  images: TrajectoryImage[];
   toolCalls: ToolCall[];
   filePaths: string[];
   artifacts: Artifact[];

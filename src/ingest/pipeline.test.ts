@@ -8,6 +8,7 @@ import { FakeBackend, FakeProvider, tempStore, testConfig, type TempStore } from
 import { chunkMessages, chunkTrajectory } from './chunker.ts';
 import { chunkHash, trajectoryHash } from './hash.ts';
 import { parseJsonl } from './parser.ts';
+import type { CaptionClient } from './caption.ts';
 import type { Chunk } from '../types/index.ts';
 
 // Recompute the exact chunk ids the pipeline will derive from a session file,
@@ -386,6 +387,94 @@ describe('ingestFile V2 supersession (appended-content data loss)', () => {
     const contents = [...backend.chunks.values()].map((c) => c.content.toLowerCase()).join('\n');
     expect(contents).toContain('connection pooling');
     assertDenseProvenance([...backend.chunks.values()]);
+  });
+});
+
+describe('ingestFile thinking + image captioning', () => {
+  let ts: TempStore;
+  let backend: FakeBackend;
+
+  beforeEach(() => {
+    ts = tempStore();
+    backend = new FakeBackend();
+  });
+  afterEach(() => ts.cleanup());
+
+  // A CaptionClient returning a fixed caption, injected via deps.captioner.
+  const fakeCaptioner: CaptionClient = {
+    chat: {
+      completions: {
+        create: async () => ({ choices: [{ message: { content: 'a rendered error dialog' } }] }),
+      },
+    },
+  };
+
+  function writeImageSession(): { path: string; b64: string } {
+    const b64 = Buffer.from('pretend-png-bytes-' + crypto.randomUUID()).toString('base64');
+    const lines = [
+      JSON.stringify({
+        type: 'user',
+        sessionId: SESSION,
+        cwd: '/tmp/engram',
+        gitBranch: 'main',
+        timestamp: new Date(1_700_000_000_000).toISOString(),
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'debug this screenshot' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: b64 } },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: SESSION,
+        cwd: '/tmp/engram',
+        gitBranch: 'main',
+        timestamp: new Date(1_700_000_001_000).toISOString(),
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'the stack trace points at a null pointer' },
+            { type: 'text', text: 'here is the fix' },
+          ],
+        },
+      }),
+    ];
+    const path = join(tmpdir(), `engram-img-${crypto.randomUUID()}.jsonl`);
+    writeFileSync(path, lines.join('\n'));
+    files.push(path);
+    return { path, b64 };
+  }
+
+  test('thinking is chunked, images captioned, base64 never persisted, re-ingest is a no-op', async () => {
+    const { path, b64 } = writeImageSession();
+    const deps: PipelineDeps = {
+      backend,
+      embedder: new Embedder(new FakeProvider({ dim: 4 }), backend),
+      local: ts.store,
+      config: testConfig({ imageCaption: { enabled: true, model: 'fake-caption-model', maxPerTrajectory: 4 } }),
+      captioner: fakeCaptioner,
+    };
+
+    const r = await ingestFile(path, deps);
+    expect(r.embedded).toBeGreaterThan(0);
+
+    const contents = [...backend.chunks.values()].map((c) => c.content);
+    expect(contents.some((c) => c.includes('THINKING: the stack trace'))).toBe(true);
+    expect(contents.some((c) => c.includes('IMAGE: a rendered error dialog'))).toBe(true);
+
+    // The raw_events payload carries the image sha256 but NO base64.
+    const event = [...backend.rawEvents.values()][0]!;
+    const payload = event.payload as { images: Array<{ sha256: string; caption: string }> };
+    expect(payload.images[0]!.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(event.payload)).not.toContain(b64);
+
+    // Re-ingest embeds nothing new (determinism; caption came from the cache).
+    const chunksAfter = backend.chunks.size;
+    const r2 = await ingestFile(path, deps);
+    expect(r2.embedded).toBe(0);
+    expect(backend.chunks.size).toBe(chunksAfter);
   });
 });
 

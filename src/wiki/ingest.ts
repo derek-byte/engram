@@ -495,7 +495,8 @@ export function pageToChunkTexts(body: string): string[] {
 }
 
 // Embed a page and reconcile pg tier='wiki' chunks: upsert the new content-addressed
-// id set (unchanged content is free via ON CONFLICT), delete old−new.
+// id set (unchanged content is free via ON CONFLICT), invalidate old−new
+// (knowledge-level replacement → soft tombstone; upsert resurrects on revert).
 export async function syncPageToIndex(
   page: WikiPage,
   wikiOwner: string,
@@ -534,13 +535,17 @@ export async function syncPageToIndex(
   const newIds = new Set(chunks.map((c) => c.id));
   await backend.upsert(chunks);
 
+  // getTrajectory returns live chunks only, so stale = live − new: exactly the
+  // rows a knowledge edit replaced. Invalidate (don't delete) so a page revert
+  // resurrects them via the upsert conflict clause.
   const current = await backend.getTrajectory(trajectoryId);
   const stale = current.map((c) => c.id).filter((id) => !newIds.has(id));
-  await backend.deleteChunksByIds(stale, wikiOwner, 'wiki');
+  await backend.invalidateChunks(stale, wikiOwner, 'wiki', trajectoryId);
 }
 
-// Full reconciliation: sync every page file, then drop pg wiki chunks whose
-// trajectory_id matches no file (handles page deletion/rename).
+// Full reconciliation: sync every page file, then invalidate pg wiki chunks
+// whose trajectory_id matches no file (handles page deletion/rename). Orphans
+// have no replacing page, so supersededBy is null.
 export async function reindexWiki(
   wikiOwner: string,
   deps: Pick<WikiIngestDeps, 'backend' | 'store' | 'embedder'>
@@ -554,6 +559,6 @@ export async function reindexWiki(
   const orphanIds = (await backend.listWikiChunkIds(wikiOwner))
     .filter((c) => !c.trajectoryId || !valid.has(c.trajectoryId))
     .map((c) => c.id);
-  const dropped = await backend.deleteChunksByIds(orphanIds, wikiOwner, 'wiki');
+  const dropped = await backend.invalidateChunks(orphanIds, wikiOwner, 'wiki', null);
   return { pages: pages.length, dropped };
 }

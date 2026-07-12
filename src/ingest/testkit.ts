@@ -2,7 +2,8 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
-import type { DreamStore, DreamUnitRow, EmbeddingCache, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
+import type { CaptionCache, DreamStore, DreamUnitRow, EmbeddingCache, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
+import { CHUNKER_VERSION } from './chunker.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
 import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
 import type { WikiIngestLLM, WikiIngestResponse, WikiSplitLLM } from '../wiki/llm.ts';
@@ -99,7 +100,7 @@ function tierSet(tier: SearchFilters['tier']): Set<string> | null {
 // In-memory VectorBackend mirroring pgvector's conflict semantics
 // ---------------------------------------------------------------------------
 
-export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiEvidenceStore {
+export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, WikiLedger, WikiEvidenceStore {
   readonly rawEvents = new Map<string, RawEvent>(); // keyed by content_sha256 (unique)
   readonly chunks = new Map<string, Chunk>(); // keyed by id (primary key)
   readonly dreamUnits = new Map<string, DreamUnitRow>(); // keyed by owner\nsessionId\nrepo
@@ -110,13 +111,23 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
   // upsert writes (tests flip this to simulate a chunker upgrade), and the
   // per-row stamps it produces. On an id conflict the stamp is RESTAMPED while
   // the chunk row keeps DO NOTHING semantics — exactly pgvector's upsert.
-  chunkerVersion = 'v2';
+  chunkerVersion = CHUNKER_VERSION;
   readonly chunkerVersions = new Map<string, string>(); // chunk id → stamped version
+
+  // In-memory caption cache, keyed `${model}\n${sha}`. Counters prove the pipeline
+  // hits the cache (getCaptionCalls) and persists only successful LLM captions.
+  private captions = new Map<string, string>();
+  getCaptionCalls = 0;
+  putCaptionCalls = 0;
 
   insertRawEventsCalls = 0;
   upsertCalls = 0;
   // Ids passed to deleteChunksByIds, in call order (V2 supersession assertions).
+  // HARD deletes only — pipeline tests depend on this; soft invalidations
+  // record into invalidatedIds instead.
   deletedIds: string[] = [];
+  // Ids passed to invalidateChunks, in call order (soft-supersession assertions).
+  invalidatedIds: string[] = [];
   // Set to throw from upsert. Receives the 0-based upsert call index (pre-increment).
   upsertHook?: (chunks: Chunk[], callIndex: number) => void;
 
@@ -141,9 +152,23 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
     // the rows never landed.
     this.upsertHook?.(chunks, callIndex);
     for (const c of chunks) {
-      if (!this.chunks.has(c.id)) this.chunks.set(c.id, c); // ON CONFLICT (id) DO NOTHING
+      const existing = this.chunks.get(c.id);
+      if (!existing) {
+        this.chunks.set(c.id, c); // ON CONFLICT (id) DO NOTHING for the row…
+      } else {
+        // …except the tombstone: a re-upsert of an invalidated id RESURRECTS it
+        // (…DO UPDATE SET invalid_at = NULL, superseded_by = NULL) — exactly
+        // pgvector's conflict clause. All other columns keep the existing row.
+        delete existing.metadata.invalidAt;
+        delete existing.metadata.supersededBy;
+      }
       this.chunkerVersions.set(c.id, this.chunkerVersion); // …DO UPDATE SET chunker_version
     }
+  }
+
+  // Non-invalidated chunks — the live view every filtered read path serves.
+  liveChunks(): Chunk[] {
+    return [...this.chunks.values()].filter((c) => c.metadata.invalidAt === undefined);
   }
 
   async getCachedEmbeddings(shas: string[], model: string): Promise<Map<string, number[]>> {
@@ -154,10 +179,40 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
     return this.cache.putCachedEmbeddings(entries, model);
   }
 
+  private captionKey(sha: string, model: string): string {
+    return `${model}\n${sha}`;
+  }
+
+  // Seed a caption directly (simulate a prior successful LLM caption).
+  seedCaption(sha: string, model: string, caption: string): void {
+    this.captions.set(this.captionKey(sha, model), caption);
+  }
+
+  async getCachedCaptions(shas: string[], model: string): Promise<Map<string, string>> {
+    this.getCaptionCalls++;
+    const out = new Map<string, string>();
+    for (const sha of shas) {
+      const hit = this.captions.get(this.captionKey(sha, model));
+      if (hit !== undefined) out.set(sha, hit);
+    }
+    return out;
+  }
+
+  async putCachedCaptions(entries: Array<{ sha: string; caption: string }>, model: string): Promise<void> {
+    this.putCaptionCalls++;
+    for (const e of entries) {
+      const k = this.captionKey(e.sha, model);
+      if (!this.captions.has(k)) this.captions.set(k, e.caption); // ON CONFLICT DO NOTHING
+    }
+  }
+
   async search(queryEmbedding: number[], _queryText: string, filters: SearchFilters): Promise<SearchResult[]> {
     const allowed = tierSet(filters.tier);
     const rows = [...this.chunks.values()].filter(
-      (c) => (!filters.owner || c.metadata.owner === filters.owner) && (!allowed || allowed.has(c.metadata.tier))
+      (c) =>
+        (!filters.owner || c.metadata.owner === filters.owner) &&
+        (!allowed || allowed.has(c.metadata.tier)) &&
+        ((filters.includeSuperseded ?? false) || c.metadata.invalidAt === undefined)
     );
     const scored = rows.map((chunk) => {
       const dot = chunk.embedding.reduce((s, v, i) => s + v * (queryEmbedding[i] ?? 0), 0);
@@ -168,13 +223,13 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
   }
 
   async getTrajectory(trajectoryId: string): Promise<Chunk[]> {
-    return [...this.chunks.values()]
+    return this.liveChunks()
       .filter((c) => c.metadata.trajectoryId === trajectoryId)
       .sort((a, b) => (a.metadata.chunkIndex ?? 0) - (b.metadata.chunkIndex ?? 0));
   }
 
   async count(): Promise<number> {
-    return this.chunks.size;
+    return this.liveChunks().length;
   }
 
   // Mirrors PgVectorBackend.deleteChunksByStaleVersion (MaintenanceStore): sweep
@@ -228,8 +283,10 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
     owner: string,
     opts: { repo?: string; since?: Date; sessionId?: string }
   ): SynthesisUnit[] {
+    // Invalidated chunks are excluded — equivalent to the old post-delete
+    // state, so the unit fingerprints (sha256 of the id set) are unchanged.
     const groups = new Map<string, Chunk[]>();
-    for (const c of this.chunks.values()) {
+    for (const c of this.liveChunks()) {
       if (c.metadata.tier !== tier || c.metadata.owner !== owner) continue;
       const repo = c.metadata.repo ?? '';
       if (opts.repo !== undefined && repo !== opts.repo) continue;
@@ -261,7 +318,10 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
   }
 
   async getUnitChunks(owner: string, sessionId: string, repo: string, tier: 'raw' | 'dream' = 'raw'): Promise<Chunk[]> {
-    return [...this.chunks.values()]
+    // Live-only, like pgvector: the returned id set feeds dream/wiki
+    // fingerprints, and filtering invalidated rows is exactly equivalent to the
+    // old post-delete state.
+    return this.liveChunks()
       .filter(
         (c) =>
           c.metadata.tier === tier &&
@@ -298,8 +358,24 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
     return n;
   }
 
-  async deleteDreamChunks(ids: string[], owner: string): Promise<number> {
-    return this.deleteChunksByIds(ids, owner, 'dream');
+  // Mirrors PgVectorBackend.invalidateChunks: tombstone (never delete), skip
+  // already-invalid rows so the first tombstone is preserved, owner+tier-scoped.
+  async invalidateChunks(ids: string[], owner: string, tier: string, supersededBy: string | null): Promise<number> {
+    this.invalidatedIds.push(...ids);
+    let n = 0;
+    for (const id of ids) {
+      const c = this.chunks.get(id);
+      if (!c || c.metadata.tier !== tier || c.metadata.owner !== owner) continue;
+      if (c.metadata.invalidAt !== undefined) continue; // AND invalid_at IS NULL
+      c.metadata.invalidAt = new Date();
+      c.metadata.supersededBy = supersededBy;
+      n++;
+    }
+    return n;
+  }
+
+  async invalidateDreamChunks(ids: string[], owner: string, supersededBy: string | null): Promise<number> {
+    return this.invalidateChunks(ids, owner, 'dream', supersededBy);
   }
 
   // --- WikiLedger ------------------------------------------------------------
@@ -309,7 +385,7 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
   }
 
   async listWikiChunkIds(owner: string): Promise<Array<{ id: string; trajectoryId: string | null }>> {
-    return [...this.chunks.values()]
+    return this.liveChunks()
       .filter((c) => c.metadata.tier === 'wiki' && c.metadata.owner === owner)
       .map((c) => ({ id: c.id, trajectoryId: c.metadata.trajectoryId ?? null }));
   }
@@ -324,6 +400,7 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
 
   // --- WikiEvidenceStore -----------------------------------------------------
 
+  // Deliberately unfiltered by invalidAt (existence semantics), like pgvector.
   async existingChunkIds(ids: string[], tier: string): Promise<Set<string>> {
     const out = new Set<string>();
     for (const id of ids) {
@@ -472,7 +549,11 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     vectorWeight: 0.7,
     keywordWeight: 0.3,
     timeDecayHalfLifeDays: 0,
+    recencyWeight: 0.1,
+    recencyHalfLifeDays: 30,
+    importanceWeight: 0.1,
     rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
+    imageCaption: { enabled: false, model: 'fake-caption-model', maxPerTrajectory: 4 },
     dreamModel: 'fake-dream-model',
     dreamMaxInputChars: 200_000,
     wikiDir: join(tmpdir(), `engram-wiki-${crypto.randomUUID()}`),
@@ -541,6 +622,11 @@ export function genTrajectory(next: () => number, scale = 1): Trajectory {
   for (let i = 0; i < blockCount; i++) {
     assistantBlocks.push(words(next, 5 + Math.floor(next() * 80 * scale)));
   }
+  // 0–2 short thinking blocks so the new thinking role class exercises packing.
+  const thinkingBlocks: string[] = [];
+  for (let i = 0, n = Math.floor(next() * 3); i < n; i++) {
+    thinkingBlocks.push(words(next, 1 + Math.floor(next() * 40 * scale)));
+  }
   const toolCalls: ToolCall[] = [];
   for (let i = 0; i < toolCount; i++) {
     toolCalls.push({
@@ -559,6 +645,8 @@ export function genTrajectory(next: () => number, scale = 1): Trajectory {
     timestamp: new Date(1_700_000_000_000 + Math.floor(next() * 1_000_000)),
     userMessage: words(next, userLen),
     assistantBlocks,
+    thinkingBlocks,
+    images: [],
     toolCalls,
     filePaths: [],
     artifacts: [],

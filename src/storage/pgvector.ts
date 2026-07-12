@@ -8,7 +8,7 @@ import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 // in initialize() (new table/column/index, changed type, etc.) — otherwise a
 // deployed backend with a matching stored version will SKIP the full DDL and
 // never apply your change. Bumping forces the full DDL + version re-stamp once.
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 // Rows/statement for batched multi-row INSERTs (upsert, raw events, cache).
 const INSERT_BATCH = 100;
@@ -34,7 +34,15 @@ const DEFAULT_SCORING: ScoringConfig = {
   vectorWeight: 0.7,
   keywordWeight: 0.3,
   timeDecayHalfLifeDays: 0,
+  recencyWeight: 0.1,
+  recencyHalfLifeDays: 30,
+  importanceWeight: 0.1,
 };
+
+// Generative-Agents-style importance prior: synthesized knowledge (wiki, then
+// dream) outranks raw transcript at equal similarity. Bounded [0,1], scaled by
+// importanceWeight in the combined score.
+const TIER_PRIORS = { wiki: 1.0, dream: 0.85, raw: 0.6 } as const;
 
 // Two-arm candidate pool re-ranked by hybrid score: vector top-100 (HNSW) UNION
 // keyword top-50 (GIN ts_rank_cd), so an exact-identifier match outside the
@@ -62,6 +70,8 @@ type ChunkRow = {
   chunk_index?: number | null;
   chunk_count?: number | null;
   artifacts?: Artifact[] | null;
+  invalid_at?: Date | null;
+  superseded_by?: string | null;
 };
 
 export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, WikiEvidenceStore, ContextStore, MaintenanceStore {
@@ -107,6 +117,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         vectorWeight: config.vectorWeight,
         keywordWeight: config.keywordWeight,
         timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
+        recencyWeight: config.recencyWeight,
+        recencyHalfLifeDays: config.recencyHalfLifeDays,
+        importanceWeight: config.importanceWeight,
       },
       opts
     );
@@ -182,6 +195,14 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS dream_type TEXT;`);
     await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS source_chunk_ids TEXT[];`);
 
+    // Supersession tombstones (timestamp already serves as valid_at — no
+    // valid_at column). invalid_at set = soft-invalidated; superseded_by names
+    // the replacing trajectory. Partial index so live reads (invalid_at IS NULL)
+    // never pay for the tombstones. Ships under SCHEMA_VERSION 2 (with Lane 1).
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS invalid_at TIMESTAMPTZ;`);
+    await this.sql.unsafe(`ALTER TABLE chunks ADD COLUMN IF NOT EXISTS superseded_by TEXT;`);
+    await this.sql.unsafe(`CREATE INDEX IF NOT EXISTS chunks_invalid_at_idx ON chunks (invalid_at) WHERE invalid_at IS NOT NULL;`);
+
     await this.sql.unsafe(`
       CREATE TABLE IF NOT EXISTS embedding_cache (
         content_sha256 TEXT NOT NULL,
@@ -189,6 +210,18 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         embedding vector NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (content_sha256, embedding_model)
+      );
+    `);
+
+    // Image caption cache, mirror of embedding_cache: keyed (image_sha256, model)
+    // so a re-caption on the same model is a free hit and captions stay stable.
+    await this.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS caption_cache (
+        image_sha256 TEXT NOT NULL,
+        model TEXT NOT NULL,
+        caption TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (image_sha256, model)
       );
     `);
 
@@ -371,11 +404,14 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     // Batched multi-row INSERTs (~INSERT_BATCH rows/statement) in one tx.
     // postgres.js coerces the formatVector() text into the vector column and
     // handles text[]/jsonb/nulls per-column (proven in live.test). On an id
-    // conflict only chunker_version is restamped: ids are content-derived
-    // (hash of trajectoryId+index+text), so a conflicting row holds the exact
-    // text the current chunker just produced — it IS a current-version chunk,
-    // and the reindex sweep must not delete it as stale. Every other column
-    // keeps DO NOTHING semantics (embedding/model stay atomic with each other).
+    // conflict chunker_version is restamped AND any supersession tombstone is
+    // cleared (invalid_at/superseded_by → NULL): ids are content-derived (hash
+    // of trajectoryId+index+text), so a conflicting row holds the exact text the
+    // current chunker just produced — it IS a current-version chunk, the reindex
+    // sweep must not delete it as stale, and knowledge that reverts to a
+    // previously-invalidated state must resurrect (else it stays invisible
+    // forever). Every other column keeps DO NOTHING semantics (embedding/model
+    // stay atomic with each other).
     const cols = [
       'id', 'embedding', 'content', 'model_id', 'embedding_dim',
       'owner', 'chunker_version', 'embedding_model',
@@ -388,7 +424,10 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         const slice = rows.slice(i, i + INSERT_BATCH);
         await tx`
           INSERT INTO chunks ${tx(slice, ...cols)}
-          ON CONFLICT (id) DO UPDATE SET chunker_version = EXCLUDED.chunker_version
+          ON CONFLICT (id) DO UPDATE SET
+            chunker_version = EXCLUDED.chunker_version,
+            invalid_at = NULL,
+            superseded_by = NULL
         `;
       }
     });
@@ -429,6 +468,32 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     });
   }
 
+  async getCachedCaptions(shas: string[], model: string): Promise<Map<string, string>> {
+    if (shas.length === 0) return new Map();
+    const rows = await this.sql<Array<{ image_sha256: string; caption: string }>>`
+      SELECT image_sha256, caption
+      FROM caption_cache
+      WHERE model = ${model} AND image_sha256 IN ${this.sql(shas)}
+    `;
+    const map = new Map<string, string>();
+    for (const r of rows) map.set(r.image_sha256, r.caption);
+    return map;
+  }
+
+  async putCachedCaptions(entries: Array<{ sha: string; caption: string }>, model: string): Promise<void> {
+    if (entries.length === 0) return;
+    const rows = entries.map((e) => ({ image_sha256: e.sha, model, caption: e.caption }));
+    await this.sql.begin(async (tx) => {
+      for (let i = 0; i < rows.length; i += INSERT_BATCH) {
+        const slice = rows.slice(i, i + INSERT_BATCH);
+        await tx`
+          INSERT INTO caption_cache ${tx(slice, 'image_sha256', 'model', 'caption')}
+          ON CONFLICT (image_sha256, model) DO NOTHING
+        `;
+      }
+    });
+  }
+
   // Single Row→Chunk mapping shared by search/getTrajectory/getUnitChunks/
   // recentDreamChunks. Nullable text columns coalesce to '' (metadata types them
   // non-null; real ingested chunks always set them). embedding is always []
@@ -455,6 +520,8 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         chunkIndex: row.chunk_index ?? undefined,
         chunkCount: row.chunk_count ?? undefined,
         artifacts: row.artifacts ?? undefined,
+        invalidAt: row.invalid_at ?? undefined,
+        supersededBy: row.superseded_by ?? undefined,
       },
     };
   }
@@ -465,7 +532,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     // can yield NaN/Infinity) and pool is interpolated into raw SQL below.
     const limit = Number.isFinite(filters.limit) ? Math.max(1, Math.floor(filters.limit as number)) : 5;
     const tiers = tiersFor(filters.tier);
-    const { vectorWeight, keywordWeight, timeDecayHalfLifeDays } = this.scoring;
+    const { vectorWeight, keywordWeight, timeDecayHalfLifeDays, recencyWeight, recencyHalfLifeDays, importanceWeight } =
+      this.scoring;
+    const includeSuperseded = filters.includeSuperseded ?? false;
     const pool = Math.max(CANDIDATE_POOL, limit);
     const keywordPool = Math.max(KEYWORD_POOL, limit);
 
@@ -486,6 +555,8 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       chunk_index: number | null;
       chunk_count: number | null;
       artifacts: Artifact[] | null;
+      invalid_at: Date | null;
+      superseded_by: string | null;
       similarity: number;
       keyword_rank: number;
       combined: number;
@@ -493,8 +564,12 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
 
     // Two arms feed the candidate pool, then both signals score every candidate
     // and re-rank by the weighted combination. Keyword rank uses ts_rank_cd with
-    // normalization flag 32 → rank/(rank+1), i.e. [0,1). Time-decay multiplies the
-    // combined score by exp(-age_days / halfLife) when enabled.
+    // normalization flag 32 → rank/(rank+1), i.e. [0,1). The additive sum also
+    // carries a recency prior (exp half-life over recencyHalfLifeDays, [0,1]) and
+    // a tier-importance prior (TIER_PRIORS, [0,1]); both weights default off-ish.
+    // Time-decay multiplies the whole combined score by exp(-age_days / halfLife)
+    // when enabled. Invalidated (tombstoned) rows are excluded from both arms
+    // unless filters.includeSuperseded.
     //   - Vector arm: top-`pool` by cosine distance (HNSW).
     //   - Keyword arm: top-`keywordPool` by ts_rank_cd where content_tsv matches the
     //     tsquery (GIN). A stopword-only query yields an empty tsquery: `@@` is then
@@ -512,6 +587,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
           AND (${tiers}::text[] IS NULL OR tier = ANY(${tiers}::text[]))
           AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
           AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
+          AND (${includeSuperseded}::boolean OR invalid_at IS NULL)
         ORDER BY embedding <=> ${vec}::vector ASC
         LIMIT ${pool}
       ),
@@ -526,6 +602,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
           AND (${tiers}::text[] IS NULL OR tier = ANY(${tiers}::text[]))
           AND (${filters.exitCode ?? null}::int IS NULL OR exit_code = ${filters.exitCode ?? null})
           AND (${filters.owner ?? null}::text IS NULL OR owner = ${filters.owner ?? null})
+          AND (${includeSuperseded}::boolean OR invalid_at IS NULL)
         ORDER BY ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) DESC
         LIMIT ${keywordPool}
       ),
@@ -539,6 +616,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
           c.id, c.content, c.repo, c.branch, c.timestamp, c.file_paths,
           c.exit_code, c.session_id, c.cwd, c.tier, c.dream_type, c.source_chunk_ids,
           c.trajectory_id, c.chunk_index, c.chunk_count, c.artifacts,
+          c.invalid_at, c.superseded_by,
           (1 - (c.embedding <=> ${vec}::vector)) AS similarity,
           ts_rank_cd(c.content_tsv, websearch_to_tsquery('english', ${queryText}), 32) AS keyword_rank
         FROM chunks c
@@ -548,9 +626,22 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         id, content, repo, branch, timestamp, file_paths,
         exit_code, session_id, cwd, tier, dream_type, source_chunk_ids,
         trajectory_id, chunk_index, chunk_count, artifacts,
+        invalid_at, superseded_by,
         similarity, keyword_rank,
-        (${vectorWeight}::float * similarity + ${keywordWeight}::float * keyword_rank)
-          * CASE
+        (
+          ${vectorWeight}::float * similarity
+          + ${keywordWeight}::float * keyword_rank
+          + ${recencyWeight}::float * CASE
+              WHEN ${recencyHalfLifeDays}::float > 0 AND timestamp IS NOT NULL
+              THEN LEAST(1.0, exp(-ln(2.0) * (EXTRACT(EPOCH FROM (NOW() - timestamp)) / 86400.0) / ${recencyHalfLifeDays}::float))
+              ELSE 0
+            END
+          + ${importanceWeight}::float * CASE tier
+              WHEN 'wiki' THEN ${TIER_PRIORS.wiki}::float
+              WHEN 'dream' THEN ${TIER_PRIORS.dream}::float
+              ELSE ${TIER_PRIORS.raw}::float
+            END
+        ) * CASE
               WHEN ${timeDecayHalfLifeDays}::float > 0 AND timestamp IS NOT NULL
               THEN exp(-(EXTRACT(EPOCH FROM (NOW() - timestamp)) / 86400.0) / ${timeDecayHalfLifeDays}::float)
               ELSE 1
@@ -583,6 +674,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     }));
   }
 
+  // Live chunks only: this feeds wiki candidate-page content to the LLM,
+  // syncPageToIndex's stale computation (live − new is exactly what should be
+  // invalidated), and the UI trajectory viewer — all want live rows.
   async getTrajectory(trajectoryId: string): Promise<Chunk[]> {
     const rows = await this.sql<ChunkRow[]>`
       SELECT
@@ -591,13 +685,16 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         trajectory_id, chunk_index, chunk_count, artifacts
       FROM chunks
       WHERE trajectory_id = ${trajectoryId}
+        AND invalid_at IS NULL
       ORDER BY chunk_index ASC NULLS LAST
     `;
     return rows.map((r) => this.rowToChunk(r));
   }
 
   async count(): Promise<number> {
-    const [row] = await this.sql<Array<{ count: string }>>`SELECT COUNT(*)::text AS count FROM chunks`;
+    const [row] = await this.sql<Array<{ count: string }>>`
+      SELECT COUNT(*)::text AS count FROM chunks WHERE invalid_at IS NULL
+    `;
     return Number(row.count);
   }
 
@@ -631,7 +728,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
   }
 
   // Group chunks of a tier by (session_id, repo) into synthesis units. Shared by
-  // the dream layer (tier='raw') and the wiki layer (tier='dream').
+  // the dream layer (tier='raw') and the wiki layer (tier='dream'). Invalidated
+  // chunks are excluded — equivalent to the old post-delete state, so the unit
+  // fingerprints (sha256 of the surviving id set) match what deletion produced.
   private async aggregateUnits(
     tier: 'raw' | 'dream',
     owner: string,
@@ -649,6 +748,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       FROM chunks
       WHERE tier = ${tier}
         AND owner = ${owner}
+        AND invalid_at IS NULL
         AND (${opts.repo ?? null}::text IS NULL OR repo = ${opts.repo ?? null})
         AND (${opts.sessionId ?? null}::text IS NULL OR session_id = ${opts.sessionId ?? null})
       GROUP BY session_id, COALESCE(repo, '')
@@ -669,6 +769,9 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     // exitCode:null) and route through rowToChunk. SACRED: the returned chunk-id
     // SET (and its order) is unchanged — dream fingerprintOf / pageFingerprint
     // depend on it. Only the metadata is now real; ids/order are identical.
+    // Invalidated chunks are filtered out, and that is CORRECT for the
+    // fingerprints computed from this id set: it is exactly equivalent to the
+    // old post-delete state (invalidation replaced deletion 1:1).
     const rows = await this.sql<ChunkRow[]>`
       SELECT
         id, content, repo, branch, timestamp, file_paths,
@@ -677,6 +780,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       FROM chunks
       WHERE tier = ${tier} AND owner = ${owner} AND session_id = ${sessionId}
         AND COALESCE(repo, '') = ${repo}
+        AND invalid_at IS NULL
       ORDER BY timestamp ASC NULLS LAST, chunk_index ASC NULLS LAST
     `;
     return rows.map((r) => this.rowToChunk(r));
@@ -727,9 +831,22 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     return res.count;
   }
 
+  // Soft-invalidate chunks (knowledge-level replacement). Owner+tier-scoped
+  // defensively like deleteChunksByIds. `AND invalid_at IS NULL` makes it
+  // idempotent and preserves the first tombstone's timestamp/superseded_by.
+  async invalidateChunks(ids: string[], owner: string, tier: string, supersededBy: string | null): Promise<number> {
+    if (ids.length === 0) return 0;
+    const res = await this.sql`
+      UPDATE chunks
+      SET invalid_at = NOW(), superseded_by = ${supersededBy}
+      WHERE id = ANY(${ids as string[]}) AND tier = ${tier} AND owner = ${owner} AND invalid_at IS NULL
+    `;
+    return res.count;
+  }
+
   // tier='dream' wrapper kept for the dream layer's call site.
-  async deleteDreamChunks(ids: string[], owner: string): Promise<number> {
-    return this.deleteChunksByIds(ids, owner, 'dream');
+  async invalidateDreamChunks(ids: string[], owner: string, supersededBy: string | null): Promise<number> {
+    return this.invalidateChunks(ids, owner, 'dream', supersededBy);
   }
 
   // --- WikiLedger ------------------------------------------------------------
@@ -740,13 +857,16 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
 
   async listWikiChunkIds(owner: string): Promise<Array<{ id: string; trajectoryId: string | null }>> {
     const rows = await this.sql<Array<{ id: string; trajectory_id: string | null }>>`
-      SELECT id, trajectory_id FROM chunks WHERE tier = 'wiki' AND owner = ${owner}
+      SELECT id, trajectory_id FROM chunks
+      WHERE tier = 'wiki' AND owner = ${owner} AND invalid_at IS NULL
     `;
     return rows.map((r) => ({ id: r.id, trajectoryId: r.trajectory_id }));
   }
 
   // Subset of the given ids that exist as chunks of the given tier — used by
   // wiki lint's broken-provenance check (sources must be real dream chunks).
+  // Deliberately UNFILTERED by invalid_at: provenance requires the source rows
+  // to merely EXIST; an invalidated source is still a real chunk, not broken.
   async existingChunkIds(ids: string[], tier: string): Promise<Set<string>> {
     if (ids.length === 0) return new Set();
     const rows = await this.sql<Array<{ id: string }>>`
@@ -791,6 +911,8 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
   }
 
   // Distinct sessions + first/last timestamp over a page's dream source chunks.
+  // Deliberately UNFILTERED by invalid_at: this is an evidence/provenance
+  // roll-up over source ids — same existence semantics as existingChunkIds.
   async wikiPageEvidence(sourceIds: string[]): Promise<WikiPageEvidence> {
     if (sourceIds.length === 0) return { sessionCount: 0, firstSeen: null, lastSeen: null };
     const [row] = await this.sql<Array<{ sessions: string; first: Date | null; last: Date | null }>>`
@@ -851,7 +973,8 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       FROM chunks w
       JOIN chunks d
         ON d.tier = 'dream' AND d.owner = w.owner AND d.repo = ${repo} AND d.id = ANY(w.source_chunk_ids)
-      WHERE w.tier = 'wiki' AND w.owner = ${owner}
+        AND d.invalid_at IS NULL
+      WHERE w.tier = 'wiki' AND w.owner = ${owner} AND w.invalid_at IS NULL
       GROUP BY w.trajectory_id
       ORDER BY match_count DESC, max(w.timestamp) DESC, w.trajectory_id ASC
       LIMIT ${limit}
@@ -872,6 +995,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       FROM chunks
       WHERE tier = 'dream' AND owner = ${owner} AND repo = ${repo}
         AND timestamp >= ${since} AND dream_type = ANY(${types})
+        AND invalid_at IS NULL
       ORDER BY timestamp DESC, id ASC
       LIMIT ${limit}
     `;
@@ -890,6 +1014,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       FROM chunks
       WHERE tier = ${tier} AND owner = ${owner}
         AND content_tsv @@ websearch_to_tsquery('english', ${queryText})
+        AND invalid_at IS NULL
       ORDER BY ts_rank_cd(content_tsv, websearch_to_tsquery('english', ${queryText}), 32) DESC, trajectory_id ASC
       LIMIT ${limit}
     `;

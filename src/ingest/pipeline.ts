@@ -6,6 +6,7 @@ import { DEFAULT_OWNER } from '../config/index.ts';
 import { Embedder } from './embed.ts';
 import { chunkHash, trajectoryHash } from './hash.ts';
 import { chunkMessages, chunkTrajectory } from './chunker.ts';
+import { buildCaptioner, resolveCaptions, type CaptionClient } from './caption.ts';
 import { parseJsonl } from './parser.ts';
 
 export interface PipelineDeps {
@@ -19,6 +20,9 @@ export interface PipelineDeps {
   // one value for all three, so a bench/alternate owner can never split-brain
   // against a hardcoded literal. Defaults to DEFAULT_OWNER.
   owner?: string;
+  // Vision client for image captioning. undefined → built from config; null →
+  // captioning explicitly off (all images get placeholders). Tests inject a fake.
+  captioner?: CaptionClient | null;
 }
 
 export interface IngestResult {
@@ -33,8 +37,12 @@ export interface IngestResult {
 
 export async function ingestFile(path: string, deps: PipelineDeps): Promise<IngestResult> {
   const owner = deps.owner ?? DEFAULT_OWNER;
+  const client = deps.captioner === undefined ? buildCaptioner(deps.config) : deps.captioner;
   const messages = parseJsonl(path);
-  const trajectories = chunkMessages(messages);
+  // Image bytes travel here (sha256 → { mediaType, data }), NOT on the Trajectory
+  // — so the raw_events payload can never carry base64.
+  const imageData = new Map<string, { mediaType: string; data: string }>();
+  const trajectories = chunkMessages(messages, imageData);
   if (trajectories.length === 0) {
     return { trajectories: 0, embedded: 0, skipped: 0, cacheHits: 0, cacheMisses: 0, sessionId: '', repo: '' };
   }
@@ -55,6 +63,11 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
   const offset = isLegacyCursor ? state.chunkOffset - 1 : state.chunkOffset;
   const cursor = Math.min(offset, lastIndex);
   const fresh = trajectories.slice(cursor);
+
+  // Resolve captions BEFORE chunkTrajectory (sync) so IMAGE: segments carry the
+  // caption and chunkHash covers it. Never throws — failures become placeholders.
+  // trajectoryHash is caption-independent, so this doesn't perturb supersession.
+  await resolveCaptions(fresh, imageData, { cache: deps.backend, config: deps.config.imageCaption, client });
 
   // Supersession: the trajectory that sat at the cursor position last time was
   // the last turn then. If its content grew in place, its fresh trajectoryHash no

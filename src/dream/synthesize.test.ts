@@ -119,13 +119,13 @@ describe('synthesizeDreams', () => {
     expect(res2.skipped).toBe(1);
   });
 
-  test('changed unit replaces stale dream chunks', async () => {
+  test('changed unit supersedes stale dream chunks (soft invalidation, not deletion)', async () => {
     let text = 'first decision';
     const llm = new FakeDreamLLM(() => [{ type: 'decision', text }]);
     const { backend, deps } = makeDeps(llm);
     await seed(backend, [rawChunk('c1', 's1', 'engram', 'v1')]);
     await run(backend, deps);
-    const firstId = [...backend.chunks.values()].find((c) => c.metadata.tier === 'dream')!.id;
+    const firstId = backend.liveChunks().find((c) => c.metadata.tier === 'dream')!.id;
 
     // Add a chunk (fingerprint changes) and change the extracted text.
     text = 'revised decision';
@@ -133,10 +133,17 @@ describe('synthesizeDreams', () => {
     const res = await run(backend, deps);
 
     expect(res.synthesized).toBe(1);
-    const dreams = [...backend.chunks.values()].filter((c) => c.metadata.tier === 'dream');
-    expect(dreams).toHaveLength(1);
-    expect(dreams[0]!.id).not.toBe(firstId);
-    expect(dreams[0]!.content).toBe('revised decision');
+    const liveDreams = backend.liveChunks().filter((c) => c.metadata.tier === 'dream');
+    expect(liveDreams).toHaveLength(1);
+    expect(liveDreams[0]!.id).not.toBe(firstId);
+    expect(liveDreams[0]!.content).toBe('revised decision');
+
+    // The stale dream row REMAINS as a tombstone pointing at its replacement.
+    const stale = backend.chunks.get(firstId)!;
+    expect(stale.metadata.invalidAt).toBeInstanceOf(Date);
+    expect(stale.metadata.supersededBy).toStartWith('dream:');
+    expect(backend.invalidatedIds).toContain(firstId);
+    expect(backend.deletedIds).not.toContain(firstId); // soft, never hard
   });
 
   test('--limit defers the rest', async () => {
