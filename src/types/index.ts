@@ -23,6 +23,11 @@ export interface ChunkMetadata {
   dreamType?: string;
   sourceChunkIds?: string[];
   artifacts?: Artifact[];
+  // Supersession tombstone: set when this chunk was soft-invalidated (knowledge
+  // replaced by a dream re-synthesis or wiki cleanup). Live reads filter these
+  // out; supersededBy names the trajectory that replaced it (null = orphaned).
+  invalidAt?: Date;
+  supersededBy?: string | null;
 }
 
 export interface Chunk {
@@ -44,6 +49,9 @@ export interface SearchFilters {
   // Force an exact (seq-scan) search instead of the HNSW approximation — needed
   // when a selective filter (e.g. owner) would starve the ANN candidate set.
   exhaustive?: boolean;
+  // Opt-in to see invalidated (superseded) chunks in results; default false
+  // (live-only). Only the CLI plumbs this; MCP/UI stay live-only.
+  includeSuperseded?: boolean;
 }
 
 export interface SearchResult {
@@ -60,6 +68,13 @@ export interface ScoringConfig {
   vectorWeight: number;
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
+  // Additive recency prior: exp-decay of chunk age over recencyHalfLifeDays,
+  // bounded [0,1]. 0 half-life disables it. Distinct from timeDecayHalfLifeDays
+  // (a multiplicative decay wrapping the whole score).
+  recencyWeight: number;
+  recencyHalfLifeDays: number;
+  // Additive tier-importance prior (Generative-Agents-style): wiki > dream > raw.
+  importanceWeight: number;
 }
 
 export interface RerankConfig {
@@ -97,6 +112,9 @@ export interface EngramConfig {
   vectorWeight: number;
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
+  recencyWeight: number;
+  recencyHalfLifeDays: number;
+  importanceWeight: number;
   rerank: RerankConfig;
   imageCaption: ImageCaptionConfig;
   dreamModel: string;

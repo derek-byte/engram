@@ -477,7 +477,7 @@ describe('ingestWiki', () => {
     }
   });
 
-  test('reindex drops pg chunks for deleted pages', async () => {
+  test('reindex invalidates (not deletes) pg chunks for deleted pages', async () => {
     const dir = join(tmpdir(), `engram-wiki-reindex-${crypto.randomUUID()}`);
     const llm = new FakeWikiLLM(script);
     const { backend, deps } = makeDeps(dir, llm);
@@ -485,13 +485,60 @@ describe('ingestWiki', () => {
       await backend.upsert([dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector'), dreamChunk('d2', 's1', 'engram', 'gotcha', 'fp skip')]);
       await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
       expect((await backend.listWikiChunkIds(WIKI)).length).toBeGreaterThan(0);
+      const orphanIds = (await backend.getTrajectory('wiki:pgvector')).map((c) => c.id);
+      expect(orphanIds.length).toBeGreaterThan(0);
 
       // Delete a page file, then reconcile.
       rmSync(deps.store.pagePath('pgvector'));
       const res = await reindexWiki(WIKI, { backend, store: deps.store, embedder: deps.embedder });
       expect(res.pages).toBe(1);
       expect(res.dropped).toBeGreaterThan(0);
+      // Live reads see nothing (getTrajectory filters tombstones)…
       expect(await backend.getTrajectory('wiki:pgvector')).toEqual([]);
+      // …but the rows survive as tombstones: orphans have no replacement (null).
+      for (const id of orphanIds) {
+        const c = backend.chunks.get(id)!;
+        expect(c.metadata.invalidAt).toBeInstanceOf(Date);
+        expect(c.metadata.supersededBy).toBeNull();
+      }
+      expect(backend.deletedIds).toEqual([]); // never hard-deleted
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('page update invalidates stale wiki chunks with supersededBy = the page trajectory', async () => {
+    const dir = join(tmpdir(), `engram-wiki-stale-${crypto.randomUUID()}`);
+    const REWRITE = 'The pgvector store was rebuilt around HNSW indexes and batched upserts. '.repeat(10); // >40% of LONG_BODY, no shrink guard
+    // First ingest creates pgvector; second run (new unit s2) rewrites its body,
+    // so syncPageToIndex retracts the old content-addressed chunks.
+    const llm = new FakeWikiLLM((header: string) => {
+      if (header.includes('s2')) {
+        return {
+          pages: [{ slug: 'pgvector', action: 'update' as const, kind: 'tool' as const, title: 'pgvector', summary: 'x', aliases: [], body: REWRITE, sources: ['d1', 'd3'] }],
+        };
+      }
+      return script(header);
+    });
+    const { backend, deps } = makeDeps(dir, llm);
+    try {
+      await backend.upsert([dreamChunk('d1', 's1', 'engram', 'decision', 'chose pgvector'), dreamChunk('d2', 's1', 'engram', 'gotcha', 'fp skip')]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+      const oldIds = (await backend.getTrajectory('wiki:pgvector')).map((c) => c.id);
+      expect(oldIds.length).toBeGreaterThan(0);
+
+      await backend.upsert([dreamChunk('d3', 's2', 'engram', 'decision', 'revised pgvector call')]);
+      await ingestWiki({ sourceOwner: SRC, wikiOwner: WIKI, limit: 20, dryRun: false }, deps);
+
+      const liveIds = new Set((await backend.getTrajectory('wiki:pgvector')).map((c) => c.id));
+      const stale = oldIds.filter((id) => !liveIds.has(id));
+      expect(stale.length).toBeGreaterThan(0);
+      for (const id of stale) {
+        const c = backend.chunks.get(id)!; // row kept, tombstoned
+        expect(c.metadata.invalidAt).toBeInstanceOf(Date);
+        expect(c.metadata.supersededBy).toBe('wiki:pgvector');
+      }
+      expect(backend.deletedIds).toEqual([]); // soft supersession only
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

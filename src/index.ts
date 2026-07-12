@@ -34,6 +34,7 @@ program
   .option('--tier <tier>', 'raw | dream | wiki | synth | all (default all)', 'all')
   .option('--limit <n>', 'max results', '5')
   .option('--rerank', 'rerank top-K candidates with an LLM (needs OPENAI_API_KEY)')
+  .option('--include-superseded', 'include invalidated (superseded) chunks in results')
   .option('--json', 'emit JSON instead of formatted output')
   .action(async (query, opts) => {
     await searchCommand(query, opts);

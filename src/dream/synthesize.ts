@@ -234,10 +234,13 @@ export async function synthesizeDreams(
         await backend.upsert(chunks);
       }
 
-      // Replace stale dream chunks from a prior fingerprint (old minus new).
+      // Supersede stale dream chunks from a prior fingerprint (old minus new):
+      // knowledge-level replacement → soft invalidation, not deletion, so a
+      // content revert can resurrect them. supersededBy = the replacing dream
+      // trajectory; an empty extraction leaves nothing to point at (null).
       const newSet = new Set(newChunkIds);
       const stale = oldIds.filter((id) => !newSet.has(id));
-      await backend.deleteDreamChunks(stale, params.dreamOwner);
+      await backend.invalidateDreamChunks(stale, params.dreamOwner, newChunkIds.length > 0 ? trajectoryId : null);
 
       // Fingerprint recorded LAST: a mid-unit failure leaves it unrecorded so
       // the unit retries next run; orphaned chunks are idempotent by id.

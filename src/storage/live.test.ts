@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import postgres from 'postgres';
 import type { Chunk, EngramConfig, RawEvent, ScoringConfig } from '../types/index.ts';
 import { PgVectorBackend } from './pgvector.ts';
+import { FakeBackend } from '../ingest/testkit.ts';
 import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 import { LOCAL_DIM } from '../ingest/embed.ts';
 
@@ -240,12 +241,22 @@ describe('storage unit (no pg)', () => {
       vectorWeight: 0.42,
       keywordWeight: 0.58,
       timeDecayHalfLifeDays: 14,
+      recencyWeight: 0.1,
+      recencyHalfLifeDays: 30,
+      importanceWeight: 0.1,
     } as unknown as EngramConfig;
 
     const backend = PgVectorBackend.fromConfig(config);
     // Test seam: assert the private scoring/chunkerVersion fields fromConfig set.
     const seam = backend as unknown as { scoring: ScoringConfig; chunkerVersion: string; embeddingModel: string };
-    expect(seam.scoring).toEqual({ vectorWeight: 0.42, keywordWeight: 0.58, timeDecayHalfLifeDays: 14 });
+    expect(seam.scoring).toEqual({
+      vectorWeight: 0.42,
+      keywordWeight: 0.58,
+      timeDecayHalfLifeDays: 14,
+      recencyWeight: 0.1,
+      recencyHalfLifeDays: 30,
+      importanceWeight: 0.1,
+    });
     expect(seam.chunkerVersion).toBe(CHUNKER_VERSION);
     expect(seam.embeddingModel).toBe('m-test');
   });
@@ -316,6 +327,204 @@ describe('storage unit (no pg)', () => {
     expect(sparse.metadata.owner).toBeUndefined();
     expect(sparse.metadata.chunkIndex).toBeUndefined();
     expect(sparse.metadata.artifacts).toBeUndefined();
+    expect(sparse.metadata.invalidAt).toBeUndefined();
+    expect(sparse.metadata.supersededBy).toBeUndefined();
     expect(sparse.embedding).toEqual([]);
+  });
+});
+
+// --- FakeBackend tombstone semantics (no pg): mirrors PgVectorBackend ---------
+
+describe('FakeBackend supersession tombstones (no pg)', () => {
+  const OWNER2 = 'test:fake-tomb';
+
+  function fakeChunk(id: string, tier: 'raw' | 'dream' | 'wiki' = 'raw'): Chunk {
+    return {
+      id,
+      embedding: [1, 0, 0, 0],
+      content: `content of ${id}`,
+      metadata: {
+        repo: 'r',
+        branch: 'main',
+        timestamp: new Date('2026-06-01T00:00:00Z'),
+        filePaths: [],
+        exitCode: null,
+        sessionId: 's1',
+        cwd: '/w',
+        tier,
+        owner: OWNER2,
+        trajectoryId: `traj:${id}`,
+      },
+    };
+  }
+
+  test('invalidate excludes from search/aggregateUnits/getUnitChunks/count; includeSuperseded opts back in', async () => {
+    const backend = new FakeBackend();
+    await backend.upsert([fakeChunk('a'), fakeChunk('b')]);
+
+    expect(await backend.invalidateChunks(['a'], OWNER2, 'raw', 'x')).toBe(1);
+    expect(backend.invalidatedIds).toEqual(['a']);
+    expect(backend.deletedIds).toEqual([]); // soft only
+
+    // search: default live-only, includeSuperseded returns the tombstone too.
+    const live = await backend.search([1, 0, 0, 0], 'content', { owner: OWNER2, limit: 10 });
+    expect(live.map((r) => r.chunk.id)).toEqual(['b']);
+    const all = await backend.search([1, 0, 0, 0], 'content', { owner: OWNER2, limit: 10, includeSuperseded: true });
+    expect(all.map((r) => r.chunk.id).sort()).toEqual(['a', 'b']);
+    const tomb = all.find((r) => r.chunk.id === 'a')!.chunk;
+    expect(tomb.metadata.invalidAt).toBeInstanceOf(Date);
+    expect(tomb.metadata.supersededBy).toBe('x');
+
+    // aggregateUnits / getUnitChunks / count all serve the live view.
+    const units = await backend.listSynthesisUnits({ owner: OWNER2 });
+    expect(units).toHaveLength(1);
+    expect(units[0]!.chunkIds).toEqual(['b']);
+    expect((await backend.getUnitChunks(OWNER2, 's1', 'r')).map((c) => c.id)).toEqual(['b']);
+    expect(await backend.count()).toBe(1);
+
+    // Idempotent: re-invalidating preserves the first tombstone.
+    const firstStamp = backend.chunks.get('a')!.metadata.invalidAt;
+    expect(await backend.invalidateChunks(['a'], OWNER2, 'raw', 'y')).toBe(0);
+    expect(backend.chunks.get('a')!.metadata.invalidAt).toBe(firstStamp);
+    expect(backend.chunks.get('a')!.metadata.supersededBy).toBe('x');
+  });
+
+  test('re-upsert of an invalidated id clears the tombstone (resurrection)', async () => {
+    const backend = new FakeBackend();
+    await backend.upsert([fakeChunk('a')]);
+    await backend.invalidateChunks(['a'], OWNER2, 'raw', 'x');
+    expect(backend.liveChunks()).toHaveLength(0);
+
+    await backend.upsert([fakeChunk('a')]);
+    const c = backend.chunks.get('a')!;
+    expect(c.metadata.invalidAt).toBeUndefined();
+    expect(c.metadata.supersededBy).toBeUndefined();
+    expect(backend.liveChunks().map((x) => x.id)).toEqual(['a']);
+    expect(await backend.count()).toBe(1);
+  });
+});
+
+// --- Live supersession + scoring (memory quality Lane 2) ----------------------
+
+describe('live supersession tombstones + scoring', () => {
+  const TOMB_OWNER = 'test:tombstone';
+
+  test.skipIf(!LIVE)('invalidateChunks: default search excludes, includeSuperseded surfaces tombstone metadata', async () => {
+    const backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION);
+    try {
+      await backend.initialize();
+      await backend.deleteByOwnerPrefix('test:');
+
+      const a = rawChunk('test:tomb-a', 1, { owner: TOMB_OWNER });
+      const b = rawChunk('test:tomb-b', 2, { owner: TOMB_OWNER });
+      await backend.upsert([a, b]);
+      expect(await backend.invalidateChunks(['test:tomb-a'], TOMB_OWNER, 'raw', 'x')).toBe(1);
+      // Idempotent second call flips nothing.
+      expect(await backend.invalidateChunks(['test:tomb-a'], TOMB_OWNER, 'raw', 'y')).toBe(0);
+
+      const filters = { owner: TOMB_OWNER, exhaustive: true, limit: 10 };
+      const live = await backend.search(vec(1), 'chunk content body', filters);
+      expect(live.map((r) => r.chunk.id)).toEqual(['test:tomb-b']);
+
+      const all = await backend.search(vec(1), 'chunk content body', { ...filters, includeSuperseded: true });
+      expect(all.map((r) => r.chunk.id).sort()).toEqual(['test:tomb-a', 'test:tomb-b']);
+      const tomb = all.find((r) => r.chunk.id === 'test:tomb-a')!.chunk;
+      expect(tomb.metadata.invalidAt).toBeInstanceOf(Date);
+      expect(tomb.metadata.supersededBy).toBe('x'); // first tombstone preserved
+    } finally {
+      await backend.deleteByOwnerPrefix('test:').catch(() => {});
+      await backend.close();
+    }
+  });
+
+  test.skipIf(!LIVE)('resurrection: re-upsert of an invalidated id clears invalid_at', async () => {
+    const backend = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION);
+    const admin = postgres(DB_URL, { prepare: false, onnotice: () => {} });
+    try {
+      await backend.initialize();
+      await backend.deleteByOwnerPrefix('test:');
+
+      const c = rawChunk('test:tomb-res', 1, { owner: TOMB_OWNER });
+      await backend.upsert([c]);
+      await backend.invalidateChunks(['test:tomb-res'], TOMB_OWNER, 'raw', 'gone');
+
+      const probe = async () => {
+        const [r] = await admin<Array<{ invalid_at: Date | null; superseded_by: string | null }>>`
+          SELECT invalid_at, superseded_by FROM chunks WHERE id = 'test:tomb-res'
+        `;
+        return r!;
+      };
+      const dead = await probe();
+      expect(dead.invalid_at).toBeInstanceOf(Date);
+      expect(dead.superseded_by).toBe('gone');
+
+      // Content reverts → same content-addressed id re-upserts → tombstone cleared.
+      await backend.upsert([c]);
+      const alive = await probe();
+      expect(alive.invalid_at).toBeNull();
+      expect(alive.superseded_by).toBeNull();
+    } finally {
+      await backend.deleteByOwnerPrefix('test:').catch(() => {});
+      await admin.end();
+      await backend.close();
+    }
+  });
+
+  test.skipIf(!LIVE)('scoring: importance prior ranks wiki over raw, recency ranks new over old, zero weights = old formula', async () => {
+    const scoringOf = (over: Partial<ScoringConfig>): ScoringConfig => ({
+      vectorWeight: 0.7,
+      keywordWeight: 0.3,
+      timeDecayHalfLifeDays: 0,
+      recencyWeight: 0,
+      recencyHalfLifeDays: 30,
+      importanceWeight: 0,
+      ...over,
+    });
+    const mkBackend = (over: Partial<ScoringConfig>) =>
+      new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION, scoringOf(over));
+
+    const setup = new PgVectorBackend(DB_URL, LOCAL_DIM, FAKE_MODEL, CHUNKER_VERSION);
+    try {
+      await setup.initialize();
+      await setup.deleteByOwnerPrefix('test:');
+
+      // Identical embeddings; only tier and timestamp differ.
+      const now = new Date();
+      const old = new Date('2020-01-01T00:00:00Z');
+      const mk = (id: string, tier: 'raw' | 'wiki', ts: Date): Chunk =>
+        rawChunk(id, 7, { owner: TOMB_OWNER, timestamp: ts, tier });
+      await setup.upsert([
+        mk('test:score-wiki', 'wiki', now),
+        mk('test:score-raw', 'raw', now),
+        mk('test:score-old', 'raw', old),
+      ]);
+
+      const filters = { owner: TOMB_OWNER, exhaustive: true, limit: 10 };
+
+      // Importance: wiki outranks raw at equal similarity/recency.
+      const imp = mkBackend({ importanceWeight: 0.5 });
+      const impRes = await imp.search(vec(7), 'zzz-no-keyword-match', filters);
+      expect(impRes.map((r) => r.chunk.id).slice(0, 2)).toEqual(['test:score-wiki', 'test:score-raw']);
+      await imp.close();
+
+      // Recency: with a high recencyWeight the recent raw chunk beats the old one.
+      const rec = mkBackend({ recencyWeight: 5, importanceWeight: 0 });
+      const recRes = await rec.search(vec(7), 'zzz-no-keyword-match', { ...filters, tier: 'raw' as const });
+      expect(recRes.map((r) => r.chunk.id)).toEqual(['test:score-raw', 'test:score-old']);
+      await rec.close();
+
+      // Regression guard: all three new weights 0 → combined equals the old
+      // vectorWeight*sim + keywordWeight*kw formula exactly.
+      const zero = mkBackend({});
+      const zeroRes = await zero.search(vec(7), 'zzz-no-keyword-match', filters);
+      expect(zeroRes.length).toBeGreaterThan(0);
+      for (const r of zeroRes) {
+        expect(r.combined).toBeCloseTo(0.7 * r.similarity + 0.3 * r.keywordRank, 6);
+      }
+      await zero.close();
+    } finally {
+      await setup.deleteByOwnerPrefix('test:').catch(() => {});
+      await setup.close();
+    }
   });
 });

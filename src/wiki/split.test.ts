@@ -86,12 +86,15 @@ describe('splitPage', () => {
       expect(store.readPage('child-b')!.sources.sort()).toEqual([...HUB_SOURCES].sort()); // invalid → full inherit
       expect(res.sourcesInherited).toEqual({ subset: 1, full: 1 });
 
-      // pg reconciled: old hub chunks gone, new hub + child chunks present.
+      // pg reconciled: old hub chunks invalidated (soft tombstone, row kept),
+      // new hub + child chunks present and live.
       const newHubChunks = await backend.getTrajectory('wiki:fat-hub');
       expect(newHubChunks.length).toBeGreaterThan(0);
       for (const oldId of oldHubChunkIds) {
         if (!newHubChunks.some((c) => c.id === oldId)) {
-          expect(backend.chunks.has(oldId)).toBe(false);
+          const old = backend.chunks.get(oldId)!;
+          expect(old.metadata.invalidAt).toBeInstanceOf(Date);
+          expect(old.metadata.supersededBy).toBe('wiki:fat-hub');
         }
       }
       expect((await backend.getTrajectory('wiki:child-a')).length).toBeGreaterThan(0);

@@ -13,6 +13,7 @@ export interface SearchOptions {
   tier?: string;
   limit?: string;
   rerank?: boolean;
+  includeSuperseded?: boolean;
   json?: boolean;
 }
 
@@ -37,6 +38,7 @@ export async function searchCommand(query: string, opts: SearchOptions): Promise
     since: opts.since ? new Date(opts.since) : undefined,
     tier: parseTier(opts.tier),
     limit: opts.limit ? Number(opts.limit) : 5,
+    includeSuperseded: opts.includeSuperseded,
   };
 
   const backend = PgVectorBackend.fromConfig(config);
