@@ -76,7 +76,7 @@ describe('live storage hardening (Wave 12 Lane A)', () => {
       const [ver2] = await admin<Array<{ value: string }>>`
         SELECT value FROM schema_meta WHERE key = 'schema_version'
       `;
-      expect(ver2?.value).toBe('1');
+      expect(ver2?.value).toBe('2');
     } finally {
       // Guarantee a clean end state even if an assertion above threw: reset the
       // version so the next full DDL restores every index, then run it.
