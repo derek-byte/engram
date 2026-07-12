@@ -3,7 +3,7 @@ import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { runAsk, OpenAIAskLLM, AskError, demandRowForAsk, formatSourceLine } from '../ask/index.ts';
-import { parseTier } from './search.ts';
+import { parseTier } from '../search/index.ts';
 import type { SearchFilters } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 

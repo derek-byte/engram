@@ -23,9 +23,8 @@ import { configIsComplete, LOCAL_DB_PATH } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { runAsk, OpenAIAskLLM, askOutcome, type AskResult } from '../ask/index.ts';
-import { runSearch } from '../search/index.ts';
+import { runSearch, parseTier } from '../search/index.ts';
 import { modelParams } from '../wiki/llm.ts';
-import { parseTier } from '../commands/search.ts';
 import type { EngramConfig, SearchFilters, SearchResult } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 
