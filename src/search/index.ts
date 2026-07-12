@@ -4,6 +4,14 @@ import type { Embedder } from '../ingest/embed.ts';
 import type { OpenAIReranker } from './rerank.ts';
 import type { DemandRow } from '../storage/local.ts';
 
+export function parseTier(value: string | undefined): SearchFilters['tier'] {
+  if (value === undefined) return 'all';
+  if (value === 'raw' || value === 'dream' || value === 'wiki' || value === 'synth' || value === 'all' || value === 'both') {
+    return value;
+  }
+  throw new Error(`invalid --tier: ${value} (expected 'raw', 'dream', 'wiki', 'synth', or 'all')`);
+}
+
 export async function runSearch(
   query: string,
   filters: SearchFilters,

@@ -2,7 +2,7 @@ import { loadConfig, configIsComplete } from '../config/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
-import { runSearch, demandRowForSearch, demandRowForSearchError } from '../search/index.ts';
+import { runSearch, demandRowForSearch, demandRowForSearchError, parseTier } from '../search/index.ts';
 import { buildReranker } from '../search/rerank.ts';
 import type { SearchFilters, SearchResult } from '../types/index.ts';
 
@@ -15,14 +15,6 @@ export interface SearchOptions {
   rerank?: boolean;
   includeSuperseded?: boolean;
   json?: boolean;
-}
-
-export function parseTier(value: string | undefined): SearchFilters['tier'] {
-  if (value === undefined) return 'all';
-  if (value === 'raw' || value === 'dream' || value === 'wiki' || value === 'synth' || value === 'all' || value === 'both') {
-    return value;
-  }
-  throw new Error(`invalid --tier: ${value} (expected 'raw', 'dream', 'wiki', 'synth', or 'all')`);
 }
 
 export async function searchCommand(query: string, opts: SearchOptions): Promise<void> {
