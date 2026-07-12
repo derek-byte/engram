@@ -7,6 +7,8 @@ dist/
 benchmarks/results_*.jsonl
 benchmarks/longmemeval_s_cleaned.json
 chunkerab-report.md
+retrievalab-report.md
+benchmarks/.cache/
 .claude/
 .serena/
 app/node_modules/
