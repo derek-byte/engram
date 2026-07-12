@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import { searchCommand } from './commands/search.ts';
 import { askCommand } from './commands/ask.ts';
 import { statusCommand } from './commands/status.ts';
-import { backfillCommand } from './commands/backfill.ts';
+import { backfillCommand, reembedCommand } from './commands/backfill.ts';
 import { watchInternalCommand } from './commands/watch.ts';
 import { uiCommand } from './commands/ui.ts';
 import { mcpCommand } from './commands/mcp.ts';
@@ -69,7 +69,15 @@ program
     '--reindex',
     'Re-chunk + re-embed every session under the current chunker, then sweep stale chunker-version chunks'
   )
+  .option(
+    '--re-embed',
+    'Migrate the embedding column + re-embed every chunk in place for a provider/dimension switch (non-destructive)'
+  )
   .action(async (opts) => {
+    if (opts.reEmbed) {
+      await reembedCommand();
+      return;
+    }
     await backfillCommand(opts);
   });
 

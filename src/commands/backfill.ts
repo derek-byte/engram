@@ -94,6 +94,149 @@ export async function runBackfillIngest(
   return summary;
 }
 
+// --- Embedding-provider migration (engram backfill --re-embed) ---------------
+
+// The injectable seams of the re-embed sweep, so its batching/resumability can be
+// unit-tested against a fake with no DB or real embedder.
+export interface ReembedSweepDeps {
+  // Next batch of rows that still need (re-)embedding. Must be self-advancing:
+  // once a row's embedding is written it drops out of subsequent fetches, so the
+  // loop terminates and resumes after a crash.
+  fetchBatch(limit: number): Promise<Array<{ id: string; content: string }>>;
+  // Embed a batch of contents (cache read-through happens inside).
+  embed(contents: string[], labels: string[]): Promise<{ embeddings: number[][]; model: string; cacheHits: number; cacheMisses: number }>;
+  // Persist a batch of embeddings. Writes embedding + model/dim stamps only.
+  writeBatch(writes: Array<{ id: string; embedding: number[]; model: string }>): Promise<void>;
+}
+
+export interface ReembedSweepResult {
+  reembedded: number;
+  cacheHits: number;
+  cacheMisses: number;
+  batches: number;
+}
+
+// Batch over every row needing (re-)embedding until the fetch comes back empty.
+// Order is fixed by fetchBatch (lowest id first) and the write happens only AFTER
+// a successful embed, so an embedder failure aborts the run WITHOUT losing data
+// (content is never mutated; already-written batches persist; the rest stay NULL
+// and are re-fetched on the next run).
+export async function runReembedSweep(
+  deps: ReembedSweepDeps,
+  opts: { batchSize: number; total?: number; log?: (line: string) => void }
+): Promise<ReembedSweepResult> {
+  const log = opts.log ?? (() => {});
+  const result: ReembedSweepResult = { reembedded: 0, cacheHits: 0, cacheMisses: 0, batches: 0 };
+  for (;;) {
+    const rows = await deps.fetchBatch(opts.batchSize);
+    if (rows.length === 0) break;
+    const { embeddings, model, cacheHits, cacheMisses } = await deps.embed(
+      rows.map((r) => r.content),
+      rows.map((r) => r.id)
+    );
+    await deps.writeBatch(rows.map((r, i) => ({ id: r.id, embedding: embeddings[i]!, model })));
+    result.reembedded += rows.length;
+    result.cacheHits += cacheHits;
+    result.cacheMisses += cacheMisses;
+    result.batches++;
+    log(`re-embedded ${result.reembedded}${opts.total ? `/${opts.total}` : ''}`);
+  }
+  return result;
+}
+
+// Migrate the embedding provider/dimension in place: alter chunks.embedding to
+// the configured dim (only when it changed), then re-embed every chunk's content
+// — never dropping the table, so dream/wiki content (which lives ONLY in chunks)
+// survives. Non-destructive: the only writes are the two ALTERs, the schema_meta
+// reset, and per-row embedding/model updates. No DELETEs anywhere in this path.
+export async function reembedCommand(): Promise<void> {
+  let config = loadConfig();
+  if (!configIsComplete(config)) {
+    console.log('First-time setup:');
+    config = await promptForMissing(config);
+    console.log('');
+  }
+
+  // Preflight: the openai provider must have a key — a keyless run would latch to
+  // the 384-dim local fallback and write vectors that mismatch the target column.
+  if (config.embeddingProvider === 'openai' && !config.openaiApiKey) {
+    console.error(
+      'engram backfill --re-embed with the openai provider needs an OpenAI API key ' +
+        '(set OPENAI_API_KEY or add it to ~/.engram/config.json). Aborting — no changes made.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const backend = PgVectorBackend.fromConfig(config);
+  const embedder = new Embedder(buildProvider(config), backend);
+  const started = Date.now();
+
+  try {
+    const currentDim = await backend.reembedColumnDim();
+    if (currentDim === null) {
+      console.error('No chunks table found. Run `engram backfill` first to create and populate the index.');
+      process.exitCode = 1;
+      return;
+    }
+
+    const targetDim = config.embeddingDim;
+    const targetModel = config.embeddingModel;
+    const rowCount = await backend.reembedRowCount();
+
+    console.log('Re-embed migration:');
+    console.log(`  current dim:  ${currentDim}`);
+    console.log(`  target dim:   ${targetDim}`);
+    console.log(`  target model: ${targetModel} (${config.embeddingProvider})`);
+    console.log(`  chunk rows:   ${rowCount}`);
+    if (config.embeddingProvider === 'openai') {
+      const chars = await backend.reembedEstimateChars();
+      const tokens = Math.ceil(chars / 4);
+      const cost = (tokens / 1_000_000) * 0.02;
+      console.log(`  est. cost:    ~${tokens.toLocaleString()} tokens (~$${cost.toFixed(4)} at $0.02/M)`);
+    }
+    console.log('');
+
+    if (currentDim !== targetDim) {
+      console.log(`Migrating chunks.embedding: vector(${currentDim}) -> vector(${targetDim}) (drops the HNSW index)...`);
+      await backend.migrateEmbeddingColumn(targetDim);
+    } else {
+      console.log(`Column dim unchanged (${currentDim}); re-embedding only rows not on model ${targetModel}.`);
+    }
+
+    const batchSize = config.chunkBatchSize > 0 ? config.chunkBatchSize : 64;
+    const sweep = await runReembedSweep(
+      {
+        fetchBatch: (limit) => backend.reembedFetchBatch(targetModel, limit),
+        embed: async (contents, labels) => {
+          const r = await embedder.embedWithStats(contents, labels);
+          return { embeddings: r.embeddings, model: r.model, cacheHits: r.cacheHits, cacheMisses: r.cacheMisses };
+        },
+        writeBatch: (writes) => backend.reembedWriteBatch(writes),
+      },
+      { batchSize, total: rowCount, log: (line) => process.stdout.write(`\r  ${line}          `) }
+    );
+    if (sweep.batches > 0) process.stdout.write('\n');
+
+    // Now consistent (column dim == configured dim): full DDL recreates the HNSW
+    // index and re-stamps the schema version; the dim assertion passes.
+    console.log('Finalizing schema (recreating the HNSW index)...');
+    await backend.initialize();
+
+    const remaining = await backend.reembedNullCount();
+    console.log('');
+    console.log(`Done. Re-embedded ${sweep.reembedded} row(s) in ${sweep.batches} batch(es). Model: ${embedder.model}.`);
+    console.log(`Embedding cache: ${sweep.cacheHits} hits, ${sweep.cacheMisses} misses.`);
+    console.log(`Elapsed: ${((Date.now() - started) / 1000).toFixed(1)}s.`);
+    if (remaining > 0) {
+      console.error(`WARNING: ${remaining} row(s) still have a NULL embedding — re-run \`engram backfill --re-embed\` to finish.`);
+      process.exitCode = 1;
+    }
+  } finally {
+    await backend.close();
+  }
+}
+
 export async function backfillCommand(opts: { artifacts?: boolean; reindex?: boolean } = {}): Promise<void> {
   let config = loadConfig();
   if (!configIsComplete(config)) {
