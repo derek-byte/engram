@@ -89,6 +89,13 @@ fn ensure_main_window(app: &AppHandle) -> Option<WebviewWindow> {
             let w = win.clone();
             win.on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
+                    // hide() on a native-fullscreen window abandons its Space as a
+                    // black void (the window vanishes but the Space stays). Let the
+                    // close proceed instead: the Space collapses and the window is
+                    // recreated lazily on the next summon.
+                    if w.is_fullscreen().unwrap_or(false) {
+                        return;
+                    }
                     api.prevent_close();
                     let _ = w.hide();
                 }
@@ -102,12 +109,23 @@ fn ensure_main_window(app: &AppHandle) -> Option<WebviewWindow> {
     }
 }
 
+/// Spotlight-style dismiss. A native-fullscreen window can't just hide() — its
+/// Space would linger as a black void — so destroy it instead (the Space
+/// collapses); it is recreated lazily on the next summon.
+pub fn dismiss_window(win: &WebviewWindow) {
+    if win.is_fullscreen().unwrap_or(false) {
+        let _ = win.destroy();
+    } else {
+        let _ = win.hide();
+    }
+}
+
 /// Spotlight-style summon/hide of the search window. Created lazily on first use
 /// against the supervised UI server; afterwards show+focus / hide.
 pub fn toggle_search_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         if win.is_visible().unwrap_or(false) {
-            let _ = win.hide();
+            dismiss_window(&win);
             return;
         }
     }
