@@ -2,9 +2,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { EngramConfig } from '../types/index.ts';
-import { PROVIDER_DEFAULTS, type EmbeddingProviderKind } from '../ingest/embed.ts';
-import { RERANK_DEFAULTS } from '../search/rerank.ts';
-import { IMAGE_CAPTION_DEFAULTS } from '../ingest/caption.ts';
+import {
+  IMAGE_CAPTION_DEFAULTS,
+  PROVIDER_DEFAULTS,
+  RERANK_DEFAULTS,
+  type EmbeddingProviderKind,
+} from './defaults.ts';
 
 export const CONTEXT_BUDGET_DEFAULT = 1500;
 export const CONTEXT_BUDGET_MIN = 100;

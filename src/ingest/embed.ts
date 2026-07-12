@@ -4,20 +4,15 @@ import { join } from 'node:path';
 import type { EmbeddingCache } from '../storage/backend.ts';
 import { contentSha256 } from './hash.ts';
 import { withRetry } from '../llm/shared.ts';
+import {
+  LOCAL_DIM,
+  LOCAL_MODEL,
+  OPENAI_DEFAULT_DIM,
+  OPENAI_DEFAULT_MODEL,
+  type EmbeddingProviderKind,
+} from '../config/defaults.ts';
 
 export const MAX_CHARS_PER_INPUT = 24000;
-
-export const OPENAI_DEFAULT_MODEL = 'text-embedding-3-small';
-export const OPENAI_DEFAULT_DIM = 1536;
-export const LOCAL_MODEL = 'all-MiniLM-L6-v2';
-export const LOCAL_DIM = 384;
-
-export type EmbeddingProviderKind = 'openai' | 'local';
-
-export const PROVIDER_DEFAULTS: Record<EmbeddingProviderKind, { model: string; dim: number }> = {
-  openai: { model: OPENAI_DEFAULT_MODEL, dim: OPENAI_DEFAULT_DIM },
-  local: { model: LOCAL_MODEL, dim: LOCAL_DIM },
-};
 
 const MODEL_CACHE_DIR = join(homedir(), '.engram', 'models');
 

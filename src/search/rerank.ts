@@ -1,7 +1,5 @@
 import OpenAI from 'openai';
-import type { EngramConfig, RerankConfig, SearchResult } from '../types/index.ts';
-
-export const RERANK_DEFAULTS: RerankConfig = { enabled: false, model: 'gpt-4.1-mini', topK: 30 };
+import type { EngramConfig, SearchResult } from '../types/index.ts';
 
 const SNIPPET_CHARS = 600; // ~topK × 600 chars bounds the prompt to a few k tokens
 const RERANK_TIMEOUT_MS = 15_000;

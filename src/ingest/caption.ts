@@ -3,14 +3,6 @@ import type { EngramConfig, ImageCaptionConfig, Trajectory } from '../types/inde
 import type { CaptionCache } from '../storage/backend.ts';
 import { REQUEST_TIMEOUT_MS, modelParams, withRetry } from '../llm/shared.ts';
 
-// Mirrors RERANK_DEFAULTS: on by default, but every path is fail-safe — no key,
-// disabled config, or LLM error → placeholder caption, never a throw.
-export const IMAGE_CAPTION_DEFAULTS: ImageCaptionConfig = {
-  enabled: true,
-  model: 'gpt-4o-mini',
-  maxPerTrajectory: 4,
-};
-
 // Rendered as `IMAGE: [uncaptioned image/png, 214 KB]` inside a prose chunk when
 // no real caption is available (disabled/keyless/error/over-cap). Never cached —
 // a key added later must be able to caption the same image.
