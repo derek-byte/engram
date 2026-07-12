@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import type { EngramConfig } from '../types/index.ts';
 import { PROVIDER_DEFAULTS, type EmbeddingProviderKind } from '../ingest/embed.ts';
 import { RERANK_DEFAULTS } from '../search/rerank.ts';
+import { IMAGE_CAPTION_DEFAULTS } from '../ingest/caption.ts';
 
 export const CONTEXT_BUDGET_DEFAULT = 1500;
 export const CONTEXT_BUDGET_MIN = 100;
@@ -20,6 +21,10 @@ export const SYNTHESIS_HOUR_DEFAULT = 3;
 export const TARGETED_SESSIONS_MIN = 0;
 export const TARGETED_SESSIONS_MAX = 20;
 export const TARGETED_SESSIONS_DEFAULT = 5;
+
+export const IMAGE_CAPTION_MAX_MIN = 0;
+export const IMAGE_CAPTION_MAX_MAX = 16;
+export const IMAGE_CAPTION_MAX_DEFAULT = 4;
 
 export const ENGRAM_DIR = join(homedir(), '.engram');
 export const CONFIG_PATH = join(ENGRAM_DIR, 'config.json');
@@ -53,6 +58,7 @@ const DEFAULT_CONFIG: EngramConfig = {
   keywordWeight: 0.3,
   timeDecayHalfLifeDays: 0,
   rerank: RERANK_DEFAULTS,
+  imageCaption: IMAGE_CAPTION_DEFAULTS,
   dreamModel: 'gpt-4o-mini',
   dreamMaxInputChars: 200_000,
   wikiDir: join(ENGRAM_DIR, 'wiki'),
@@ -87,6 +93,17 @@ export function mergeConfig(
   merged.rerank = { ...DEFAULT_CONFIG.rerank, ...(raw.rerank ?? {}) };
   const topK = Math.trunc(Number(merged.rerank.topK));
   merged.rerank.topK = Number.isFinite(topK) && topK >= 1 && topK <= 100 ? topK : RERANK_DEFAULTS.topK;
+
+  // imageCaption is a nested block (older config.json files lack it entirely).
+  merged.imageCaption = { ...DEFAULT_CONFIG.imageCaption, ...(raw.imageCaption ?? {}) };
+  merged.imageCaption.enabled = Boolean(merged.imageCaption.enabled);
+  if (typeof merged.imageCaption.model !== 'string' || merged.imageCaption.model.trim() === '') {
+    merged.imageCaption.model = DEFAULT_CONFIG.imageCaption.model;
+  }
+  merged.imageCaption.maxPerTrajectory = clampImageCaptionMax(
+    merged.imageCaption.maxPerTrajectory,
+    DEFAULT_CONFIG.imageCaption.maxPerTrajectory
+  );
 
   // synthesis is a nested block too (older config.json files lack it); clamp hour to 0–23.
   merged.synthesis = { ...DEFAULT_CONFIG.synthesis, ...(raw.synthesis ?? {}) };
@@ -145,6 +162,7 @@ export const EDITABLE_CONFIG_KEYS = [
   'wikiModel',
   'askModel',
   'rerank',
+  'imageCaption',
   'synthesis',
   'contextInjection',
 ] as const;
@@ -203,6 +221,20 @@ export function patchConfigFile(patch: Record<string, unknown>): Record<string, 
         raw.rerank = { ...cur, enabled: Boolean(v.enabled) };
         break;
       }
+      case 'imageCaption': {
+        const v = requirePlainObject(key, value);
+        const cur = (raw.imageCaption ?? {}) as Record<string, unknown>;
+        if ('enabled' in v) cur.enabled = Boolean(v.enabled);
+        if ('model' in v) {
+          if (typeof v.model !== 'string' || v.model.trim() === '') {
+            throw new ConfigPatchError('imageCaption.model must be a non-empty string');
+          }
+          cur.model = v.model.trim();
+        }
+        if ('maxPerTrajectory' in v) cur.maxPerTrajectory = clampImageCaptionMax(v.maxPerTrajectory, IMAGE_CAPTION_MAX_DEFAULT);
+        raw.imageCaption = cur;
+        break;
+      }
       case 'synthesis': {
         const v = requirePlainObject(key, value);
         const cur = (raw.synthesis ?? {}) as Record<string, unknown>;
@@ -257,6 +289,15 @@ export function clampTargetedSessions(value: unknown, fallback: number): number 
   const n = Math.trunc(Number(value));
   if (!Number.isFinite(n)) return fallback;
   return Math.min(TARGETED_SESSIONS_MAX, Math.max(TARGETED_SESSIONS_MIN, n));
+}
+
+// Shared by loadConfig and patchConfigFile — clamp the per-trajectory caption cap
+// to an integer 0–16 (0 disables captioning without touching the enabled flag).
+export function clampImageCaptionMax(value: unknown, fallback: number): number {
+  if (value === null || value === undefined || typeof value === 'boolean') return fallback;
+  const n = Math.trunc(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(IMAGE_CAPTION_MAX_MAX, Math.max(IMAGE_CAPTION_MAX_MIN, n));
 }
 
 function parseProvider(value: string): EmbeddingProviderKind {

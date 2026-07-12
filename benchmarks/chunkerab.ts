@@ -101,6 +101,7 @@ function benchConfig(databaseUrl: string): EngramConfig {
     keywordWeight: 0.3,
     timeDecayHalfLifeDays: 0,
     rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
+    imageCaption: { enabled: false, model: 'gpt-4o-mini', maxPerTrajectory: 4 },
     dreamModel: 'unused',
     dreamMaxInputChars: 200_000,
     wikiDir: join(tmpdir(), 'chunkerab-wiki-unused'),

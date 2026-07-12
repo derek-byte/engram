@@ -87,3 +87,114 @@ describe('parseJsonl Unicode sanitization', () => {
     }
   });
 });
+
+// Write one JSONL line and parse it back through parseJsonl.
+function parseLine(obj: unknown): ReturnType<typeof parseJsonl>[number] | undefined {
+  const dir = join(tmpdir(), `engram-parser-${crypto.randomUUID()}`);
+  const path = join(dir, 'session.jsonl');
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, JSON.stringify(obj) + '\n', 'utf-8');
+    return parseJsonl(path)[0];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const B64 = Buffer.from('some-image-bytes').toString('base64');
+
+describe('parseJsonl thinking + image blocks', () => {
+  test('a thinking block is captured with its text', () => {
+    const m = parseLine({
+      type: 'assistant',
+      uuid: 'u1',
+      sessionId: 's',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'let me reason about this' }] },
+    });
+    expect(m!.content).toEqual([{ type: 'thinking', text: 'let me reason about this' }]);
+  });
+
+  test('redacted_thinking is dropped (no readable text)', () => {
+    const m = parseLine({
+      type: 'assistant',
+      uuid: 'u1',
+      sessionId: 's',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'redacted_thinking', data: 'opaque' },
+          { type: 'text', text: 'visible' },
+        ],
+      },
+    });
+    expect(m!.content).toEqual([{ type: 'text', text: 'visible' }]);
+  });
+
+  test('a user image block becomes {type:image, mediaType, data}', () => {
+    const m = parseLine({
+      type: 'user',
+      uuid: 'u1',
+      sessionId: 's',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look at this' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: B64 } },
+        ],
+      },
+    });
+    expect(m!.content).toEqual([
+      { type: 'text', text: 'look at this' },
+      { type: 'image', mediaType: 'image/png', data: B64 },
+    ]);
+  });
+
+  test('a URL (non-base64) image source is dropped', () => {
+    const m = parseLine({
+      type: 'user',
+      uuid: 'u1',
+      sessionId: 's',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'hi' },
+          { type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } },
+        ],
+      },
+    });
+    expect(m!.content).toEqual([{ type: 'text', text: 'hi' }]);
+  });
+
+  test('tool_result with nested text+image → text-only content + sibling image, no base64 in the string', () => {
+    const m = parseLine({
+      type: 'user',
+      uuid: 'u1',
+      sessionId: 's',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 't1',
+            content: [
+              { type: 'text', text: 'screenshot captured' },
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: B64 } },
+            ],
+          },
+        ],
+      },
+    });
+    expect(m!.content).toEqual([
+      { type: 'tool_result', toolUseId: 't1', content: 'screenshot captured', isError: undefined },
+      { type: 'image', mediaType: 'image/png', data: B64 },
+    ]);
+    // The base64 never leaked into the tool_result content string.
+    const tr = m!.content.find((b) => b.type === 'tool_result') as { content: string };
+    expect(tr.content).not.toContain(B64);
+  });
+});

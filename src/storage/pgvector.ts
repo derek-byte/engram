@@ -8,7 +8,7 @@ import { CHUNKER_VERSION } from '../ingest/chunker.ts';
 // in initialize() (new table/column/index, changed type, etc.) — otherwise a
 // deployed backend with a matching stored version will SKIP the full DDL and
 // never apply your change. Bumping forces the full DDL + version re-stamp once.
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 // Rows/statement for batched multi-row INSERTs (upsert, raw events, cache).
 const INSERT_BATCH = 100;
@@ -189,6 +189,18 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         embedding vector NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (content_sha256, embedding_model)
+      );
+    `);
+
+    // Image caption cache, mirror of embedding_cache: keyed (image_sha256, model)
+    // so a re-caption on the same model is a free hit and captions stay stable.
+    await this.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS caption_cache (
+        image_sha256 TEXT NOT NULL,
+        model TEXT NOT NULL,
+        caption TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (image_sha256, model)
       );
     `);
 
@@ -424,6 +436,32 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
         await tx`
           INSERT INTO embedding_cache ${tx(slice, 'content_sha256', 'embedding_model', 'embedding')}
           ON CONFLICT (content_sha256, embedding_model) DO NOTHING
+        `;
+      }
+    });
+  }
+
+  async getCachedCaptions(shas: string[], model: string): Promise<Map<string, string>> {
+    if (shas.length === 0) return new Map();
+    const rows = await this.sql<Array<{ image_sha256: string; caption: string }>>`
+      SELECT image_sha256, caption
+      FROM caption_cache
+      WHERE model = ${model} AND image_sha256 IN ${this.sql(shas)}
+    `;
+    const map = new Map<string, string>();
+    for (const r of rows) map.set(r.image_sha256, r.caption);
+    return map;
+  }
+
+  async putCachedCaptions(entries: Array<{ sha: string; caption: string }>, model: string): Promise<void> {
+    if (entries.length === 0) return;
+    const rows = entries.map((e) => ({ image_sha256: e.sha, model, caption: e.caption }));
+    await this.sql.begin(async (tx) => {
+      for (let i = 0; i < rows.length; i += INSERT_BATCH) {
+        const slice = rows.slice(i, i + INSERT_BATCH);
+        await tx`
+          INSERT INTO caption_cache ${tx(slice, 'image_sha256', 'model', 'caption')}
+          ON CONFLICT (image_sha256, model) DO NOTHING
         `;
       }
     });

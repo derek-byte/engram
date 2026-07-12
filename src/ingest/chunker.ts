@@ -1,12 +1,20 @@
-import type { Artifact, ToolCall, Trajectory } from '../types/index.ts';
+import { createHash } from 'node:crypto';
+import type { Artifact, ToolCall, Trajectory, TrajectoryImage } from '../types/index.ts';
+import { placeholderCaption } from './caption.ts';
 import { dedupeArtifacts, extractArtifacts } from './artifacts.ts';
 import { repoFromCwd, type ContentBlock, type RawMessage } from './parser.ts';
 
-export const CHUNKER_VERSION = 'v2';
+export const CHUNKER_VERSION = 'v3';
 
 const FILE_PATH_TOOL_KEYS = ['file_path', 'path', 'notebook_path'];
 
-export function chunkMessages(messages: RawMessage[]): Trajectory[] {
+// imageSink (optional) receives every collected image's bytes keyed by sha256,
+// so the pipeline can caption them without the base64 ever touching a Trajectory
+// (which is persisted verbatim as the raw_events payload).
+export function chunkMessages(
+  messages: RawMessage[],
+  imageSink?: Map<string, { mediaType: string; data: string }>
+): Trajectory[] {
   const real = messages.filter((m) => !m.isMeta && !m.isSidechain);
   if (real.length === 0) return [];
 
@@ -14,11 +22,27 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
   let current: {
     user: RawMessage;
     assistantBlocks: string[];
+    thinkingBlocks: string[];
+    images: TrajectoryImage[];
+    imageShas: Set<string>;
     toolCalls: ToolCall[];
     filePaths: Set<string>;
     artifacts: Artifact[];
     pendingToolUses: Map<string, ToolCall>;
   } | null = null;
+
+  // Record an image on the current trajectory, deduped by sha256, and feed its
+  // bytes to the sink. No-op when there's no current trajectory (image-only
+  // user turns never start one, so their images are dropped).
+  const collectImage = (block: { type: 'image'; mediaType: string; data: string }) => {
+    if (!current) return;
+    const bytes = Buffer.from(block.data, 'base64');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    if (current.imageShas.has(sha256)) return;
+    current.imageShas.add(sha256);
+    current.images.push({ sha256, mediaType: block.mediaType, bytes: bytes.length, caption: '' });
+    imageSink?.set(sha256, { mediaType: block.mediaType, data: block.data });
+  };
 
   const flush = () => {
     if (!current) return;
@@ -31,6 +55,10 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
       current = null;
       return;
     }
+    // Images present on the opening user message (screenshots pasted with the ask).
+    for (const block of current.user.content) {
+      if (block.type === 'image') collectImage(block);
+    }
     trajectories.push({
       sessionId: current.user.sessionId,
       repo: current.user.cwd ? repoFromCwd(current.user.cwd) : '',
@@ -39,6 +67,8 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
       timestamp: current.user.timestamp,
       userMessage: userText,
       assistantBlocks: current.assistantBlocks,
+      thinkingBlocks: current.thinkingBlocks,
+      images: current.images,
       toolCalls: current.toolCalls,
       filePaths: [...current.filePaths],
       artifacts: dedupeArtifacts(current.artifacts),
@@ -53,6 +83,9 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
       current = {
         user: m,
         assistantBlocks: [],
+        thinkingBlocks: [],
+        images: [],
+        imageShas: new Set(),
         toolCalls: [],
         filePaths: new Set(),
         artifacts: [],
@@ -67,6 +100,8 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
       for (const block of m.content) {
         if (block.type === 'text' && block.text.trim().length > 0) {
           current.assistantBlocks.push(block.text);
+        } else if (block.type === 'thinking' && block.text.trim().length > 0) {
+          current.thinkingBlocks.push(block.text);
         } else if (block.type === 'tool_use') {
           const tc: ToolCall = { name: block.name, input: block.input };
           current.pendingToolUses.set(block.id, tc);
@@ -86,6 +121,9 @@ export function chunkMessages(messages: RawMessage[]): Trajectory[] {
             tc.output = truncate(block.content, 2000);
             tc.isError = block.isError;
           }
+        } else if (block.type === 'image') {
+          // Images arriving on a subsequent user message (tool-result screenshots).
+          collectImage(block);
         }
       }
     }
@@ -133,8 +171,16 @@ function charsPerToken(kind: SegmentKind): number {
 // material. Order is preserved within each role class. Tool chunks carry a
 // one-line USER context prefix so they embed with the trajectory's intent.
 export function chunkTrajectory(t: Trajectory): string[] {
-  const { prose, tool } = trajectorySegments(t);
+  const { prose, thinking, tool } = trajectorySegments(t);
   const chunks = packSegments(prose, 'prose');
+  // Thinking is its own role class: prose token rate, but carries the same
+  // one-line USER intent prefix as tool chunks so it embeds with the intent.
+  if (thinking.length > 0) {
+    const prefix = toolContextPrefix(t.userMessage);
+    for (const c of packSegments(thinking, 'prose')) {
+      chunks.push(...hardSplit(`${prefix}\n${c}`, HARD_CAP_TOKENS, 'prose'));
+    }
+  }
   if (tool.length > 0) {
     const prefix = toolContextPrefix(t.userMessage);
     for (const c of packSegments(tool, 'tool')) {
@@ -182,16 +228,24 @@ export function packSegments(segments: string[], kind: SegmentKind = 'prose'): s
   return chunks.flatMap((c) => hardSplit(c, HARD_CAP_TOKENS, kind));
 }
 
-function trajectorySegments(t: Trajectory): { prose: string[]; tool: string[] } {
+function trajectorySegments(t: Trajectory): { prose: string[]; thinking: string[]; tool: string[] } {
   const prose: string[] = [`USER: ${t.userMessage}`];
+  // Images render right after the user message. Caption is normally filled by
+  // the pipeline; fall back to a placeholder defensively so a '' never leaks.
+  for (const img of t.images) {
+    const caption = img.caption || placeholderCaption(img.mediaType, img.bytes);
+    prose.push(`IMAGE: ${caption}`);
+  }
   for (const block of t.assistantBlocks) prose.push(`ASSISTANT: ${block}`);
+  const thinking: string[] = [];
+  for (const block of t.thinkingBlocks) thinking.push(`THINKING: ${block}`);
   const tool: string[] = [];
   for (const tc of t.toolCalls) {
     let s = `TOOL ${tc.name}: ${safeJson(tc.input)}`;
     if (tc.output) s += `\nRESULT${tc.isError ? ' (error)' : ''}: ${tc.output}`;
     tool.push(s);
   }
-  return { prose, tool };
+  return { prose, thinking, tool };
 }
 
 // One-line intent prefix for tool chunks: the trajectory's user question,

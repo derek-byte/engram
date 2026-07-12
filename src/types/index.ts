@@ -68,6 +68,12 @@ export interface RerankConfig {
   topK: number;
 }
 
+export interface ImageCaptionConfig {
+  enabled: boolean;
+  model: string;
+  maxPerTrajectory: number;
+}
+
 export interface SynthesisConfig {
   enabled: boolean;
   hour: number;
@@ -92,6 +98,7 @@ export interface EngramConfig {
   keywordWeight: number;
   timeDecayHalfLifeDays: number;
   rerank: RerankConfig;
+  imageCaption: ImageCaptionConfig;
   dreamModel: string;
   dreamMaxInputChars: number;
   wikiDir: string;
@@ -113,6 +120,17 @@ export interface RawEvent {
   payload: unknown;
 }
 
+// An image referenced by a trajectory. The base64 bytes never live here — they
+// travel in a side-channel Map (sha256 → { mediaType, data }) so the Trajectory
+// (persisted verbatim as the raw_events payload) is structurally incapable of
+// carrying image bytes. sha256 enters the trajectoryHash; caption never does.
+export interface TrajectoryImage {
+  sha256: string; // sha256 hex over the DECODED bytes (Buffer.from(data,'base64'))
+  mediaType: string; // e.g. 'image/png'
+  bytes: number; // decoded byte length
+  caption: string; // '' until the pipeline resolves it
+}
+
 export interface Trajectory {
   sessionId: string;
   repo: string;
@@ -121,6 +139,8 @@ export interface Trajectory {
   timestamp: Date;
   userMessage: string;
   assistantBlocks: string[];
+  thinkingBlocks: string[];
+  images: TrajectoryImage[];
   toolCalls: ToolCall[];
   filePaths: string[];
   artifacts: Artifact[];

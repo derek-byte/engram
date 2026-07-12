@@ -51,7 +51,7 @@ describe('live storage hardening (Wave 12 Lane A)', () => {
       const [ver] = await admin<Array<{ value: string }>>`
         SELECT value FROM schema_meta WHERE key = 'schema_version'
       `;
-      expect(ver?.value).toBe('1');
+      expect(ver?.value).toBe('2');
 
       const indexPresent = async (): Promise<boolean> => {
         const [r] = await admin<Array<{ n: string }>>`

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import type { Trajectory } from '../types/index.ts';
+import { trajectoryHash } from './hash.ts';
 import {
   CHARS_PER_TOKEN,
   CHUNKER_VERSION,
@@ -40,6 +42,8 @@ function traj(partial: Partial<Trajectory>): Trajectory {
     timestamp: new Date(1_700_000_000_000),
     userMessage: 'hello world',
     assistantBlocks: [],
+    thinkingBlocks: [],
+    images: [],
     toolCalls: [],
     filePaths: [],
     artifacts: [],
@@ -49,8 +53,8 @@ function traj(partial: Partial<Trajectory>): Trajectory {
 }
 
 describe('chunkTrajectory invariants (property-style)', () => {
-  test('chunker is stamped v2', () => {
-    expect(CHUNKER_VERSION).toBe('v2');
+  test('chunker is stamped v3', () => {
+    expect(CHUNKER_VERSION).toBe('v3');
   });
 
   test('no chunk exceeds the hard cap, over varied + oversized trajectories', () => {
@@ -78,7 +82,8 @@ describe('chunkTrajectory invariants (property-style)', () => {
       // Prose-only trajectories: in v2 the overlap seam exists WITHIN a role
       // class, never across the prose→tool boundary.
       const t = genTrajectory(next, 1 + next() * 3);
-      const chunks = chunkTrajectory({ ...t, toolCalls: [] });
+      // Prose-only: strip thinking + tool so the only seam is the within-prose overlap.
+      const chunks = chunkTrajectory({ ...t, thinkingBlocks: [], toolCalls: [] });
       for (const c of chunks) {
         if (c.length > MAX_CHUNK_CHARS) throw new Error('unexpected hard-split in overlap regime');
       }
@@ -111,6 +116,12 @@ describe('chunkTrajectory v2: role-homogeneous packing', () => {
         Array.from({ length: 20 + Math.floor(next() * 60 * scale) }, () => 'prose' + Math.floor(next() * 1e4)).join(' ')
       );
     }
+    const thinkingBlocks: string[] = [];
+    for (let i = 0, n = 2 + next() * 5 * scale; i < n; i++) {
+      thinkingBlocks.push(
+        Array.from({ length: 20 + Math.floor(next() * 60 * scale) }, () => 'thinkword' + Math.floor(next() * 1e4)).join(' ')
+      );
+    }
     const toolCalls = [];
     for (let i = 0, n = 2 + next() * 5 * scale; i < n; i++) {
       toolCalls.push({
@@ -119,26 +130,31 @@ describe('chunkTrajectory v2: role-homogeneous packing', () => {
         output: Array.from({ length: 20 + Math.floor(next() * 60 * scale) }, () => 'jsonword' + Math.floor(next() * 1e4)).join(' '),
       });
     }
-    return traj({ userMessage: 'ask about the auth flow', assistantBlocks: blocks, toolCalls });
+    return traj({ userMessage: 'ask about the auth flow', assistantBlocks: blocks, thinkingBlocks, toolCalls });
   }
 
-  test('no chunk mixes tool payloads with prose, over varied trajectories', () => {
+  test('no chunk mixes prose, thinking, and tool payloads, over varied trajectories', () => {
     const next = rng(11);
-    let sawBoth = false;
+    let sawAll = false;
     for (let i = 0; i < 200; i++) {
       const t = mixed(next, 1 + next() * 3);
       const chunks = chunkTrajectory(t);
       const prefix = toolContextPrefix(t.userMessage);
       const proseChunks = chunks.filter((c) => c.includes('prose'));
+      const thinkChunks = chunks.filter((c) => c.includes('thinkword'));
       const toolChunks = chunks.filter((c) => c.includes('jsonword'));
-      if (proseChunks.length > 0 && toolChunks.length > 0) sawBoth = true;
-      // Partition is exact: every chunk is one or the other, never both.
-      expect(proseChunks.length + toolChunks.length).toBe(chunks.length);
-      for (const c of chunks) expect(c.includes('prose') && c.includes('jsonword')).toBe(false);
-      // Every tool chunk leads with the one-line USER intent prefix.
+      if (proseChunks.length > 0 && thinkChunks.length > 0 && toolChunks.length > 0) sawAll = true;
+      // Partition is exact: every chunk belongs to exactly one role class.
+      expect(proseChunks.length + thinkChunks.length + toolChunks.length).toBe(chunks.length);
+      for (const c of chunks) {
+        const kinds = [c.includes('prose'), c.includes('thinkword'), c.includes('jsonword')].filter(Boolean);
+        expect(kinds.length).toBeLessThanOrEqual(1);
+      }
+      // Every thinking + tool chunk leads with the one-line USER intent prefix.
+      for (const c of thinkChunks) expect(c.split('\n')[0]).toBe(prefix);
       for (const c of toolChunks) expect(c.split('\n')[0]).toBe(prefix);
     }
-    expect(sawBoth).toBe(true);
+    expect(sawAll).toBe(true);
   });
 
   test('order is preserved within each role class', () => {
@@ -173,6 +189,113 @@ describe('chunkTrajectory v2: role-homogeneous packing', () => {
   test('trajectory without tool calls emits no prefix line', () => {
     const chunks = chunkTrajectory(traj({ userMessage: 'just chatting', assistantBlocks: ['sure'] }));
     expect(chunks).toEqual(['USER: just chatting\nASSISTANT: sure']);
+  });
+});
+
+describe('chunkTrajectory v3: thinking + images', () => {
+  test('thinking renders as USER: …\\nTHINKING: … with the one-line intent prefix', () => {
+    const t = traj({ userMessage: 'why is auth failing', thinkingBlocks: ['the token is expired'] });
+    const chunks = chunkTrajectory(t);
+    const thinkChunk = chunks.find((c) => c.includes('THINKING:'))!;
+    expect(thinkChunk).toBeDefined();
+    const lines = thinkChunk.split('\n');
+    expect(lines[0]).toBe('USER: why is auth failing'); // the intent prefix
+    expect(lines[1]).toBe('THINKING: the token is expired');
+    // Thinking is its own class — the prose chunk holds no THINKING material.
+    const proseChunk = chunks.find((c) => c.startsWith('USER: why is auth failing') && !c.includes('THINKING:'));
+    expect(proseChunk).toBeDefined();
+  });
+
+  test('an image renders as IMAGE: <caption> inside a prose chunk', () => {
+    const t = traj({
+      userMessage: 'look at this',
+      images: [{ sha256: 'abc', mediaType: 'image/png', bytes: 214 * 1024, caption: 'a login error dialog' }],
+    });
+    const chunks = chunkTrajectory(t);
+    const proseChunk = chunks.find((c) => c.startsWith('USER: look at this'))!;
+    expect(proseChunk).toContain('IMAGE: a login error dialog');
+  });
+
+  test('an uncaptioned image falls back to the placeholder text', () => {
+    const t = traj({
+      userMessage: 'look',
+      images: [{ sha256: 'abc', mediaType: 'image/png', bytes: 214 * 1024, caption: '' }],
+    });
+    const chunks = chunkTrajectory(t);
+    expect(chunks.join('\n')).toContain('IMAGE: [uncaptioned image/png, 214 KB]');
+  });
+
+  test('a repeated image within a trajectory is deduped by sha256', () => {
+    const b64 = Buffer.from('the-same-image-bytes').toString('base64');
+    const imageBlock = { type: 'image' as const, mediaType: 'image/png', data: b64 };
+    const messages: RawMessage[] = [
+      msg({ type: 'user', content: [{ type: 'text', text: 'here' }, imageBlock] }),
+      msg({ type: 'user', content: [{ type: 'tool_result', toolUseId: 'x', content: 'ok' }, imageBlock] }),
+    ];
+    const sink = new Map<string, { mediaType: string; data: string }>();
+    const [t] = chunkMessages(messages, sink);
+    expect(t!.images).toHaveLength(1);
+    expect(sink.size).toBe(1);
+  });
+
+  test('emit order is stable: prose chunks, then thinking, then tool', () => {
+    const t = traj({
+      userMessage: 'q',
+      assistantBlocks: ['proseword'],
+      thinkingBlocks: ['thinkword'],
+      toolCalls: [{ name: 'Bash', input: { command: 'jsonword' } }],
+    });
+    const chunks = chunkTrajectory(t);
+    const proseIdx = chunks.findIndex((c) => c.includes('proseword'));
+    const thinkIdx = chunks.findIndex((c) => c.includes('thinkword'));
+    const toolIdx = chunks.findIndex((c) => c.includes('jsonword'));
+    expect(proseIdx).toBeGreaterThanOrEqual(0);
+    expect(proseIdx).toBeLessThan(thinkIdx);
+    expect(thinkIdx).toBeLessThan(toolIdx);
+  });
+});
+
+describe('trajectoryHash v3 composition', () => {
+  // Inline reimplementation of the PRE-wave hash composition (no thinking/images).
+  function oldTrajectoryHash(t: Trajectory): string {
+    const normalize = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    const stableJson = (v: unknown): string => {
+      if (v === null || typeof v !== 'object') return JSON.stringify(v);
+      if (Array.isArray(v)) return '[' + v.map(stableJson).join(',') + ']';
+      const keys = Object.keys(v as object).sort();
+      return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableJson((v as Record<string, unknown>)[k])).join(',') + '}';
+    };
+    const normalized = normalize(
+      [t.sessionId, t.userMessage, ...t.toolCalls.map((tc) => `${tc.name}:${stableJson(tc.input)}`), ...t.assistantBlocks].join('\n')
+    );
+    return createHash('sha256').update(normalized).digest('hex');
+  }
+
+  test('empty thinkingBlocks + images hashes byte-identically to the pre-wave composition', () => {
+    const t = traj({
+      userMessage: 'ship it',
+      assistantBlocks: ['done'],
+      toolCalls: [{ name: 'Write', input: { file_path: '/a' } }],
+    });
+    expect(trajectoryHash(t)).toBe(oldTrajectoryHash(t));
+  });
+
+  test('captions never enter the hash: two trajectories differing only in caption hash equal', () => {
+    const base = traj({ userMessage: 'look', images: [{ sha256: 'sha-1', mediaType: 'image/png', bytes: 100, caption: '' }] });
+    const captioned = traj({ userMessage: 'look', images: [{ sha256: 'sha-1', mediaType: 'image/png', bytes: 100, caption: 'a diagram' }] });
+    expect(trajectoryHash(captioned)).toBe(trajectoryHash(base));
+  });
+
+  test('a differing image sha256 changes the hash', () => {
+    const a = traj({ userMessage: 'look', images: [{ sha256: 'sha-1', mediaType: 'image/png', bytes: 100, caption: '' }] });
+    const b = traj({ userMessage: 'look', images: [{ sha256: 'sha-2', mediaType: 'image/png', bytes: 100, caption: '' }] });
+    expect(trajectoryHash(b)).not.toBe(trajectoryHash(a));
+  });
+
+  test('a differing thinking block changes the hash', () => {
+    const a = traj({ userMessage: 'q', thinkingBlocks: ['plan A'] });
+    const b = traj({ userMessage: 'q', thinkingBlocks: ['plan B'] });
+    expect(trajectoryHash(b)).not.toBe(trajectoryHash(a));
   });
 });
 

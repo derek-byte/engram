@@ -2,7 +2,8 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
-import type { DreamStore, DreamUnitRow, EmbeddingCache, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
+import type { CaptionCache, DreamStore, DreamUnitRow, EmbeddingCache, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
+import { CHUNKER_VERSION } from './chunker.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
 import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
 import type { WikiIngestLLM, WikiIngestResponse, WikiSplitLLM } from '../wiki/llm.ts';
@@ -99,7 +100,7 @@ function tierSet(tier: SearchFilters['tier']): Set<string> | null {
 // In-memory VectorBackend mirroring pgvector's conflict semantics
 // ---------------------------------------------------------------------------
 
-export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiEvidenceStore {
+export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, WikiLedger, WikiEvidenceStore {
   readonly rawEvents = new Map<string, RawEvent>(); // keyed by content_sha256 (unique)
   readonly chunks = new Map<string, Chunk>(); // keyed by id (primary key)
   readonly dreamUnits = new Map<string, DreamUnitRow>(); // keyed by owner\nsessionId\nrepo
@@ -110,8 +111,14 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
   // upsert writes (tests flip this to simulate a chunker upgrade), and the
   // per-row stamps it produces. On an id conflict the stamp is RESTAMPED while
   // the chunk row keeps DO NOTHING semantics — exactly pgvector's upsert.
-  chunkerVersion = 'v2';
+  chunkerVersion = CHUNKER_VERSION;
   readonly chunkerVersions = new Map<string, string>(); // chunk id → stamped version
+
+  // In-memory caption cache, keyed `${model}\n${sha}`. Counters prove the pipeline
+  // hits the cache (getCaptionCalls) and persists only successful LLM captions.
+  private captions = new Map<string, string>();
+  getCaptionCalls = 0;
+  putCaptionCalls = 0;
 
   insertRawEventsCalls = 0;
   upsertCalls = 0;
@@ -152,6 +159,33 @@ export class FakeBackend implements VectorBackend, DreamStore, WikiLedger, WikiE
 
   async putCachedEmbeddings(entries: Array<{ sha: string; embedding: number[] }>, model: string): Promise<void> {
     return this.cache.putCachedEmbeddings(entries, model);
+  }
+
+  private captionKey(sha: string, model: string): string {
+    return `${model}\n${sha}`;
+  }
+
+  // Seed a caption directly (simulate a prior successful LLM caption).
+  seedCaption(sha: string, model: string, caption: string): void {
+    this.captions.set(this.captionKey(sha, model), caption);
+  }
+
+  async getCachedCaptions(shas: string[], model: string): Promise<Map<string, string>> {
+    this.getCaptionCalls++;
+    const out = new Map<string, string>();
+    for (const sha of shas) {
+      const hit = this.captions.get(this.captionKey(sha, model));
+      if (hit !== undefined) out.set(sha, hit);
+    }
+    return out;
+  }
+
+  async putCachedCaptions(entries: Array<{ sha: string; caption: string }>, model: string): Promise<void> {
+    this.putCaptionCalls++;
+    for (const e of entries) {
+      const k = this.captionKey(e.sha, model);
+      if (!this.captions.has(k)) this.captions.set(k, e.caption); // ON CONFLICT DO NOTHING
+    }
   }
 
   async search(queryEmbedding: number[], _queryText: string, filters: SearchFilters): Promise<SearchResult[]> {
@@ -473,6 +507,7 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     keywordWeight: 0.3,
     timeDecayHalfLifeDays: 0,
     rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
+    imageCaption: { enabled: false, model: 'fake-caption-model', maxPerTrajectory: 4 },
     dreamModel: 'fake-dream-model',
     dreamMaxInputChars: 200_000,
     wikiDir: join(tmpdir(), `engram-wiki-${crypto.randomUUID()}`),
@@ -541,6 +576,11 @@ export function genTrajectory(next: () => number, scale = 1): Trajectory {
   for (let i = 0; i < blockCount; i++) {
     assistantBlocks.push(words(next, 5 + Math.floor(next() * 80 * scale)));
   }
+  // 0–2 short thinking blocks so the new thinking role class exercises packing.
+  const thinkingBlocks: string[] = [];
+  for (let i = 0, n = Math.floor(next() * 3); i < n; i++) {
+    thinkingBlocks.push(words(next, 1 + Math.floor(next() * 40 * scale)));
+  }
   const toolCalls: ToolCall[] = [];
   for (let i = 0; i < toolCount; i++) {
     toolCalls.push({
@@ -559,6 +599,8 @@ export function genTrajectory(next: () => number, scale = 1): Trajectory {
     timestamp: new Date(1_700_000_000_000 + Math.floor(next() * 1_000_000)),
     userMessage: words(next, userLen),
     assistantBlocks,
+    thinkingBlocks,
+    images: [],
     toolCalls,
     filePaths: [],
     artifacts: [],

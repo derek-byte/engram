@@ -17,6 +17,8 @@ export interface RawMessage {
 
 export type ContentBlock =
   | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'image'; mediaType: string; data: string } // data = base64
   | { type: 'tool_use'; name: string; input: unknown; id: string }
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean };
 
@@ -124,14 +126,56 @@ function normalizeContent(raw: unknown): ContentBlock[] {
       if (typeof text === 'string' && text.length > 0) {
         out.push({ type: 'text', text });
       }
+    } else if (t === 'thinking') {
+      const thinking = (block as { thinking?: string }).thinking;
+      if (typeof thinking === 'string' && thinking.length > 0) {
+        out.push({ type: 'thinking', text: thinking });
+      }
+      // redacted_thinking has no readable text — falls through, dropped.
+    } else if (t === 'image') {
+      const img = imageBlock(block);
+      if (img) out.push(img);
     } else if (t === 'tool_use') {
       const b = block as { name?: string; input?: unknown; id?: string };
       out.push({ type: 'tool_use', name: b.name ?? '', input: b.input, id: b.id ?? '' });
     } else if (t === 'tool_result') {
       const b = block as { tool_use_id?: string; content?: unknown; is_error?: boolean };
-      const contentStr = typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '');
-      out.push({ type: 'tool_result', toolUseId: b.tool_use_id ?? '', content: contentStr, isError: b.is_error });
+      if (Array.isArray(b.content)) {
+        // Nested content: keep the text parts as the result string, and hoist
+        // any base64 image parts to sibling ContentBlocks so their bytes never
+        // get JSON.stringified into the (truncated) tool-result text.
+        const texts: string[] = [];
+        const images: ContentBlock[] = [];
+        for (const nested of b.content) {
+          if (!nested || typeof nested !== 'object') continue;
+          const nt = (nested as Record<string, unknown>).type;
+          if (nt === 'text') {
+            const text = (nested as { text?: string }).text;
+            if (typeof text === 'string' && text.length > 0) texts.push(text);
+          } else if (nt === 'image') {
+            const img = imageBlock(nested);
+            if (img) images.push(img);
+          }
+        }
+        out.push({ type: 'tool_result', toolUseId: b.tool_use_id ?? '', content: texts.join('\n'), isError: b.is_error });
+        for (const img of images) out.push(img);
+      } else {
+        const contentStr = typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? '');
+        out.push({ type: 'tool_result', toolUseId: b.tool_use_id ?? '', content: contentStr, isError: b.is_error });
+      }
     }
   }
   return out;
+}
+
+// Extract a base64 image ContentBlock from a raw image block, or null when the
+// source is missing / not base64 (e.g. a URL source) / the data is empty.
+function imageBlock(block: unknown): ContentBlock | null {
+  const source = (block as { source?: unknown }).source as
+    | { type?: string; media_type?: string; data?: string }
+    | undefined;
+  if (!source || source.type !== 'base64') return null;
+  const data = source.data;
+  if (typeof data !== 'string' || data.length === 0) return null;
+  return { type: 'image', mediaType: source.media_type ?? '', data };
 }

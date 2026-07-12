@@ -5,7 +5,15 @@ export interface EmbeddingCache {
   putCachedEmbeddings(entries: Array<{ sha: string; embedding: number[] }>, model: string): Promise<void>;
 }
 
-export interface VectorBackend extends EmbeddingCache {
+// Persisted image captions, keyed (image_sha256, model). Mirror of EmbeddingCache:
+// a cache hit skips the (paid, slow) vision call, and captions stay stable across
+// re-ingests so chunkHash (which covers the caption) doesn't churn.
+export interface CaptionCache {
+  getCachedCaptions(shas: string[], model: string): Promise<Map<string, string>>;
+  putCachedCaptions(entries: Array<{ sha: string; caption: string }>, model: string): Promise<void>;
+}
+
+export interface VectorBackend extends EmbeddingCache, CaptionCache {
   initialize(): Promise<void>;
   insertRawEvents(events: RawEvent[]): Promise<number>;
   upsert(chunks: Chunk[]): Promise<void>;

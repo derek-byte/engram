@@ -12,6 +12,13 @@ export function trajectoryHash(t: Trajectory): string {
       t.userMessage,
       ...t.toolCalls.map((tc) => `${tc.name}:${stableJson(tc.input)}`),
       ...t.assistantBlocks,
+      // Thinking IS hashed: it changes chunk text, so an unchanged hash would
+      // leave the old chunks as un-superseded duplicates. Image sha256s enter
+      // too; caption text and base64 never do (captions affect chunkHash only).
+      // Empty arrays append nothing, so a no-thinking/no-image trajectory hashes
+      // byte-identically to the pre-wave composition — the corpus doesn't churn.
+      ...t.thinkingBlocks,
+      ...t.images.map((i) => `image:${i.sha256}`),
     ].join('\n')
   );
   return createHash('sha256').update(normalized).digest('hex');
