@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireSynthesisLock, claimStaleLock } from './synthesisLock.ts';
+import { acquireSynthesisLock, claimStaleLock } from './lock.ts';
 
 // Redirect the lock to a scratch path (env seam) so no test touches ~/.engram.
 let lockPath: string;

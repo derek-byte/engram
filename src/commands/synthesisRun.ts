@@ -8,7 +8,7 @@ import { synthesizeDreams, type SynthesizeDeps } from '../dream/synthesize.ts';
 import { ingestWiki, type WikiBackend } from '../wiki/ingest.ts';
 import { lintWiki, pendingWikiUnits } from '../wiki/lint.ts';
 import { WikiStore } from '../wiki/store.ts';
-import { acquireSynthesisLock, type Lock } from './synthesisLock.ts';
+import { acquireSynthesisLock, type Lock } from '../synthesis/lock.ts';
 import type { EngramConfig } from '../types/index.ts';
 
 const OVERLAP_MS = 24 * 60 * 60 * 1000;

@@ -8,7 +8,7 @@ import { WikiStore } from '../wiki/store.ts';
 import { ingestWiki, reindexWiki, type WikiIngestResult, type WikiUnitPlan } from '../wiki/ingest.ts';
 import { splitPage } from '../wiki/split.ts';
 import { lintWiki, pendingWikiUnits, type Finding } from '../wiki/lint.ts';
-import { acquireSynthesisLock } from './synthesisLock.ts';
+import { acquireSynthesisLock } from '../synthesis/lock.ts';
 
 export interface WikiOptions {
   repo?: string;

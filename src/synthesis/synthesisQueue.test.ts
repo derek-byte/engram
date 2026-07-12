@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { Embedder } from './embed.ts';
+import { Embedder } from '../ingest/embed.ts';
 import { SynthesisQueue, type SynthesisQueueDeps } from './synthesisQueue.ts';
-import { FakeBackend, FakeProvider, testConfig } from './testkit.ts';
-import type { Lock } from '../commands/synthesisLock.ts';
+import { FakeBackend, FakeProvider, testConfig } from '../ingest/testkit.ts';
+import type { Lock } from './lock.ts';
 
 const QUIESCENCE = 50;
 

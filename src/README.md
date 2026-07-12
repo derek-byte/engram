@@ -7,11 +7,12 @@ The engram engine + CLI (Bun/TypeScript). Entry point: `index.ts` — commander 
 | `commands/` | One file per CLI command (`search`, `ask`, `backfill`, `watch`, `ui`, `mcp`, `service`, `dream`, `wiki`, `synthesis-run`, `context`, `hooks`, `demand`, `jobs`, `status`…). Thin: parse flags, build deps, call the core module, print. |
 | `config/` | `~/.engram/config.json` loading, defaults, completeness checks. Everything downstream takes an `EngramConfig`. |
 | `types/` | Shared type definitions (`Trajectory`, `Chunk`, tiers, `EngramConfig`). |
-| `ingest/` | Session capture: jsonl parser → trajectory chunker → embeddings (local MiniLM or OpenAI, pg-cached) → pipeline upsert. Plus the fs watcher, bulk `injectDocuments`, artifact extraction, synthesis queue. |
+| `ingest/` | Session capture: jsonl parser → trajectory chunker → embeddings (local MiniLM or OpenAI, pg-cached) → pipeline upsert. Plus the fs watcher, bulk `injectDocuments`, artifact extraction. |
 | `storage/` | The two stores: `pgvector.ts` (Postgres — chunks, raw events, embedding cache, hybrid search SQL) behind the `backend.ts` interface, and `local.ts` (SQLite — recents, demand log, job telemetry). |
 | `llm/` | Shared OpenAI plumbing: per-model completion params, request timeout, retry/backoff. |
 | `dream/` | Tier-1 synthesis: conservative per-trajectory extraction (decision / fix / gotcha / preference chunks) via LLM. |
 | `wiki/` | Tier-2 synthesis: compiles dream chunks into markdown knowledge pages at `~/.engram/wiki/` (git-versioned, wikilinked), plus lint, link graph, page store, pg indexing. |
+| `synthesis/` | Orchestration layer above ingest/dream/wiki: the in-process, per-session quiescence-gated queue that runs dream → wiki after a watcher ingest, and the advisory lock (`lock.ts`) that serializes it against `synthesis-run` and manual `dream`/`wiki ingest`. |
 | `search/` | Query surface: hybrid vector+keyword `runSearch` across tiers, optional LLM rerank, demand logging. |
 | `ask/` | Answer surface: retrieve → grounded LLM answer with `[n]` citations resolving to raw provenance. |
 | `context/` | SessionStart injection: resolve repo/branch → compose a token-budgeted "what you decided last time" block for new Claude Code sessions. |

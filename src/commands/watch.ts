@@ -3,7 +3,7 @@ import { PgVectorBackend } from '../storage/pgvector.ts';
 import { LocalStore } from '../storage/local.ts';
 import { Embedder, buildProvider } from '../ingest/embed.ts';
 import { SessionWatcher } from '../ingest/watcher.ts';
-import { SynthesisQueue } from '../ingest/synthesisQueue.ts';
+import { SynthesisQueue } from '../synthesis/synthesisQueue.ts';
 
 export async function watchInternalCommand(): Promise<void> {
   const config = loadConfig();
