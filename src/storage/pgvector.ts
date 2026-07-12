@@ -311,10 +311,102 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     if (actual > 0 && actual !== this.embeddingDim) {
       throw new Error(
         `Embedding dimension mismatch: chunks.embedding is vector(${actual}), but this backend is configured for ${this.embeddingDim} dims. ` +
-          `Either re-embed at the stored dimension (drop the chunks + embedding_cache tables, then run \`engram backfill\`), ` +
-          `or set embeddingProvider/embeddingModel/embeddingDim in your config to match the existing data (${actual} dims).`
+          `Run \`engram backfill --re-embed\` to migrate the column and re-embed every chunk in place — non-destructive, so dream/wiki content is preserved. ` +
+          `Or set embeddingProvider/embeddingModel/embeddingDim in your config to match the existing data (${actual} dims).`
       );
     }
+  }
+
+  // --- Embedding-provider migration (engram backfill --re-embed) -------------
+  // These methods deliberately use this.sql WITHOUT calling initialize(): the
+  // whole point of --re-embed is to alter chunks.embedding for a dim change, and
+  // initialize()'s assertEmbeddingDim would throw on the very mismatch this fixes.
+
+  // Declared dimension of chunks.embedding (pgvector stores the dim directly in
+  // atttypmod), or null when the chunks table doesn't exist yet (nothing to
+  // migrate — the caller should run a plain backfill first).
+  async reembedColumnDim(): Promise<number | null> {
+    const [exists] = await this.sql<Array<{ n: string }>>`
+      SELECT count(*)::text AS n FROM pg_class WHERE relname = 'chunks' AND relkind = 'r'
+    `;
+    if (Number(exists?.n ?? 0) === 0) return null;
+    const [row] = await this.sql<Array<{ atttypmod: number }>>`
+      SELECT atttypmod FROM pg_attribute
+      WHERE attrelid = 'chunks'::regclass AND attname = 'embedding'
+    `;
+    return row ? row.atttypmod : null;
+  }
+
+  // Total chunk rows (ALL owners, ALL tiers, incl. tombstones): the re-embed
+  // sweep is owner-agnostic by design, and after a column swap every row's
+  // embedding is NULL and must be repopulated.
+  async reembedRowCount(): Promise<number> {
+    const [r] = await this.sql<Array<{ n: string }>>`SELECT count(*)::text AS n FROM chunks`;
+    return Number(r?.n ?? 0);
+  }
+
+  // Total content chars across all chunks — feeds the OpenAI cost estimate
+  // (tokens ≈ chars/4). Never reads or touches embeddings.
+  async reembedEstimateChars(): Promise<number> {
+    const [r] = await this.sql<Array<{ c: string }>>`SELECT COALESCE(SUM(LENGTH(content)), 0)::text AS c FROM chunks`;
+    return Number(r?.c ?? 0);
+  }
+
+  // Rows still awaiting an embedding after the sweep — used to fail nonzero if
+  // any chunk was left NULL.
+  async reembedNullCount(): Promise<number> {
+    const [r] = await this.sql<Array<{ n: string }>>`SELECT count(*)::text AS n FROM chunks WHERE embedding IS NULL`;
+    return Number(r?.n ?? 0);
+  }
+
+  // Swap chunks.embedding to a new dimension in one transaction: DROP COLUMN
+  // (auto-drops the HNSW index, which references only this column) then re-ADD at
+  // the target dim, then reset schema_meta so the next initialize() re-runs the
+  // full DDL (recreating the HNSW index + re-stamping the version). Content and
+  // every other column are untouched. The dim is interpolated into DDL, so it is
+  // validated as a positive integer ≤ 4096 first.
+  async migrateEmbeddingColumn(targetDim: number): Promise<void> {
+    if (!Number.isInteger(targetDim) || targetDim <= 0 || targetDim > 4096) {
+      throw new Error(`invalid target embedding dimension ${targetDim} (expected a positive integer ≤ 4096)`);
+    }
+    await this.sql.begin(async (tx) => {
+      await tx.unsafe(`ALTER TABLE chunks DROP COLUMN embedding`);
+      await tx.unsafe(`ALTER TABLE chunks ADD COLUMN embedding vector(${targetDim})`);
+      await tx.unsafe(`UPDATE schema_meta SET value = '0' WHERE key = 'schema_version'`);
+    });
+  }
+
+  // Next batch of rows needing (re-)embedding, lowest id first. The predicate is
+  // self-advancing: a row leaves the set once its embedding is written under the
+  // target model, so the loop naturally terminates and resumes after a crash
+  // (rows keep their content; only embedding is NULL). Covers BOTH a post-migration
+  // sweep (every embedding NULL) and a same-dim model swap (embedding_model differs).
+  async reembedFetchBatch(model: string, limit: number): Promise<Array<{ id: string; content: string }>> {
+    const rows = await this.sql<Array<{ id: string; content: string }>>`
+      SELECT id, content FROM chunks
+      WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM ${model}
+      ORDER BY id
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({ id: r.id, content: r.content }));
+  }
+
+  // Persist a batch of re-embeddings in one transaction. The ONLY columns written
+  // are embedding + the model/dim stamps — content and metadata are never touched.
+  async reembedWriteBatch(writes: Array<{ id: string; embedding: number[]; model: string }>): Promise<void> {
+    if (writes.length === 0) return;
+    await this.sql.begin(async (tx) => {
+      for (const w of writes) {
+        await tx`
+          UPDATE chunks
+          SET embedding = ${formatVector(w.embedding)},
+              embedding_dim = ${w.embedding.length},
+              model_id = ${w.model},
+              embedding_model = ${w.model}
+          WHERE id = ${w.id}
+        `;
+      }
+    });
   }
 
   async insertRawEvents(events: RawEvent[]): Promise<number> {
