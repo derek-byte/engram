@@ -6,7 +6,7 @@ import { OpenAIDreamLLM, type DreamLLM } from '../dream/llm.ts';
 import { OpenAIWikiLLM, type WikiIngestLLM } from '../wiki/llm.ts';
 import { synthesizeDreams, type SynthesizeDeps } from '../dream/synthesize.ts';
 import { ingestWiki, type WikiBackend } from '../wiki/ingest.ts';
-import { lintWiki } from '../wiki/lint.ts';
+import { lintWiki, pendingWikiUnits } from '../wiki/lint.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { acquireSynthesisLock, type Lock } from './synthesisLock.ts';
 import type { EngramConfig } from '../types/index.ts';
@@ -31,7 +31,7 @@ function log(phase: string, data: Record<string, unknown>): void {
 export interface SynthesisCollaborators {
   backend: SynthesizeDeps['backend'] &
     WikiBackend &
-    Pick<PgVectorBackend, 'initialize' | 'close' | 'existingChunkIds' | 'pendingWikiUnits'>;
+    Pick<PgVectorBackend, 'initialize' | 'close' | 'existingChunkIds' | 'dreamUnitsWithWikiFingerprint'>;
   embedder: Embedder;
   dreamLLM: DreamLLM;
   wikiLLM: WikiIngestLLM;
@@ -177,7 +177,7 @@ export async function synthesisRunCommand(deps: SynthesisRunDeps = {}): Promise<
     try {
       const findings = await lint(wikiStore, {
         checkProvenance: (ids) => backend.existingChunkIds(ids, 'dream'),
-        pendingUnits: () => backend.pendingWikiUnits(owner),
+        pendingUnits: () => pendingWikiUnits(backend, owner),
       });
       const warns = findings.filter((f) => f.severity === 'warn').length;
       const rules: Record<string, number> = {};

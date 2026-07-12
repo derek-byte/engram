@@ -68,6 +68,23 @@ export function pendingUnitsFrom(
   return out;
 }
 
+// Composes the storage row fetch with the pure rule above: the staleHours→cutoff
+// arithmetic lives here (wiki's rule, not storage's), the fetcher does the SQL
+// join + `synthesized_at < cutoff` prefilter, then pendingUnitsFrom decides. A
+// single `now` feeds both the cutoff and the staleness check. Callers pass a
+// store (PgVectorBackend); lint's pendingUnits option is wired to this.
+export function pendingWikiUnits(
+  store: { dreamUnitsWithWikiFingerprint(owner: string, cutoff: Date): Promise<PendingLedgerRow[]> },
+  owner: string,
+  staleHours: number = PENDING_STALE_HOURS,
+  now: Date = new Date()
+): Promise<PendingUnit[]> {
+  const cutoff = new Date(now.getTime() - staleHours * 3_600_000);
+  return store
+    .dreamUnitsWithWikiFingerprint(owner, cutoff)
+    .then((rows) => pendingUnitsFrom(rows, now, staleHours));
+}
+
 // Deterministic wiki lint: findings are information, never auto-fixed (exit 0).
 export async function lintWiki(store: WikiStore, opts: LintOptions = {}): Promise<Finding[]> {
   const findings: Finding[] = [];

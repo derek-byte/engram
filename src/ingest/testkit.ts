@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
-import type { CaptionCache, DreamStore, DreamUnitRow, EmbeddingCache, PendingUnit, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
+import type { CaptionCache, DreamStore, DreamUnitRow, DreamUnitWikiRow, EmbeddingCache, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
 import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
@@ -410,10 +410,10 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
     return out;
   }
 
-  // The fake carries no dream_units.synthesized_at, so it can't reproduce the
-  // 48h staleness gate — always empty. The pending-unit decision is covered by
-  // pendingUnitsFrom's own unit tests (src/wiki/lint.test.ts).
-  async pendingWikiUnits(_owner: string, _staleHours = 48): Promise<PendingUnit[]> {
+  // The fake carries no dream_units, so it has no rows to join — always empty.
+  // The pending-unit decision over these rows is covered by pendingUnitsFrom's
+  // own unit tests (src/wiki/lint.test.ts).
+  async dreamUnitsWithWikiFingerprint(_owner: string, _cutoff: Date): Promise<DreamUnitWikiRow[]> {
     return [];
   }
 

@@ -114,6 +114,17 @@ export interface WikiPageEvidence {
   lastSeen: Date | null;
 }
 
+// One (session, repo) join row: a dream unit's current dream knowledge next to
+// the wiki ledger's recorded fingerprint. A dumb persistence shape — the pending
+// decision (fingerprint compare + staleness) belongs to wiki lint, not storage.
+export interface DreamUnitWikiRow {
+  sessionId: string;
+  repo: string;
+  dreamChunkIds: string[]; // dream_units.dream_chunk_ids (current dream knowledge)
+  wikiFingerprint: string | null; // wiki_units.fingerprint, null if never compiled
+  synthesizedAt: Date; // dream_units.synthesized_at
+}
+
 // Read-only trust/evidence queries over the pg store, used by wiki lint (the
 // backend-dependent rules) and the UI page overlay. Kept separate from the
 // vector/dream/wiki seams so those contracts stay minimal. PgVectorBackend
@@ -122,9 +133,10 @@ export interface WikiEvidenceStore {
   // Subset of the given ids that exist as chunks of the given tier — the
   // broken-provenance check (sources must be real dream chunks).
   existingChunkIds(ids: string[], tier: string): Promise<Set<string>>;
-  // (session, repo) units whose current dream knowledge differs from what the
-  // wiki ledger absorbed AND whose dream stamp is older than staleHours.
-  pendingWikiUnits(owner: string, staleHours?: number): Promise<PendingUnit[]>;
+  // Dream units joined to their wiki-ledger fingerprint, prefiltered to those
+  // synthesized before `cutoff`. Rows only — wiki's pendingWikiUnits applies the
+  // pending-unit rule (fingerprint compare + staleness) over these.
+  dreamUnitsWithWikiFingerprint(owner: string, cutoff: Date): Promise<DreamUnitWikiRow[]>;
   // Distinct sessions + first/last timestamp over the given source chunk ids.
   wikiPageEvidence(sourceIds: string[]): Promise<WikiPageEvidence>;
 }

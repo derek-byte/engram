@@ -7,7 +7,7 @@ import { OpenAIWikiLLM } from '../wiki/llm.ts';
 import { WikiStore } from '../wiki/store.ts';
 import { ingestWiki, reindexWiki, type WikiIngestResult, type WikiUnitPlan } from '../wiki/ingest.ts';
 import { splitPage } from '../wiki/split.ts';
-import { lintWiki, type Finding } from '../wiki/lint.ts';
+import { lintWiki, pendingWikiUnits, type Finding } from '../wiki/lint.ts';
 import { acquireSynthesisLock } from './synthesisLock.ts';
 
 export interface WikiOptions {
@@ -204,13 +204,13 @@ async function wikiLint(opts: WikiOptions): Promise<void> {
 
   let backend: PgVectorBackend | undefined;
   let checkProvenance: ((ids: string[]) => Promise<Set<string>>) | undefined;
-  let pendingUnits: (() => ReturnType<PgVectorBackend['pendingWikiUnits']>) | undefined;
+  let pendingUnits: (() => ReturnType<typeof pendingWikiUnits>) | undefined;
   if (configIsComplete(config)) {
     backend = makeBackend(config);
     await backend.initialize();
     const b = backend;
     checkProvenance = (ids: string[]) => b.existingChunkIds(ids, 'dream');
-    pendingUnits = () => b.pendingWikiUnits(wikiOwner);
+    pendingUnits = () => pendingWikiUnits(b, wikiOwner);
   }
 
   try {
