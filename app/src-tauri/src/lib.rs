@@ -42,12 +42,14 @@ pub(crate) struct AppState {
     pub shell_update_pending: AtomicBool,
 }
 
-/// App command: hide the search window. Invoked from the injected Esc handler on
-/// the loopback UI origin (granted by capabilities/remote-ui.json).
+/// App command: dismiss the search window. Invoked from the injected Esc handler
+/// on the loopback UI origin (granted by capabilities/remote-ui.json). Routed
+/// through dismiss_window so a fullscreen window destroys (hide() would strand
+/// its Space as a black void) while a normal one hides.
 #[tauri::command]
 fn hide_main_window(app: AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        let _ = win.hide();
+        hotkey::dismiss_window(&win);
     }
 }
 
