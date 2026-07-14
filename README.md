@@ -6,20 +6,9 @@ Global semantic memory for your coding sessions. Watches `~/.claude/projects`, c
 
 ## Architecture
 
-```mermaid
-%%{init: {'theme': 'neutral'}}%%
-flowchart LR
-  J["<b>~/.claude/projects</b><br/>session jsonl"] --> IN
-  IN["<b>ingest/</b><br/>parse · chunk ·<br/>caption · embed"] --> ST
-  ST["<b>storage/</b><br/>raw_events +<br/>pgvector chunks"] --> DR
-  ST --> SE
-  DR["<b>dream/</b><br/>LLM synthesis<br/>(tier=dream)"] --> WK
-  WK["<b>wiki/</b><br/>compiled pages<br/>(tier=wiki)"] --> SE
-  SE["<b>search/</b><br/>hybrid + recency<br/>+ rerank"] --> SF
-  SF["<b>surfaces</b><br/>ask · context ·<br/>MCP · UI · CLI"]
-```
+![engram pipeline — jsonl → ingest → storage → dream → wiki → search → surfaces](docs/architecture.png)
 
-The knowledge pyramid: L0 raw chunks/events → L1 dream chunks → L2 wiki pages → L3 `index.md`. Each layer is synthesized only from the one below, with a fingerprint short-circuit (sha256 of sorted source ids) making every layer an incremental build. Search defaults flip to the compiled tiers (MCP/UI default `synth` = wiki+dream; `--tier raw` for verbatim drill-down); the wiki→dream→raw provenance chain rides `sourceChunkIds` + the trajectory overlay.
+Each tier is compiled only from the one below, with a fingerprint short-circuit (sha256 of sorted source ids) making every rebuild incremental; provenance (`sourceChunkIds`) rides the chain all the way back to the raw log. Search defaults to the compiled tiers (`synth` = wiki+dream); `--tier raw` drills into verbatim history.
 
 Two design invariants:
 
@@ -86,11 +75,9 @@ bun run src/index.ts service install   # macOS: always-on watcher + nightly synt
 
 Config lives at `~/.engram/config.json`; `OPENAI_API_KEY` and `ENGRAM_DATABASE_URL` env vars override it.
 
-## Ask — answers, not results
+## CLI — answers, not results
 
-`engram ask "<question>" [--repo --branch --since --tier(default synth) --k(default 12) --json]` gives one synthesized answer with `[n]` citations plus a cited-sources list, instead of a ranked list of hits. It reuses the same hybrid retrieval as `search`, then makes ONE grounded LLM call (`wikiModel`) that is instructed to answer only from the retrieved material and to say plainly when the material doesn't cover the question. `--json` emits `{answer, sources[], usage}`. See [`src/ask/README.md`](src/ask/README.md).
-
-**Cost / latency:** each ask is one `wikiModel` call (gpt-5.4-mini) over ~12 retrieved snippets — roughly 6–10k prompt tokens (about a cent) and 5–20s; retrieval itself is local and free, so use `engram search` when you want raw hits at zero cost. Ask needs `OPENAI_API_KEY` and will not degrade to plain search — no key, it exits 1 and tells you to run `engram search`.
+The flagship command is `engram ask "<question>" [--repo --branch --since --tier(default synth) --k(default 12) --json]` — one synthesized answer with `[n]` citations resolving to sources, instead of a ranked list of hits. Same hybrid retrieval as `search`, then a single grounded `wikiModel` call (~6–10k prompt tokens ≈ a cent, 5–20s) instructed to answer only from the retrieved material and to say plainly when it doesn't cover the question. Needs `OPENAI_API_KEY` — no key, it exits 1 rather than silently degrading; `engram search` gives raw hits locally at zero cost. `--json` emits `{answer, sources[], usage}`. The desktop app and MCP tools expose this same ask surface. See [`src/ask/README.md`](src/ask/README.md).
 
 ## Always-on service (macOS / launchd)
 
@@ -118,6 +105,8 @@ The synthesis agent is only installed when `~/.engram/config.json` has `"synthes
 Add `--path production` to score the **real** path instead of the in-memory substrate: each question's sessions are injected via `injectDocuments` → pgvector, queried through `runSearch` restricted to an owner (`bench:<question_id>`), and sessions ranked by their best-scoring chunk (max-sim). Bench rows are deleted after each question and swept on exit; `--cleanup` purges any leftovers (`owner LIKE 'bench:%'`).
 
 Add `--rerank` (production path only) to score with the LLM reranker enabled (rung 4). It ranks sessions by first appearance in the reranked order and prints a token/cost line; the baseline max-sim ranking is left untouched so the no-rerank numbers stay reproducible.
+
+[MemPalace](https://github.com/MemPalace/mempalace) is the published SOTA we measure against, kept as a side-by-side index over the same corpus — not an engram dependency. `scripts/setup-mempalace.sh` installs a pinned version, bootstraps the `mempalace` database on the compose Postgres, and mines `~/.claude/projects`. Search it with `mempalace search "..." --backend pgvector`.
 
 ## MCP — use engram from Claude Code
 
@@ -149,14 +138,9 @@ The snippet registers a `SessionStart` hook running `engram context --cwd "$CLAU
 
 **Toggle without touching settings.json.** Injection is governed by a `contextInjection` block in `~/.engram/config.json` (same pattern as `synthesis`): `{ "enabled": false }` turns it off — the hook stays installed and prints nothing until you flip it back; `{ "budget": 800 }` sets the default token budget (the `--budget` flag still overrides per-run). Defaults: enabled, ~1500 tokens.
 
-## MemPalace (benchmark reference)
-
-[MemPalace](https://github.com/MemPalace/mempalace) is the published SOTA we measure against, kept as a side-by-side index over the same corpus — not an engram dependency. `scripts/setup-mempalace.sh` installs a pinned version, bootstraps the `mempalace` database on the compose Postgres, and mines `~/.claude/projects`. Search it with `mempalace search "..." --backend pgvector`.
-
 ## References
 
 - [MemPalace](https://github.com/MemPalace/mempalace) — benchmark bar; verbatim thesis, retrieval ladder, eval conditions
 - [Odysseus](https://github.com/pewdiepie-archdaemon/odysseus) — embedding fallback latch, local fastembed, 0.7/0.3 hybrid
 - [LongMemEval](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) — eval dataset
 - LLM Wiki pattern — incremental synthesis artifacts (the [dream layer](src/dream/README.md))
-- Type: [Departure Mono](https://departuremono.com) (OFL)

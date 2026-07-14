@@ -6,4 +6,6 @@
 
 - **`verify-local-embed.ts`** — smoke test for the local embedding path: `bun scripts/verify-local-embed.ts`. Checks MiniLM loads (384-dim), related text scores above unrelated, and a keyless `openai` config latches to the local fallback with one warning. Run after touching `src/ingest/embed.ts` or bumping fastembed.
 
+- **`gen-arch-diagram.py`** — regenerates the README's excalidraw-style pipeline diagram: `python3 scripts/gen-arch-diagram.py docs/architecture.png`. Hand-wobble SVG rasterized via qlmanage; edit the box/container layout in the script when the pipeline changes.
+
 App icon generation lives in `app/scripts/` (see `app/README.md`).
