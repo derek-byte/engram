@@ -8,6 +8,6 @@
 
 - **`gen-arch-diagram.py`** — regenerates the README's excalidraw-style pipeline diagram: `python3 scripts/gen-arch-diagram.py docs/architecture.png`. Hand-wobble SVG rasterized via qlmanage; edit the box/container layout in the script when the pipeline changes.
 
-- **`gen-banner.py`** — regenerates the README title banner (pixel-bust logo + wordmark, same style): `uv run --with pillow scripts/gen-banner.py docs/banner.png`. Needs Pillow to key the icon-art background to transparent.
+- **`gen-banner.py`** — regenerates the README title banner (pixel-bust logo + wordmark, transparent background, light + dark variants for the README's `<picture>` element): `uv run --with pillow scripts/gen-banner.py`. Needs Pillow to key the icon-art background and rasterize the wordmark.
 
 App icon generation lives in `app/scripts/` (see `app/README.md`).

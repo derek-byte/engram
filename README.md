@@ -1,4 +1,9 @@
-<p align="center"><img src="docs/banner.png" alt="engram"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.png">
+    <img src="docs/banner-light.png" alt="engram" width="420">
+  </picture>
+</p>
 
 Global semantic memory for your coding sessions. Watches `~/.claude/projects`, chunks every Claude Code trajectory, embeds it, and makes your entire coding history searchable — filtered by repo, branch, and time.
 
