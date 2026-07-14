@@ -1,4 +1,4 @@
-# engram
+<p align="center"><img src="docs/banner.png" alt="engram"></p>
 
 Global semantic memory for your coding sessions. Watches `~/.claude/projects`, chunks every Claude Code trajectory, embeds it, and makes your entire coding history searchable — filtered by repo, branch, and time.
 
