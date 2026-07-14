@@ -2,28 +2,21 @@
 
 Global semantic memory for your coding sessions. Watches `~/.claude/projects`, chunks every Claude Code trajectory, embeds it, and makes your entire coding history searchable — filtered by repo, branch, and time.
 
+![engram — search across your coding memory](docs/app-search.jpg)
+
 ## Architecture
 
-```
-~/.claude/projects/**/*.jsonl
-        │
-        ▼
-  ingest/   parse → trajectories → token-aware chunks → embed (cached)
-        │
-        ▼
-  storage/  raw_events (append-only store of record) + chunks (pgvector, versioned)
-        │
-        ▼
-  search/   query embedding → cosine similarity + metadata filters
-        │
-        ▼
-  dream/    group raw chunks → LLM synthesis (decisions/fixes/gotchas) → tier='dream' chunks
-        │
-        ▼
-  wiki/     compile dream chunks → git-versioned [[wikilinked]] markdown pages → tier='wiki' chunks
-        │
-        ▼
-  commands/ search · ask · context · hooks · status · backfill · dream · wiki · service · watch-internal
+```mermaid
+%%{init: {'theme': 'neutral'}}%%
+flowchart LR
+  J["<b>~/.claude/projects</b><br/>session jsonl"] --> IN
+  IN["<b>ingest/</b><br/>parse · chunk ·<br/>caption · embed"] --> ST
+  ST["<b>storage/</b><br/>raw_events +<br/>pgvector chunks"] --> DR
+  ST --> SE
+  DR["<b>dream/</b><br/>LLM synthesis<br/>(tier=dream)"] --> WK
+  WK["<b>wiki/</b><br/>compiled pages<br/>(tier=wiki)"] --> SE
+  SE["<b>search/</b><br/>hybrid + recency<br/>+ rerank"] --> SF
+  SF["<b>surfaces</b><br/>ask · context ·<br/>MCP · UI · CLI"]
 ```
 
 The knowledge pyramid: L0 raw chunks/events → L1 dream chunks → L2 wiki pages → L3 `index.md`. Each layer is synthesized only from the one below, with a fingerprint short-circuit (sha256 of sorted source ids) making every layer an incremental build. Search defaults flip to the compiled tiers (MCP/UI default `synth` = wiki+dream; `--tier raw` for verbatim drill-down); the wiki→dream→raw provenance chain rides `sourceChunkIds` + the trajectory overlay.
