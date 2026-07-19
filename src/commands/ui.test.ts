@@ -9,12 +9,12 @@ import { OpenAIAskLLM, type AskChatClient } from '../ask/index.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { FakeBackend, FakeCache, FakeProvider, tempStore, type TempStore } from '../ingest/testkit.ts';
 import { WikiStore, pageFingerprint, type WikiPage } from '../wiki/store.ts';
-import type { Chunk } from '../types/index.ts';
+import type { Chunk, EmbeddedChunk } from '../types/index.ts';
 
 const PORT = 7777;
 const HOST = '127.0.0.1:' + PORT;
 
-function chunk(id: string, tier: Chunk['metadata']['tier'], over: Partial<Chunk['metadata']> = {}): Chunk {
+function chunk(id: string, tier: Chunk['metadata']['tier'], over: Partial<Chunk['metadata']> = {}): EmbeddedChunk {
   return {
     id,
     embedding: [1, 1, 1, 1],

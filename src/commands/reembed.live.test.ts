@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import postgres from 'postgres';
-import type { Chunk } from '../types/index.ts';
+import type { Chunk, EmbeddedChunk } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { Embedder, type EmbeddingProvider, type ProviderEmbedding } from '../ingest/embed.ts';
 import { runReembedSweep } from './backfill.ts';
@@ -34,7 +34,7 @@ class FixedDimProvider implements EmbeddingProvider {
   }
 }
 
-function chunk(id: string, tier: 'raw' | 'dream' | 'wiki', content: string, embedding: number[]): Chunk {
+function chunk(id: string, tier: 'raw' | 'dream' | 'wiki', content: string, embedding: number[]): EmbeddedChunk {
   return {
     id,
     embedding,

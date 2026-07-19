@@ -1,4 +1,4 @@
-import type { Chunk, EngramConfig, RawEvent } from '../types/index.ts';
+import type { EmbeddedChunk, EngramConfig, RawEvent } from '../types/index.ts';
 import type { VectorBackend } from '../storage/backend.ts';
 import { Embedder } from './embed.ts';
 import { chunkHash, contentSha256 } from './hash.ts';
@@ -87,7 +87,7 @@ export async function injectDocuments(docs: InjectDoc[], deps: InjectDeps): Prom
     cacheHits += stats.cacheHits;
     cacheMisses += stats.cacheMisses;
 
-    const chunks: Chunk[] = batch.map((b, idx) => ({
+    const chunks: EmbeddedChunk[] = batch.map((b, idx) => ({
       id: b.hash,
       embedding: vectors[idx]!,
       content: b.text,

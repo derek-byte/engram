@@ -8,7 +8,7 @@ import { chunkMessages, chunkTrajectory } from '../ingest/chunker.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 import { chunkHash, trajectoryHash } from '../ingest/hash.ts';
 import { parseJsonl } from '../ingest/parser.ts';
-import type { Chunk } from '../types/index.ts';
+import type { Chunk, EmbeddedChunk } from '../types/index.ts';
 import { runBackfillIngest, type BackfillDeps } from './backfill.ts';
 import { DEFAULT_OWNER } from '../config/index.ts';
 
@@ -64,7 +64,7 @@ function expectedChunkIds(path: string): string[] {
 // chunker version produced it): different id/content than anything the current
 // chunker derives.
 function seedStaleChunk(backend: FakeBackend, id: string, owner = DEFAULT_OWNER): void {
-  const chunk: Chunk = {
+  const chunk: EmbeddedChunk = {
     id,
     embedding: [1, 0, 0, 0],
     content: `stale v1 packing for ${id}`,

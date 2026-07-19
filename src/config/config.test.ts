@@ -45,6 +45,45 @@ describe('mergeConfig contextInjection', () => {
   });
 });
 
+describe('mergeConfig scoring', () => {
+  test('defaults when neither the block nor legacy flat keys are present', () => {
+    const config = mergeConfig({});
+    expect(config.scoring).toEqual({
+      vectorWeight: 0.7,
+      keywordWeight: 0.3,
+      timeDecayHalfLifeDays: 0,
+      recencyWeight: 0.1,
+      recencyHalfLifeDays: 30,
+      importanceWeight: 0.1,
+    });
+  });
+
+  test('legacy flat top-level keys fold in (pre-block config.json files)', () => {
+    const config = mergeConfig({ vectorWeight: 0.6, keywordWeight: 0.4 } as never);
+    expect(config.scoring.vectorWeight).toBe(0.6);
+    expect(config.scoring.keywordWeight).toBe(0.4);
+    expect(config.scoring.recencyWeight).toBe(0.1); // untouched keys keep defaults
+  });
+
+  test('the nested block wins over legacy flat keys', () => {
+    const config = mergeConfig({ vectorWeight: 0.6, scoring: { vectorWeight: 0.5 } } as never);
+    expect(config.scoring.vectorWeight).toBe(0.5);
+  });
+
+  test('folded flat keys are dropped so saveConfig cannot re-persist them', () => {
+    const config = mergeConfig({ vectorWeight: 0.6, keywordWeight: 0.4 } as never);
+    expect('vectorWeight' in config).toBe(false);
+    expect('keywordWeight' in config).toBe(false);
+  });
+
+  test('non-finite or non-numeric values fall back per-key', () => {
+    const config = mergeConfig({ scoring: { vectorWeight: 'lots', keywordWeight: NaN, recencyWeight: 0.2 } } as never);
+    expect(config.scoring.vectorWeight).toBe(0.7);
+    expect(config.scoring.keywordWeight).toBe(0.3);
+    expect(config.scoring.recencyWeight).toBe(0.2);
+  });
+});
+
 describe('mergeConfig askModel', () => {
   test('follows wikiModel when unset (pre-key behavior)', () => {
     expect(mergeConfig({}).askModel).toBe('gpt-4o-mini');

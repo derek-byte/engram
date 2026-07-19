@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import postgres from 'postgres';
-import type { Chunk, EngramConfig, RawEvent, ScoringConfig } from '../types/index.ts';
+import type { Chunk, EmbeddedChunk, EngramConfig, RawEvent, ScoringConfig } from '../types/index.ts';
 import { PgVectorBackend } from './pgvector.ts';
 import { FakeBackend } from '../ingest/testkit.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
@@ -19,7 +19,7 @@ function vec(seed: number, dim = LOCAL_DIM): number[] {
   return out;
 }
 
-function rawChunk(id: string, seed: number, extra?: Partial<Chunk['metadata']>): Chunk {
+function rawChunk(id: string, seed: number, extra?: Partial<Chunk['metadata']>): EmbeddedChunk {
   return {
     id,
     embedding: vec(seed),
@@ -163,7 +163,7 @@ describe('live storage hardening (Wave 12 Lane A)', () => {
       await backend.initialize();
       await backend.deleteByOwnerPrefix('test:');
 
-      const chunks: Chunk[] = [];
+      const chunks: EmbeddedChunk[] = [];
       for (let i = 0; i < 300; i++) chunks.push(rawChunk(`test:batch-${i}`, i));
       // Give one chunk artifacts + source ids to exercise jsonb/text[] fidelity.
       chunks[0]!.metadata.artifacts = [{ kind: 'file', ref: 'a.ts', tool: 'Edit' }];
@@ -238,12 +238,14 @@ describe('storage unit (no pg)', () => {
       databaseUrl: DB_URL,
       embeddingModel: 'm-test',
       embeddingDim: LOCAL_DIM,
-      vectorWeight: 0.42,
-      keywordWeight: 0.58,
-      timeDecayHalfLifeDays: 14,
-      recencyWeight: 0.1,
-      recencyHalfLifeDays: 30,
-      importanceWeight: 0.1,
+      scoring: {
+        vectorWeight: 0.42,
+        keywordWeight: 0.58,
+        timeDecayHalfLifeDays: 14,
+        recencyWeight: 0.1,
+        recencyHalfLifeDays: 30,
+        importanceWeight: 0.1,
+      },
     } as unknown as EngramConfig;
 
     const backend = PgVectorBackend.fromConfig(config);
@@ -295,7 +297,6 @@ describe('storage unit (no pg)', () => {
     });
     expect(full).toEqual({
       id: 'r1',
-      embedding: [],
       content: 'body',
       metadata: {
         repo: 'repoA',
@@ -329,7 +330,8 @@ describe('storage unit (no pg)', () => {
     expect(sparse.metadata.artifacts).toBeUndefined();
     expect(sparse.metadata.invalidAt).toBeUndefined();
     expect(sparse.metadata.supersededBy).toBeUndefined();
-    expect(sparse.embedding).toEqual([]);
+    // Read shape carries no embedding field at all — reads never rehydrate the vector.
+    expect('embedding' in sparse).toBe(false);
   });
 });
 
@@ -338,7 +340,7 @@ describe('storage unit (no pg)', () => {
 describe('FakeBackend supersession tombstones (no pg)', () => {
   const OWNER2 = 'test:fake-tomb';
 
-  function fakeChunk(id: string, tier: 'raw' | 'dream' | 'wiki' = 'raw'): Chunk {
+  function fakeChunk(id: string, tier: 'raw' | 'dream' | 'wiki' = 'raw'): EmbeddedChunk {
     return {
       id,
       embedding: [1, 0, 0, 0],
@@ -491,7 +493,7 @@ describe('live supersession tombstones + scoring', () => {
       // Identical embeddings; only tier and timestamp differ.
       const now = new Date();
       const old = new Date('2020-01-01T00:00:00Z');
-      const mk = (id: string, tier: 'raw' | 'wiki', ts: Date): Chunk =>
+      const mk = (id: string, tier: 'raw' | 'wiki', ts: Date): EmbeddedChunk =>
         rawChunk(id, 7, { owner: TOMB_OWNER, timestamp: ts, tier });
       await setup.upsert([
         mk('test:score-wiki', 'wiki', now),
@@ -519,7 +521,7 @@ describe('live supersession tombstones + scoring', () => {
       const zeroRes = await zero.search(vec(7), 'zzz-no-keyword-match', filters);
       expect(zeroRes.length).toBeGreaterThan(0);
       for (const r of zeroRes) {
-        expect(r.combined).toBeCloseTo(0.7 * r.similarity + 0.3 * r.keywordRank, 6);
+        expect(r.combined).toBeCloseTo(0.7 * r.similarity + 0.3 * r.keywordScore, 6);
       }
       await zero.close();
     } finally {

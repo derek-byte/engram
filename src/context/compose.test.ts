@@ -27,7 +27,6 @@ class FakeContextStore implements ContextStore {
 function dream(id: string, type: string, text: string, ageDays: number): Chunk {
   return {
     id,
-    embedding: [],
     content: text,
     metadata: {
       repo: 'r',

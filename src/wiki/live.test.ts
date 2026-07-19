@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Chunk } from '../types/index.ts';
+import type { Chunk, EmbeddedChunk } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 import { LOCAL_DIM } from '../config/defaults.ts';
@@ -20,7 +20,7 @@ const SRC = 'test:wiki-dream';
 const WIKI = 'test:wiki';
 const FAKE_MODEL = 'test-fake-384';
 
-function dreamChunk(id: string, sessionId: string, kind: string, content: string): Chunk {
+function dreamChunk(id: string, sessionId: string, kind: string, content: string): EmbeddedChunk {
   return {
     id,
     embedding: [],
@@ -121,7 +121,7 @@ describe('live wiki reconciliation (real LLM)', () => {
     const config = testConfig({ wikiDir: dir, wikiModel: 'gpt-4o-mini' });
 
     // Two sessions, overlapping entity (the DB decision), t1 older than t2.
-    const mk = (id: string, sess: string, kind: string, content: string, ts: number): Chunk => ({
+    const mk = (id: string, sess: string, kind: string, content: string, ts: number): EmbeddedChunk => ({
       ...dreamChunk(id, sess, kind, content),
       metadata: { ...dreamChunk(id, sess, kind, content).metadata, timestamp: new Date(ts) },
     });

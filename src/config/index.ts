@@ -57,12 +57,14 @@ const DEFAULT_CONFIG: EngramConfig = {
   watchPath: join(homedir(), '.claude', 'projects'),
   sessionCompleteDelaySec: 8,
   chunkBatchSize: 32,
-  vectorWeight: 0.7,
-  keywordWeight: 0.3,
-  timeDecayHalfLifeDays: 0,
-  recencyWeight: 0.1,
-  recencyHalfLifeDays: 30,
-  importanceWeight: 0.1,
+  scoring: {
+    vectorWeight: 0.7,
+    keywordWeight: 0.3,
+    timeDecayHalfLifeDays: 0,
+    recencyWeight: 0.1,
+    recencyHalfLifeDays: 30,
+    importanceWeight: 0.1,
+  },
   rerank: RERANK_DEFAULTS,
   imageCaption: IMAGE_CAPTION_DEFAULTS,
   dreamModel: 'gpt-4o-mini',
@@ -94,6 +96,18 @@ export function mergeConfig(
   env: Record<string, string | undefined> = {}
 ): EngramConfig {
   const merged: EngramConfig = { ...DEFAULT_CONFIG, ...raw };
+
+  // scoring is a nested block; config.json files written before it existed
+  // carried the weights as flat top-level keys — fold those in first (lowest
+  // precedence), then any nested block. Non-finite values fall back per-key.
+  merged.scoring = {
+    ...DEFAULT_CONFIG.scoring,
+    ...pickFiniteNumbers(raw, SCORING_KEYS),
+    ...pickFiniteNumbers(raw.scoring, SCORING_KEYS),
+  };
+  // Drop the folded flat keys (they rode in via ...raw as excess properties) so
+  // a saveConfig round-trip doesn't re-persist them next to the nested block.
+  for (const key of SCORING_KEYS) delete (merged as unknown as Record<string, unknown>)[key];
 
   // rerank is a nested block; older config.json files lack it entirely.
   merged.rerank = { ...DEFAULT_CONFIG.rerank, ...(raw.rerank ?? {}) };
@@ -271,6 +285,27 @@ export function configIsComplete(config: EngramConfig): boolean {
   if (!config.databaseUrl) return false;
   // Local provider needs no API key; openai still runs keyless via local fallback.
   return config.embeddingProvider === 'local' ? true : Boolean(config.openaiApiKey);
+}
+
+const SCORING_KEYS = [
+  'vectorWeight',
+  'keywordWeight',
+  'timeDecayHalfLifeDays',
+  'recencyWeight',
+  'recencyHalfLifeDays',
+  'importanceWeight',
+] as const;
+
+// Pick only the named keys whose values are finite numbers — a string or NaN in
+// config.json must fall back to the default, never reach the scoring SQL.
+function pickFiniteNumbers(source: unknown, keys: readonly string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (typeof source !== 'object' || source === null) return out;
+  for (const key of keys) {
+    const v = (source as Record<string, unknown>)[key];
+    if (typeof v === 'number' && Number.isFinite(v)) out[key] = v;
+  }
+  return out;
 }
 
 // Shared by loadConfig (config.json) and `engram context --budget` (CLI flag).

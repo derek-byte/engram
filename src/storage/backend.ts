@@ -1,4 +1,4 @@
-import type { Artifact, Chunk, RawEvent, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
+import type { Artifact, Chunk, EmbeddedChunk, RawEvent, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
 
 export interface EmbeddingCache {
   getCachedEmbeddings(shas: string[], model: string): Promise<Map<string, number[]>>;
@@ -16,7 +16,7 @@ export interface CaptionCache {
 export interface VectorBackend extends EmbeddingCache, CaptionCache {
   initialize(): Promise<void>;
   insertRawEvents(events: RawEvent[]): Promise<number>;
-  upsert(chunks: Chunk[]): Promise<void>;
+  upsert(chunks: EmbeddedChunk[]): Promise<void>;
   search(queryEmbedding: number[], queryText: string, filters: SearchFilters): Promise<SearchResult[]>;
   getTrajectory(trajectoryId: string): Promise<Chunk[]>;
   count(): Promise<number>;

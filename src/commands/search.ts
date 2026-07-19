@@ -79,7 +79,7 @@ function printResults(results: SearchResult[]): void {
   for (const r of results) {
     const m = r.chunk.metadata;
     const when = relativeTime(m.timestamp);
-    const scores = `combined=${r.combined.toFixed(3)} sim=${r.similarity.toFixed(3)} kw=${r.keywordRank.toFixed(3)}`;
+    const scores = `combined=${r.combined.toFixed(3)} sim=${r.similarity.toFixed(3)} kw=${r.keywordScore.toFixed(3)}`;
     const rank = r.rerankRank !== undefined ? ` rank=#${r.rerankRank}` : '';
     if (m.tier === 'wiki') {
       const slug = m.trajectoryId?.replace(/^wiki:/, '') ?? '?';

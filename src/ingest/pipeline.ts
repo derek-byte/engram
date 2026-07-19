@@ -1,5 +1,5 @@
 import { statSync } from 'node:fs';
-import type { Chunk, EngramConfig, RawEvent } from '../types/index.ts';
+import type { EmbeddedChunk, EngramConfig, RawEvent } from '../types/index.ts';
 import type { VectorBackend, WikiLedger } from '../storage/backend.ts';
 import { LocalStore } from '../storage/local.ts';
 import { DEFAULT_OWNER } from '../config/index.ts';
@@ -144,7 +144,7 @@ export async function ingestFile(path: string, deps: PipelineDeps): Promise<Inge
     cacheHits += stats.cacheHits;
     cacheMisses += stats.cacheMisses;
 
-    const chunks: Chunk[] = batch.map((b, idx) => ({
+    const chunks: EmbeddedChunk[] = batch.map((b, idx) => ({
       id: b.hash,
       embedding: vectors[idx]!,
       content: b.text,

@@ -144,7 +144,6 @@ function searchResult(id: string, content: string): SearchResult {
   return {
     chunk: {
       id,
-      embedding: [],
       content,
       metadata: {
         repo: 'r',
@@ -159,7 +158,7 @@ function searchResult(id: string, content: string): SearchResult {
       },
     },
     similarity: 0.9,
-    keywordRank: 0,
+    keywordScore: 0,
     combined: 0.9,
   };
 }
