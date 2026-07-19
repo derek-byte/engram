@@ -33,11 +33,16 @@ export interface ChunkMetadata {
   supersededBy?: string | null;
 }
 
+// Read shape: what every query path returns. The vector lives in Postgres and
+// is never hydrated back — a read-side `embedding` field would always be empty.
 export interface Chunk {
   id: string;
-  embedding: number[];
   content: string;
   metadata: ChunkMetadata;
+}
+
+export interface EmbeddedChunk extends Chunk {
+  embedding: number[];
 }
 
 export interface SearchFilters {
@@ -60,7 +65,9 @@ export interface SearchFilters {
 export interface SearchResult {
   chunk: Chunk;
   similarity: number;
-  keywordRank: number;
+  // ts_rank_cd output normalized to [0,1) — a score, not a position (contrast
+  // rerankRank below, which IS a 1-based position).
+  keywordScore: number;
   combined: number;
   // 1-based position assigned by the LLM reranker. Absent when rerank didn't
   // run or the LLM omitted this chunk from its ranking.
@@ -112,12 +119,9 @@ export interface EngramConfig {
   watchPath: string;
   sessionCompleteDelaySec: number;
   chunkBatchSize: number;
-  vectorWeight: number;
-  keywordWeight: number;
-  timeDecayHalfLifeDays: number;
-  recencyWeight: number;
-  recencyHalfLifeDays: number;
-  importanceWeight: number;
+  // Nested block like rerank/synthesis; the config loader still accepts the
+  // legacy flat keys (vectorWeight, keywordWeight, …) older config.json files hold.
+  scoring: ScoringConfig;
   rerank: RerankConfig;
   imageCaption: ImageCaptionConfig;
   dreamModel: string;

@@ -13,7 +13,7 @@ combined = vectorWeight * cosine_similarity + keywordWeight * keyword_rank
 - `cosine_similarity` = `1 - (embedding <=> query)`, in [-1,1] (in practice positive).
 - `keyword_rank` = `ts_rank_cd(content_tsv, websearch_to_tsquery('english', query), 32)`. Flag `32` normalizes to `rank/(rank+1)` → [0,1); the tsquery is parameterized, so arbitrary user text is safe.
 
-Weights live in `EngramConfig` (`vectorWeight`/`keywordWeight`, defaults `0.7`/`0.3`). `vectorWeight=1, keywordWeight=0` reproduces pure-vector ranking exactly.
+Weights live in `EngramConfig.scoring` (`vectorWeight`/`keywordWeight`, defaults `0.7`/`0.3`; the loader still accepts the legacy flat top-level keys). `vectorWeight=1, keywordWeight=0` reproduces pure-vector ranking exactly.
 
 **Candidate pool (two arms):** no full scan, but neither arm alone gates recall.
 - *Vector arm* — top-100 by cosine distance via HNSW. `hnsw.ef_search` (default 40) is raised to the pool size via `SET LOCAL` so the index scan can't silently shrink the pool.
@@ -25,7 +25,7 @@ The two arms are `UNION`ed (dedup by `id`), then **both** signals score the whol
 
 ## Result shape
 
-`SearchResult` exposes component scores: `similarity`, `keywordRank`, `combined`. `engram search --json` includes all three.
+`SearchResult` exposes component scores: `similarity`, `keywordScore`, `combined`. `engram search --json` includes all three.
 
 ## LLM reranker (rung 4, default OFF)
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Artifact, Chunk } from '../types/index.ts';
+import type { Artifact, Chunk, EmbeddedChunk } from '../types/index.ts';
 import { FakeBackend, FakeDreamLLM, FakeProvider, testConfig } from '../ingest/testkit.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { fingerprintOf, synthesizeDreams, type SynthesizeDeps } from './synthesize.ts';
@@ -15,7 +15,7 @@ function rawChunk(
   content: string,
   ts = 1_700_000_000_000,
   artifacts?: Artifact[]
-): Chunk {
+): EmbeddedChunk {
   return {
     id,
     embedding: [],
@@ -41,7 +41,7 @@ function makeDeps(llm: FakeDreamLLM): { backend: FakeBackend; deps: SynthesizeDe
   return { backend, deps: { backend, embedder, llm, config: testConfig() } };
 }
 
-async function seed(backend: FakeBackend, chunks: Chunk[]): Promise<void> {
+async function seed(backend: FakeBackend, chunks: EmbeddedChunk[]): Promise<void> {
   await backend.upsert(chunks);
 }
 

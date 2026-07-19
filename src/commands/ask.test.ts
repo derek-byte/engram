@@ -13,7 +13,6 @@ import type { Embedder } from '../ingest/embed.ts';
 function makeResult(id: string, content: string, meta: Partial<ChunkMetadata> = {}): SearchResult {
   const chunk: Chunk = {
     id,
-    embedding: [],
     content,
     metadata: {
       repo: 'engram',
@@ -27,7 +26,7 @@ function makeResult(id: string, content: string, meta: Partial<ChunkMetadata> = 
       ...meta,
     },
   };
-  return { chunk, similarity: 0.9, keywordRank: 0, combined: 0.9 };
+  return { chunk, similarity: 0.9, keywordScore: 0, combined: 0.9 };
 }
 
 function fakeClient(reply: string | null | (() => never)): AskChatClient {

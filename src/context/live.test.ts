@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import type { Chunk } from '../types/index.ts';
+import type { Chunk, EmbeddedChunk } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 import { LOCAL_DIM } from '../config/defaults.ts';
@@ -14,7 +14,7 @@ const REPO = 'ctx-repo';
 const FAKE_MODEL = 'test-fake-384';
 const NOW = new Date('2026-07-04T00:00:00Z');
 
-function dream(id: string, type: string, content: string, ageDays: number): Chunk {
+function dream(id: string, type: string, content: string, ageDays: number): EmbeddedChunk {
   return {
     id,
     embedding: [],
@@ -37,7 +37,7 @@ function dream(id: string, type: string, content: string, ageDays: number): Chun
   };
 }
 
-function wiki(slug: string, content: string, sources: string[]): Chunk {
+function wiki(slug: string, content: string, sources: string[]): EmbeddedChunk {
   return {
     id: `w-${slug}`,
     embedding: [],
@@ -68,7 +68,7 @@ describe('live context compose (provenance + recency + mention arms)', () => {
       await backend.initialize();
       await backend.deleteByOwnerPrefix('test:');
 
-      const chunks: Chunk[] = [
+      const chunks: EmbeddedChunk[] = [
         // Recent, valid → included as memories.
         dream('cd1', 'decision', 'We decided to use pgvector for ctx-repo storage.', 2),
         dream('cd2', 'gotcha', 'ctx-repo drops long trajectories silently.', 5),

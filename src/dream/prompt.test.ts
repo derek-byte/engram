@@ -5,7 +5,6 @@ import { buildTranscript } from './prompt.ts';
 function chunk(content: string): Chunk {
   return {
     id: content.slice(0, 8),
-    embedding: [],
     content,
     metadata: {
       repo: 'engram',

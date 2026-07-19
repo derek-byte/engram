@@ -8,7 +8,6 @@ import type { Embedder } from '../ingest/embed.ts';
 function makeResult(id: string, content: string, similarity: number): SearchResult {
   const chunk: Chunk = {
     id,
-    embedding: [],
     content,
     metadata: {
       repo: 'engram',
@@ -21,7 +20,7 @@ function makeResult(id: string, content: string, similarity: number): SearchResu
       tier: 'raw',
     },
   };
-  return { chunk, similarity, keywordRank: 0, combined: similarity };
+  return { chunk, similarity, keywordScore: 0, combined: similarity };
 }
 
 // Fake chat client that returns a fixed ranking JSON (or throws).

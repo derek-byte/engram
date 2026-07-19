@@ -52,7 +52,7 @@ import { chunkMessages, chunkTrajectory } from '../src/ingest/chunker.ts';
 import { chunkHash, contentSha256, trajectoryHash } from '../src/ingest/hash.ts';
 import { buildTrajectoryContext, resolvePrefixes, type PrefixStats } from '../src/ingest/contextPrefix.ts';
 import { rng } from '../src/ingest/testkit.ts';
-import type { Chunk, EngramConfig, Trajectory } from '../src/types/index.ts';
+import type { Chunk, EmbeddedChunk, EngramConfig, Trajectory } from '../src/types/index.ts';
 import { JsonlPrefixCache, DEFAULT_PREFIX_CACHE_PATH } from './prefixcache.ts';
 
 // --- Hardcoded constants (SACRED — the DROP DATABASE interpolates ONLY these) --
@@ -151,12 +151,14 @@ function benchConfig(databaseUrl: string, model: string, dim: number): EngramCon
     watchPath: join(homedir(), '.claude', 'projects'),
     sessionCompleteDelaySec: 0,
     chunkBatchSize: BATCH,
-    vectorWeight: 0.7,
-    keywordWeight: 0.3,
-    timeDecayHalfLifeDays: 0,
-    recencyWeight: 0.1,
-    recencyHalfLifeDays: 30,
-    importanceWeight: 0.1,
+    scoring: {
+      vectorWeight: 0.7,
+      keywordWeight: 0.3,
+      timeDecayHalfLifeDays: 0,
+      recencyWeight: 0.1,
+      recencyHalfLifeDays: 30,
+      importanceWeight: 0.1,
+    },
     rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
     imageCaption: { enabled: false, model: 'gpt-4o-mini', maxPerTrajectory: 4 },
     dreamModel: 'unused',
@@ -486,7 +488,7 @@ async function main(): Promise<void> {
             batch.map((b) => `${b.rec.trajectoryId} (${b.id})`)
           );
           for (const b of batch) chars += b.text.length;
-          const chunks: Chunk[] = batch.map((b, idx) => ({
+          const chunks: EmbeddedChunk[] = batch.map((b, idx) => ({
             id: b.id,
             embedding: embeddings[idx]!,
             content: b.text,

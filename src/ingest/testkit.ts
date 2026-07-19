@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Chunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
+import type { Chunk, EmbeddedChunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
 import type { CaptionCache, DreamStore, DreamUnitRow, DreamUnitWikiRow, EmbeddingCache, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
@@ -102,7 +102,7 @@ function tierSet(tier: SearchFilters['tier']): Set<string> | null {
 
 export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, WikiLedger, WikiEvidenceStore {
   readonly rawEvents = new Map<string, RawEvent>(); // keyed by content_sha256 (unique)
-  readonly chunks = new Map<string, Chunk>(); // keyed by id (primary key)
+  readonly chunks = new Map<string, EmbeddedChunk>(); // keyed by id (primary key)
   readonly dreamUnits = new Map<string, DreamUnitRow>(); // keyed by owner\nsessionId\nrepo
   readonly wikiUnits = new Map<string, WikiUnitRow>(); // keyed by owner\nsessionId\nrepo
   private cache = new FakeCache();
@@ -129,7 +129,7 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
   // Ids passed to invalidateChunks, in call order (soft-supersession assertions).
   invalidatedIds: string[] = [];
   // Set to throw from upsert. Receives the 0-based upsert call index (pre-increment).
-  upsertHook?: (chunks: Chunk[], callIndex: number) => void;
+  upsertHook?: (chunks: EmbeddedChunk[], callIndex: number) => void;
 
   async initialize(): Promise<void> {}
 
@@ -145,7 +145,7 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
     return inserted;
   }
 
-  async upsert(chunks: Chunk[]): Promise<void> {
+  async upsert(chunks: EmbeddedChunk[]): Promise<void> {
     const callIndex = this.upsertCalls;
     this.upsertCalls++;
     // Throw BEFORE mutating state, exactly like a DB whose transaction aborted:
@@ -167,8 +167,17 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
   }
 
   // Non-invalidated chunks — the live view every filtered read path serves.
-  liveChunks(): Chunk[] {
+  // Returns the stored write shape (with embedding) for direct test assertions;
+  // the VectorBackend read paths below strip it via readShape.
+  liveChunks(): EmbeddedChunk[] {
     return [...this.chunks.values()].filter((c) => c.metadata.invalidAt === undefined);
+  }
+
+  // Mirror of rowToChunk: reads never return the vector. Keeps the fake's read
+  // paths shape-identical to pgvector so `'embedding' in chunk` can't diverge
+  // between unit and live tests.
+  private readShape({ embedding: _embedding, ...chunk }: EmbeddedChunk): Chunk {
+    return chunk;
   }
 
   async getCachedEmbeddings(shas: string[], model: string): Promise<Map<string, number[]>> {
@@ -216,7 +225,7 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
     );
     const scored = rows.map((chunk) => {
       const dot = chunk.embedding.reduce((s, v, i) => s + v * (queryEmbedding[i] ?? 0), 0);
-      return { chunk, similarity: dot, keywordRank: 0, combined: dot };
+      return { chunk: this.readShape(chunk), similarity: dot, keywordScore: 0, combined: dot };
     });
     scored.sort((a, b) => b.combined - a.combined);
     return scored.slice(0, filters.limit ?? 5);
@@ -225,7 +234,8 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
   async getTrajectory(trajectoryId: string): Promise<Chunk[]> {
     return this.liveChunks()
       .filter((c) => c.metadata.trajectoryId === trajectoryId)
-      .sort((a, b) => (a.metadata.chunkIndex ?? 0) - (b.metadata.chunkIndex ?? 0));
+      .sort((a, b) => (a.metadata.chunkIndex ?? 0) - (b.metadata.chunkIndex ?? 0))
+      .map((c) => this.readShape(c));
   }
 
   async count(): Promise<number> {
@@ -333,7 +343,8 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
         (a, b) =>
           a.metadata.timestamp.getTime() - b.metadata.timestamp.getTime() ||
           (a.metadata.chunkIndex ?? 0) - (b.metadata.chunkIndex ?? 0)
-      );
+      )
+      .map((c) => this.readShape(c));
   }
 
   async getDreamUnits(owner: string): Promise<DreamUnitRow[]> {
@@ -546,12 +557,14 @@ export function testConfig(overrides: Partial<EngramConfig> = {}): EngramConfig 
     watchPath: '',
     sessionCompleteDelaySec: 8,
     chunkBatchSize: 32,
-    vectorWeight: 0.7,
-    keywordWeight: 0.3,
-    timeDecayHalfLifeDays: 0,
-    recencyWeight: 0.1,
-    recencyHalfLifeDays: 30,
-    importanceWeight: 0.1,
+    scoring: {
+      vectorWeight: 0.7,
+      keywordWeight: 0.3,
+      timeDecayHalfLifeDays: 0,
+      recencyWeight: 0.1,
+      recencyHalfLifeDays: 30,
+      importanceWeight: 0.1,
+    },
     rerank: { enabled: false, model: 'gpt-4.1-mini', topK: 30 },
     imageCaption: { enabled: false, model: 'fake-caption-model', maxPerTrajectory: 4 },
     dreamModel: 'fake-dream-model',

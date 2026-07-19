@@ -1,4 +1,4 @@
-import type { Artifact, Chunk, EngramConfig } from '../types/index.ts';
+import type { Artifact, Chunk, EmbeddedChunk, EngramConfig } from '../types/index.ts';
 import type { DreamStore, SynthesisUnit, VectorBackend, WikiLedger, WikiUnitRow } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
 import type { WikiIngestLLM, WikiPageOp } from './llm.ts';
@@ -510,7 +510,7 @@ export async function syncPageToIndex(
     texts.map((_, i) => `${trajectoryId}#${i}`)
   );
   const ts = page.updated ? new Date(page.updated) : new Date();
-  const chunks: Chunk[] = texts.map((text, i) => ({
+  const chunks: EmbeddedChunk[] = texts.map((text, i) => ({
     id: chunkHash(trajectoryId, i, text),
     embedding: embeddings[i]!,
     content: text,

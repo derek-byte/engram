@@ -1,5 +1,5 @@
 import postgres from 'postgres';
-import type { Artifact, Chunk, EngramConfig, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
+import type { Artifact, Chunk, EmbeddedChunk, EngramConfig, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
 import type { ContextStore, DreamStore, DreamUnitRow, DreamUnitWikiRow, MaintenanceStore, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 
@@ -112,14 +112,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
       config.embeddingDim,
       config.embeddingModel,
       CHUNKER_VERSION,
-      {
-        vectorWeight: config.vectorWeight,
-        keywordWeight: config.keywordWeight,
-        timeDecayHalfLifeDays: config.timeDecayHalfLifeDays,
-        recencyWeight: config.recencyWeight,
-        recencyHalfLifeDays: config.recencyHalfLifeDays,
-        importanceWeight: config.importanceWeight,
-      },
+      { ...config.scoring },
       opts
     );
   }
@@ -437,7 +430,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     return inserted;
   }
 
-  async upsert(chunks: Chunk[]): Promise<void> {
+  async upsert(chunks: EmbeddedChunk[]): Promise<void> {
     if (chunks.length === 0) return;
 
     // Reject the whole batch before any INSERT if any embedding is the wrong
@@ -587,13 +580,13 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
 
   // Single Row→Chunk mapping shared by search/getTrajectory/getUnitChunks/
   // recentDreamChunks. Nullable text columns coalesce to '' (metadata types them
-  // non-null; real ingested chunks always set them). embedding is always []
-  // — reads never rehydrate the vector. owner is included only when the query
-  // SELECTed it (undefined otherwise), preserving prior per-call-site behavior.
+  // non-null; real ingested chunks always set them). Reads never rehydrate the
+  // vector — Chunk is the embedding-less read shape (EmbeddedChunk is write-only).
+  // owner is included only when the query SELECTed it (undefined otherwise),
+  // preserving prior per-call-site behavior.
   private rowToChunk(row: ChunkRow): Chunk {
     return {
       id: row.id,
-      embedding: [],
       content: row.content,
       metadata: {
         repo: row.repo ?? '',
@@ -759,7 +752,7 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
 
     return rows.map((r) => ({
       similarity: r.similarity,
-      keywordRank: r.keyword_rank,
+      keywordScore: r.keyword_rank,
       combined: r.combined,
       chunk: this.rowToChunk(r),
     }));

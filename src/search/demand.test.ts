@@ -6,7 +6,6 @@ import type { Chunk } from '../types/index.ts';
 function result(similarity: number, over: Partial<Chunk['metadata']> = {}): SearchResult {
   const chunk: Chunk = {
     id: 'c-' + similarity,
-    embedding: [0, 0, 0, 0],
     content: 'content',
     metadata: {
       repo: 'engram',
@@ -21,7 +20,7 @@ function result(similarity: number, over: Partial<Chunk['metadata']> = {}): Sear
       ...over,
     },
   };
-  return { chunk, similarity, keywordRank: 0, combined: similarity };
+  return { chunk, similarity, keywordScore: 0, combined: similarity };
 }
 
 // The canonical search demand row, shared by CLI/MCP/UI — one builder so the

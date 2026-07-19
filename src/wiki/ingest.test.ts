@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Artifact, Chunk } from '../types/index.ts';
+import type { Artifact, Chunk, EmbeddedChunk } from '../types/index.ts';
 import { FakeBackend, FakeProvider, FakeWikiLLM, testConfig } from '../ingest/testkit.ts';
 import { Embedder } from '../ingest/embed.ts';
 import { WikiStore, pageFingerprint } from './store.ts';
@@ -20,7 +20,7 @@ function dreamChunk(
   content: string,
   ts = 1_700_000_000_000,
   artifacts?: Artifact[]
-): Chunk {
+): EmbeddedChunk {
   return {
     id,
     embedding: [],

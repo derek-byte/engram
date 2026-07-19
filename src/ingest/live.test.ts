@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
-import type { Artifact, Chunk, RawEvent } from '../types/index.ts';
+import type { Artifact, Chunk, EmbeddedChunk, RawEvent } from '../types/index.ts';
 import { PgVectorBackend } from '../storage/pgvector.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 import { LOCAL_DIM } from '../config/defaults.ts';
@@ -78,7 +78,7 @@ describe('live pgvector artifacts column round-trips through row mappings', () =
       { kind: 'file', ref: '/src/x.ts', tool: 'Write' },
       { kind: 'pr', ref: 'https://github.com/acme/engram/pull/1', tool: 'Bash' },
     ];
-    const chunk: Chunk = {
+    const chunk: EmbeddedChunk = {
       id: `test-artifact-${crypto.randomUUID()}`,
       embedding: new Array(LOCAL_DIM).fill(0.01),
       content: 'artifact round-trip probe',

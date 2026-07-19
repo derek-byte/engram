@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import type { Artifact, Chunk, EngramConfig, RawEvent } from '../types/index.ts';
+import type { Artifact, Chunk, EmbeddedChunk, EngramConfig, RawEvent } from '../types/index.ts';
 import type { DreamStore, DreamUnitRow, SynthesisUnit, VectorBackend } from '../storage/backend.ts';
 import type { Embedder } from '../ingest/embed.ts';
 import type { DreamLLM } from './llm.ts';
@@ -197,7 +197,7 @@ export async function synthesizeDreams(
           texts,
           items.map((_, i) => `${trajectoryId}#${i}`)
         );
-        const chunks: Chunk[] = items.map((item, i) => ({
+        const chunks: EmbeddedChunk[] = items.map((item, i) => ({
           id: chunkHash(trajectoryId, i, item.text),
           embedding: embeddings[i]!,
           content: item.text,
