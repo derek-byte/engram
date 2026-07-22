@@ -820,10 +820,19 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     }
 
     // GET /api/analytics — one read-only payload the Analytics view renders:
-    // demand/lint trends, context-injection activity + gate + hook, askeval runs.
+    // formation heatmap, demand/lint trends, context-injection activity + gate
+    // + hook, askeval runs.
     if (url.pathname === '/api/analytics') {
       try {
         return Response.json({
+          // 371 days = 53 whole weeks, the heatmap's widest possible window;
+          // until = tomorrow so today's chunks are included whatever the TZ skew
+          // between this process and the Postgres server.
+          heatmap: await backend.dailyChunkCounts(
+            DEFAULT_OWNER,
+            new Date(Date.now() - 371 * 86_400_000),
+            new Date(Date.now() + 86_400_000)
+          ),
           demandTrend: local.getSnapshots('demand', 30),
           lintTrend: local.getSnapshots('lint', 30),
           context: {

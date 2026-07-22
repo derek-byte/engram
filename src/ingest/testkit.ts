@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Chunk, EmbeddedChunk, EngramConfig, RawEvent, SearchFilters, SearchResult, ToolCall, Trajectory } from '../types/index.ts';
-import type { CaptionCache, DreamStore, DreamUnitRow, DreamUnitWikiRow, EmbeddingCache, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
+import type { CaptionCache, DailyChunkStat, DreamStore, DreamUnitRow, DreamUnitWikiRow, EmbeddingCache, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from '../storage/backend.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 import type { EmbeddingProvider, ProviderEmbedding } from './embed.ts';
 import type { DreamExtraction, DreamItem, DreamLLM } from '../dream/llm.ts';
@@ -241,6 +241,27 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
   async count(): Promise<number> {
     return this.liveChunks().length;
   }
+
+  // Mirrors PgVectorBackend.dailyChunkCounts: (day, tier) formation buckets in
+  // [since, until), keyed by metadata.timestamp (the fake has no created_at),
+  // invalidated chunks included, sorted by day.
+  async dailyChunkCounts(owner: string, since: Date, until: Date): Promise<DailyChunkStat[]> {
+    const buckets = new Map<string, DailyChunkStat>();
+    for (const c of this.chunks.values()) {
+      if (c.metadata.owner !== owner) continue;
+      const ts = c.metadata.timestamp.getTime();
+      if (ts < since.getTime() || ts >= until.getTime()) continue;
+      const day = c.metadata.timestamp.toISOString().slice(0, 10);
+      const tier = c.metadata.tier ?? 'raw';
+      const key = `${day}\n${tier}`;
+      let b = buckets.get(key);
+      if (!b) buckets.set(key, (b = { day, tier, chunks: 0, chars: 0 }));
+      b.chunks++;
+      b.chars += c.content.length;
+    }
+    return [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day));
+  }
+
 
   // Mirrors PgVectorBackend.deleteChunksByStaleVersion (MaintenanceStore): sweep
   // an owner's chunks of one tier whose stamped version differs from
