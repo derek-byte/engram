@@ -303,6 +303,24 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
     deps.buildAskLLM ??
     ((config: EngramConfig) => (config.openaiApiKey ? new OpenAIAskLLM(config.openaiApiKey, config.askModel) : null));
 
+  // Default heatmap window: trailing 371 days = 53 whole weeks, the widest
+  // grid the card renders; until = tomorrow so today's chunks are included
+  // whatever the TZ skew between this process and the Postgres server.
+  const heatmapWindow = () => ({
+    since: new Date(Date.now() - 371 * 86_400_000),
+    until: new Date(Date.now() + 86_400_000),
+  });
+  // Selectable years for the heatmap dropdown: current year back to the first
+  // chunk ever formed (empty index → no dropdown).
+  const heatmapYears = async (): Promise<number[]> => {
+    const first = await backend.earliestChunkDay(DEFAULT_OWNER);
+    if (!first) return [];
+    const from = Number(first.slice(0, 4));
+    const years: number[] = [];
+    for (let y = new Date().getFullYear(); y >= from; y--) years.push(y);
+    return years;
+  };
+
   // DNS-rebinding defense: only loopback Host values are legitimate for this
   // server. A malicious site rebound to 127.0.0.1 arrives with its own Host,
   // so anything else gets rejected before touching the index. Browser requests
@@ -819,20 +837,40 @@ export function buildUiFetch(deps: UiDeps): (req: Request) => Promise<Response> 
       }
     }
 
+    // GET /api/heatmap[?year=YYYY] — heatmap rows alone, so the Analytics year
+    // selector switches windows without refetching the whole analytics payload.
+    // No year = the default trailing 53-week window.
+    if (url.pathname === '/api/heatmap') {
+      const yearRaw = url.searchParams.get('year');
+      let since: Date;
+      let until: Date;
+      if (yearRaw === null) {
+        ({ since, until } = heatmapWindow());
+      } else {
+        const year = Number(yearRaw);
+        if (!Number.isInteger(year) || year < 1970 || year > 9999) {
+          return Response.json({ error: 'bad year' }, { status: 400 });
+        }
+        since = new Date(year, 0, 1);
+        until = new Date(year + 1, 0, 1);
+      }
+      try {
+        return Response.json({ rows: await backend.dailyChunkCounts(DEFAULT_OWNER, since, until) });
+      } catch (err) {
+        console.error('heatmap failed:', err instanceof Error ? err.message : err);
+        return Response.json({ error: 'heatmap failed' }, { status: 500 });
+      }
+    }
+
     // GET /api/analytics — one read-only payload the Analytics view renders:
     // formation heatmap, demand/lint trends, context-injection activity + gate
     // + hook, askeval runs.
     if (url.pathname === '/api/analytics') {
       try {
+        const { since, until } = heatmapWindow();
         return Response.json({
-          // 371 days = 53 whole weeks, the heatmap's widest possible window;
-          // until = tomorrow so today's chunks are included whatever the TZ skew
-          // between this process and the Postgres server.
-          heatmap: await backend.dailyChunkCounts(
-            DEFAULT_OWNER,
-            new Date(Date.now() - 371 * 86_400_000),
-            new Date(Date.now() + 86_400_000)
-          ),
+          heatmap: await backend.dailyChunkCounts(DEFAULT_OWNER, since, until),
+          heatmapYears: await heatmapYears(),
           demandTrend: local.getSnapshots('demand', 30),
           lintTrend: local.getSnapshots('lint', 30),
           context: {

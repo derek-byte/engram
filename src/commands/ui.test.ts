@@ -930,6 +930,8 @@ describe('buildUiFetch', () => {
         { day, tier: 'raw', chunks: 2, chars: 'content of h1'.length * 2 },
         { day, tier: 'dream', chunks: 1, chars: 'content of h3'.length },
       ]);
+      // Year selector list: only years the owner has chunks in (h4 is foreign).
+      expect(body.heatmapYears).toEqual([now.getFullYear()]);
       expect(Array.isArray(body.demandTrend)).toBe(true);
       expect(body.demandTrend[0].payload).toEqual({ unmet: 4, searches: 20 });
       expect(Array.isArray(body.lintTrend)).toBe(true);
@@ -941,6 +943,29 @@ describe('buildUiFetch', () => {
       expect(typeof body.context.hook.installed).toBe('boolean');
       expect(body.askevalRuns.length).toBe(1);
       expect(body.askevalRuns[0].summary).toEqual({ total: 5 });
+    });
+
+    test('GET /api/heatmap: default window, ?year filter, bad year → 400', async () => {
+      const now = new Date();
+      const lastYear = new Date(now);
+      lastYear.setFullYear(now.getFullYear() - 1);
+      await backend.upsert([
+        chunk('y1', 'raw', { owner: 'derek', timestamp: now }),
+        chunk('y2', 'raw', { owner: 'derek', timestamp: lastYear }),
+      ]);
+
+      // Default trailing window includes both days (365d ago < 371d cutoff).
+      const def: any = await (await fetch(req('/api/heatmap'))).json();
+      expect(def.rows.length).toBe(2);
+
+      // A calendar year keeps only that year's chunks.
+      const y: any = await (await fetch(req(`/api/heatmap?year=${now.getFullYear()}`))).json();
+      expect(y.rows).toEqual([
+        { day: now.toISOString().slice(0, 10), tier: 'raw', chunks: 1, chars: 'content of y1'.length },
+      ]);
+
+      expect((await fetch(req('/api/heatmap?year=abc'))).status).toBe(400);
+      expect((await fetch(req('/api/heatmap?year=12'))).status).toBe(400);
     });
   });
 

@@ -79,7 +79,7 @@ export async function loadAnalytics() {
     fetch('/api/lint').then((r) => (r.ok ? r.json() : null)).catch(() => null),
   ]);
   if (!analytics) { analyticsMsg('Analytics unavailable — is the engram server running?'); return; }
-  renderHeatmapCard(analytics.heatmap || []);
+  renderHeatmapCard(analytics.heatmap || [], analytics.heatmapYears || []);
   renderDemandCard(analytics.demandTrend || [], demand);
   renderContextCard(analytics.context || {});
   renderAskevalCard(analytics.askevalRuns || []);
@@ -111,9 +111,44 @@ function hmDayKey(d) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
-function renderHeatmapCard(rows) {
+function renderHeatmapCard(rows, years) {
   const card = makeCard('Memory Formation', 'Chunks synthesized into the index, per day.');
   card.classList.add('hm-card');
+  const body = document.createElement('div');
+
+  // GitHub-style window selector: default trailing 12 months, plus every
+  // calendar year back to the first chunk. Switching refetches only the
+  // heatmap rows (/api/heatmap), never the whole analytics payload.
+  if (years.length) {
+    const sel = document.createElement('select');
+    sel.className = 'set-select hm-year';
+    const all = document.createElement('option');
+    all.value = '';
+    all.textContent = 'Last 12 months';
+    sel.appendChild(all);
+    for (const y of years) {
+      const o = document.createElement('option');
+      o.value = String(y);
+      o.textContent = String(y);
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', async () => {
+      const y = sel.value;
+      const res = await fetch('/api/heatmap' + (y ? '?year=' + y : ''))
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+      if (res) drawHeatmap(body, res.rows || [], y ? Number(y) : null);
+    });
+    card.appendChild(sel);
+  }
+
+  card.appendChild(body);
+  drawHeatmap(body, rows, null);
+  analyticsBodyEl.appendChild(card);
+}
+
+function drawHeatmap(body, rows, year) {
+  clear(body);
   const byDay = new Map();
   let totalChunks = 0;
   let totalChars = 0;
@@ -127,14 +162,14 @@ function renderHeatmapCard(rows) {
     totalChars += r.chars;
   }
 
+  const label = year == null ? 'the last year' : String(year);
   const head = document.createElement('div');
   head.className = 'an-note';
   head.textContent = totalChunks
-    ? totalChunks.toLocaleString('en-US') + ' chunks · ' + fmtTokens(totalChars) + ' in the last year'
-    : 'no chunks formed in the last year';
-  card.appendChild(head);
-  if (totalChunks) card.appendChild(buildHeatmap(byDay));
-  analyticsBodyEl.appendChild(card);
+    ? totalChunks.toLocaleString('en-US') + ' chunks · ' + fmtTokens(totalChars) + ' in ' + label
+    : 'no chunks formed in ' + label;
+  body.appendChild(head);
+  if (totalChunks) body.appendChild(buildHeatmap(byDay, year));
 }
 
 function hmTipText(date, info) {
@@ -148,21 +183,34 @@ function hmTipText(date, info) {
   return t;
 }
 
-function buildHeatmap(byDay) {
+function buildHeatmap(byDay, year) {
   // GitHub-style quartile thresholds over the non-zero day totals.
   const nz = [...byDay.values()].map((d) => d.chunks).sort((a, b) => a - b);
   const q = (p) => nz[Math.min(nz.length - 1, Math.floor(p * nz.length))] || 1;
   const t1 = q(0.25), t2 = q(0.5), t3 = q(0.75);
   const level = (n) => (n === 0 ? 0 : n <= t1 ? 1 : n <= t2 ? 2 : n <= t3 ? 3 : 4);
 
-  // Window: 53 Sun→Sat columns ending on the current week (371 days, matching
-  // the /api/analytics window). Future cells render invisible to keep the grid.
+  // Window: a calendar year padded out to whole Sun→Sat weeks, or (year null)
+  // 53 columns ending on the current week — the /api default. Cells outside
+  // [lo, hi] (padding days, the future) render invisible to keep the grid.
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const end = new Date(today);
-  end.setDate(end.getDate() + (6 - end.getDay()));
-  const start = new Date(end);
-  start.setDate(start.getDate() - 53 * 7 + 1);
+  let start, end, lo;
+  if (year == null) {
+    end = new Date(today);
+    end.setDate(end.getDate() + (6 - end.getDay()));
+    start = new Date(end);
+    start.setDate(start.getDate() - 53 * 7 + 1);
+    lo = start;
+  } else {
+    lo = new Date(year, 0, 1);
+    start = new Date(lo);
+    start.setDate(start.getDate() - start.getDay());
+    end = new Date(year, 11, 31);
+    end.setDate(end.getDate() + (6 - end.getDay()));
+  }
+  const dec31 = year == null ? null : new Date(year, 11, 31);
+  const hi = dec31 && dec31 < today ? dec31 : today;
 
   const wrap = document.createElement('div');
   wrap.className = 'hm-wrap';
@@ -218,7 +266,7 @@ function buildHeatmap(byDay) {
       }
     }
     const cell = document.createElement('div');
-    if (d > today) {
+    if (d < lo || d > hi) {
       cell.className = 'hm-cell hm-future';
     } else {
       const info = byDay.get(hmDayKey(d));

@@ -632,7 +632,8 @@
      analytics.js — the month labels are positioned from it. */
   /* Wider than the 640px .set-card default so all 53 week columns fit without
      scrolling: 40px card padding + ~24px day labels + 6px gap + 53×12px grid. */
-  .set-card.hm-card { max-width: 704px; }
+  .set-card.hm-card { max-width: 704px; position: relative; }
+  .hm-year { position: absolute; top: 14px; right: 16px; }
   .hm-wrap { position: relative; margin: 2px 0 10px; }
   .hm-scroll { overflow-x: auto; padding-bottom: 2px; }
   .hm-flex { display: flex; gap: 6px; width: max-content; }
