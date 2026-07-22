@@ -1,6 +1,6 @@
 import postgres from 'postgres';
 import type { Artifact, Chunk, EmbeddedChunk, EngramConfig, RawEvent, ScoringConfig, SearchFilters, SearchResult, Trajectory } from '../types/index.ts';
-import type { ContextStore, DreamStore, DreamUnitRow, DreamUnitWikiRow, MaintenanceStore, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
+import type { ContextStore, DailyChunkStat, DreamStore, DreamUnitRow, DreamUnitWikiRow, MaintenanceStore, SynthesisUnit, VectorBackend, WikiEvidenceStore, WikiLedger, WikiPageEvidence, WikiUnitRow } from './backend.ts';
 import { CHUNKER_VERSION } from '../types/index.ts';
 
 // Schema version gate for the initialize() fast path. BUMP THIS ON ANY DDL EDIT
@@ -781,6 +781,28 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     `;
     return Number(row.count);
   }
+
+  // Daily chunk-formation buckets for the analytics heatmap: one row per
+  // (day, tier) in [since, until). Day = the session timestamp when present —
+  // a backfill lands each chunk on the day the coding happened, not the day
+  // the index was built — falling back to created_at (dream/wiki chunks
+  // inherit source-session time the same way). Invalidated chunks are counted:
+  // the heatmap charts formation, not the live view.
+  async dailyChunkCounts(owner: string, since: Date, until: Date): Promise<DailyChunkStat[]> {
+    return await this.sql<DailyChunkStat[]>`
+      SELECT COALESCE(timestamp, created_at)::date::text AS day,
+             COALESCE(tier, 'raw') AS tier,
+             COUNT(*)::int AS chunks,
+             COALESCE(SUM(length(content)), 0)::int AS chars
+      FROM chunks
+      WHERE owner = ${owner}
+        AND COALESCE(timestamp, created_at) >= ${since}
+        AND COALESCE(timestamp, created_at) < ${until}
+      GROUP BY 1, 2
+      ORDER BY 1
+    `;
+  }
+
 
   // --- Artifacts backfill sweep ---------------------------------------------
   // content_sha256 == trajectoryId (pipeline stamps it), and the payload is the

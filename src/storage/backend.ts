@@ -13,6 +13,16 @@ export interface CaptionCache {
   putCachedCaptions(entries: Array<{ sha: string; caption: string }>, model: string): Promise<void>;
 }
 
+// One (day, tier) bucket of chunk formation, for the analytics heatmap.
+// `day` is a YYYY-MM-DD date string; `chars` is the summed content length
+// (the UI presents it as ~tokens via chars/4).
+export interface DailyChunkStat {
+  day: string;
+  tier: string;
+  chunks: number;
+  chars: number;
+}
+
 export interface VectorBackend extends EmbeddingCache, CaptionCache {
   initialize(): Promise<void>;
   insertRawEvents(events: RawEvent[]): Promise<number>;
@@ -20,6 +30,7 @@ export interface VectorBackend extends EmbeddingCache, CaptionCache {
   search(queryEmbedding: number[], queryText: string, filters: SearchFilters): Promise<SearchResult[]>;
   getTrajectory(trajectoryId: string): Promise<Chunk[]>;
   count(): Promise<number>;
+  dailyChunkCounts(owner: string, since: Date, until: Date): Promise<DailyChunkStat[]>;
   close(): Promise<void>;
 }
 

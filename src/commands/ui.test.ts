@@ -914,8 +914,22 @@ describe('buildUiFetch', () => {
       t.store.logContextInjection('engram', 2, 1, 800);
       const id = t.store.startAskevalRun();
       t.store.finishAskevalRun(id, 'done', { total: 5 });
+      // Heatmap seed: two raw + one dream chunk today under the default owner
+      // (the route scopes to DEFAULT_OWNER; a foreign owner must not appear).
+      const now = new Date();
+      await backend.upsert([
+        chunk('h1', 'raw', { owner: 'derek', timestamp: now }),
+        chunk('h2', 'raw', { owner: 'derek', timestamp: now }),
+        chunk('h3', 'dream', { owner: 'derek', timestamp: now }),
+        chunk('h4', 'raw', { owner: 'bench:x', timestamp: now }),
+      ]);
 
       const body: any = await (await fetch(req('/api/analytics'))).json();
+      const day = now.toISOString().slice(0, 10);
+      expect(body.heatmap).toEqual([
+        { day, tier: 'raw', chunks: 2, chars: 'content of h1'.length * 2 },
+        { day, tier: 'dream', chunks: 1, chars: 'content of h3'.length },
+      ]);
       expect(Array.isArray(body.demandTrend)).toBe(true);
       expect(body.demandTrend[0].payload).toEqual({ unmet: 4, searches: 20 });
       expect(Array.isArray(body.lintTrend)).toBe(true);
