@@ -31,6 +31,9 @@ export interface VectorBackend extends EmbeddingCache, CaptionCache {
   getTrajectory(trajectoryId: string): Promise<Chunk[]>;
   count(): Promise<number>;
   dailyChunkCounts(owner: string, since: Date, until: Date): Promise<DailyChunkStat[]>;
+  // First day (YYYY-MM-DD) any chunk was formed for this owner, null on an
+  // empty index — bounds the analytics year selector.
+  earliestChunkDay(owner: string): Promise<string | null>;
   close(): Promise<void>;
 }
 

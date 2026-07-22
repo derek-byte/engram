@@ -262,6 +262,16 @@ export class FakeBackend implements VectorBackend, CaptionCache, DreamStore, Wik
     return [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day));
   }
 
+  async earliestChunkDay(owner: string): Promise<string | null> {
+    let min: string | null = null;
+    for (const c of this.chunks.values()) {
+      if (c.metadata.owner !== owner) continue;
+      const day = c.metadata.timestamp.toISOString().slice(0, 10);
+      if (min === null || day < min) min = day;
+    }
+    return min;
+  }
+
 
   // Mirrors PgVectorBackend.deleteChunksByStaleVersion (MaintenanceStore): sweep
   // an owner's chunks of one tier whose stamped version differs from

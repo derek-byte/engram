@@ -803,6 +803,14 @@ export class PgVectorBackend implements VectorBackend, DreamStore, WikiLedger, W
     `;
   }
 
+  async earliestChunkDay(owner: string): Promise<string | null> {
+    const [row] = await this.sql<Array<{ day: string | null }>>`
+      SELECT MIN(COALESCE(timestamp, created_at))::date::text AS day
+      FROM chunks WHERE owner = ${owner}
+    `;
+    return row?.day ?? null;
+  }
+
 
   // --- Artifacts backfill sweep ---------------------------------------------
   // content_sha256 == trajectoryId (pipeline stamps it), and the payload is the

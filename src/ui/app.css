@@ -630,9 +630,12 @@
      ramp: levels mix --accent into --surface; l0 sits one step below the --inset
      card ground. Cell pitch (10px + 2px gap = 12px) must match HM_PITCH in
      analytics.js — the month labels are positioned from it. */
-  /* Wider than the 640px .set-card default so all 53 week columns fit without
-     scrolling: 40px card padding + ~24px day labels + 6px gap + 53×12px grid. */
-  .set-card.hm-card { max-width: 704px; }
+  /* All analytics cards share one width, sized so the heatmap's 53 week
+     columns fit without scrolling (40px card padding + ~24px day labels +
+     6px gap + 53×12px grid) — a lone wider card left the right edges ragged. */
+  #analytics-body .set-card { max-width: 704px; }
+  .hm-card { position: relative; }              /* anchors the year dropdown */
+  .hm-year { position: absolute; top: 14px; right: 16px; }
   .hm-wrap { position: relative; margin: 2px 0 10px; }
   .hm-scroll { overflow-x: auto; padding-bottom: 2px; }
   .hm-flex { display: flex; gap: 6px; width: max-content; }
